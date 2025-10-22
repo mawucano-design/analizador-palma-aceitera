@@ -1,13 +1,16 @@
 # 🌴 Analizador Palma Aceitera
 
-Aplicación web para análisis de fertilidad de suelos para palma aceitera.
+Aplicación web para análisis de fertilidad y recomendaciones NPK en cultivos de palma aceitera.
 
-## Características
-- Análisis de NPK (Nitrógeno, Fósforo, Potasio)
-- Cálculo de superficies en hectáreas  
-- Recomendaciones específicas para palma aceitera
-- Mapas interactivos
-- Descarga de resultados
+## 🚀 Características
 
-## Uso
-Sube tu shapefile y selecciona el nutriente a analizar.
+- Visualización de polígonos SHP reales
+- Análisis de nutrientes (N, P, K) 
+- Recomendaciones específicas de fertilización
+- Mapas interactivos con PyDeck
+
+## 📦 Instalación
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
