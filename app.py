@@ -240,7 +240,8 @@ def analisis_con_valores_unicos(gdf, nutriente):
         
         mapa_buffer = crear_mapa_variacion_garantizada(gdf_analizado, nutriente)
         if mapa_buffer:
-            st.image(mapa_buffer, use_column_width=True, 
+            # CORREGIDO: usar use_container_width en lugar de use_column_width
+            st.image(mapa_buffer, use_container_width=True, 
                     caption=f"Mapa de {nutriente} - {n_poligonos} polígonos con valores únicos")
             
             # Botón para descargar
@@ -264,7 +265,9 @@ def analisis_con_valores_unicos(gdf, nutriente):
         
         resumen.columns = ['Mínimo', 'Máximo', 'Promedio', 'Área Total', 'Cantidad']
         resumen['% Área'] = (resumen['Área Total'] / area_total * 100).round(1)
-        st.dataframe(resumen)
+        
+        # CORREGIDO: usar use_container_width en la tabla
+        st.dataframe(resumen, use_container_width=True)
         
         # DESCARGAR RESULTADOS
         st.subheader("📥 DESCARGAR RESULTADOS")
@@ -308,7 +311,8 @@ if uploaded_zip:
                     
                     with col2:
                         if st.checkbox("👁️ Mostrar primeros polígonos"):
-                            st.dataframe(gdf_preview.head(3))
+                            # CORREGIDO: usar use_container_width en la tabla
+                            st.dataframe(gdf_preview.head(3), use_container_width=True)
         except Exception as e:
             st.error(f"Error cargando shapefile: {e}")
 
