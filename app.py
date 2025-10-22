@@ -35,9 +35,9 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# Función para crear mapa con polígonos usando PyDeck - VERSIÓN SIMPLIFICADA
+# Función para crear mapa con polígonos REALES - VERSIÓN MEJORADA
 def crear_mapa_poligonos_pydeck(gdf, nutriente):
-    """Crea mapa interactivo con polígonos completos - VERSIÓN SIMPLIFICADA"""
+    """Crea mapa con la forma REAL de los polígonos del shapefile - VERSIÓN MEJORADA"""
     try:
         # Convertir a WGS84 para el mapa
         if gdf.crs is None or str(gdf.crs) != 'EPSG:4326':
@@ -45,59 +45,65 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         else:
             gdf_map = gdf.copy()
         
-        # Método SIMPLE: usar los bounds para crear rectángulos
+        # VERIFICAR GEOMETRÍAS
+        st.info(f"🔍 **Diagnóstico:** {len(gdf_map)} polígonos, CRS: {gdf_map.crs}")
+        
+        # Preparar datos para PyDeck
         features = []
+        
         for idx, row in gdf_map.iterrows():
             try:
-                # Obtener los límites del polígono
-                bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+                # Método MÁS ROBUSTO para extraer coordenadas
+                geom = row.geometry
                 
-                # Crear un rectángulo desde los bounds
-                coordinates = [
-                    [bounds[0], bounds[1]],  # Esquina inferior izquierda
-                    [bounds[2], bounds[1]],  # Esquina inferior derecha  
-                    [bounds[2], bounds[3]],  # Esquina superior derecha
-                    [bounds[0], bounds[3]],  # Esquina superior izquierda
-                    [bounds[0], bounds[1]]   # Cerrar el polígono
-                ]
+                if geom.is_empty:
+                    continue
+                    
+                # Convertir a GeoJSON y extraer coordenadas
+                geojson = gpd.GeoSeries([geom]).__geo_interface__
+                coordinates = geojson['features'][0]['geometry']['coordinates']
                 
                 # Definir color según categoría
                 color_map = {
-                    "Muy Bajo": [215, 48, 39, 160],    # Rojo
-                    "Bajo": [252, 141, 89, 160],       # Naranja
-                    "Medio": [254, 224, 144, 160],     # Amarillo
-                    "Alto": [224, 243, 248, 160],      # Azul claro
-                    "Muy Alto": [69, 117, 180, 160]    # Azul oscuro
+                    "Muy Bajo": [215, 48, 39, 160],
+                    "Bajo": [252, 141, 89, 160],
+                    "Medio": [254, 224, 144, 160],
+                    "Alto": [224, 243, 248, 160],
+                    "Muy Alto": [69, 117, 180, 160]
                 }
                 
                 color = color_map.get(row['categoria'], [51, 136, 255, 160])
                 
                 features.append({
-                    'polygon_id': idx,
-                    'coordinates': [coordinates],  # Notar la lista extra para PyDeck
+                    'polygon_id': idx + 1,
+                    'coordinates': coordinates,
                     'color': color,
                     'valor': float(row['valor']),
                     'categoria': row['categoria'],
                     'area_ha': float(row['area_ha']),
-                    'dosis_npk': row['dosis_npk']
+                    'dosis_npk': row['dosis_npk'],
+                    'fert_actual': row['fert_actual']
                 })
                 
             except Exception as poly_error:
-                st.warning(f"⚠️ No se pudo procesar el polígono {idx}: {str(poly_error)}")
                 continue
         
         if not features:
-            st.error("❌ No se pudieron crear features para el mapa")
+            st.error("❌ No se pudieron extraer las geometrías de los polígonos")
+            # Mostrar mapa básico como fallback
+            gdf_map['lon'] = gdf_map.geometry.centroid.x
+            gdf_map['lat'] = gdf_map.geometry.centroid.y
+            st.map(gdf_map[['lat', 'lon', 'valor']].rename(columns={'valor': 'size'}))
             return None
-            
+        
         # Capa de polígonos
         polygon_layer = pdk.Layer(
             'PolygonLayer',
             features,
             get_polygon='coordinates',
             get_fill_color='color',
-            get_line_color=[0, 0, 0, 100],
-            get_line_width=1,
+            get_line_color=[0, 0, 0, 200],
+            get_line_width=2,
             pickable=True,
             auto_highlight=True,
             filled=True,
@@ -109,21 +115,33 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         view_state = pdk.ViewState(
             longitude=float(centroid.x),
             latitude=float(centroid.y),
-            zoom=10,
+            zoom=11,
             pitch=0,
             bearing=0
         )
         
-        # Tooltip
+        # Tooltip informativo
         tooltip = {
             "html": """
-            <div style="padding: 5px; background: white; border: 1px solid #ccc; border-radius: 5px;">
-                <b>Zona {polygon_id}</b><br/>
-                <b>Nutriente:</b> """ + nutriente + """<br/>
-                <b>Valor:</b> {valor} kg/ha<br/>
-                <b>Categoría:</b> {categoria}<br/>
-                <b>Área:</b> {area_ha:.1f} ha<br/>
-                <b>Dosis:</b> {dosis_npk}
+            <div style="
+                background: white; 
+                border: 2px solid #2E86AB; 
+                border-radius: 8px; 
+                padding: 10px; 
+                font-size: 12px;
+                color: #333;
+                max-width: 280px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            ">
+                <div style="font-weight: bold; margin-bottom: 8px; color: #2E86AB; font-size: 14px;">
+                    🌴 Zona {polygon_id}
+                </div>
+                <div style="margin-bottom: 3px;"><b>Nutriente:</b> """ + nutriente + """</div>
+                <div style="margin-bottom: 3px;"><b>Valor:</b> {valor} kg/ha</div>
+                <div style="margin-bottom: 3px;"><b>Categoría:</b> {categoria}</div>
+                <div style="margin-bottom: 3px;"><b>Área:</b> {area_ha:.1f} ha</div>
+                <div style="margin-bottom: 3px;"><b>Fertilidad:</b> {fert_actual}</div>
+                <div style="margin-bottom: 0;"><b>Dosis:</b> {dosis_npk}</div>
             </div>
             """
         }
@@ -136,21 +154,32 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
             map_style='light'
         )
         
+        st.success("✅ Mapa generado con las formas REALES de los polígonos")
         return mapa
         
     except Exception as e:
-        st.error(f"❌ Error en mapa PyDeck: {str(e)}")
-        # Fallback inmediato a mapa simple
+        st.error(f"❌ Error en mapa: {str(e)}")
+        # Fallback robusto
         try:
-            st.info("🔄 Usando mapa básico de Streamlit...")
+            st.info("🔄 Mostrando vista alternativa...")
             gdf_map = gdf.to_crs('EPSG:4326')
             gdf_map['lon'] = gdf_map.geometry.centroid.x
             gdf_map['lat'] = gdf_map.geometry.centroid.y
+            
+            # Mostrar información sobre los polígonos
+            st.write(f"**📊 Información del Shapefile:**")
+            st.write(f"- **Polígonos cargados:** {len(gdf_map)}")
+            st.write(f"- **Tipo de geometrías:** {gdf_map.geometry.type.unique()}")
+            st.write(f"- **Extensión:** {gdf_map.total_bounds}")
+            
+            # Mapa nativo
             st.map(gdf_map[['lat', 'lon', 'valor']].rename(columns={'valor': 'size'}))
-            return None
+            
         except:
-            st.error("❌ No se pudo generar ningún mapa")
-            return None
+            st.error("❌ No se pudo generar ninguna visualización")
+        
+        return None
+
 # Función para obtener recomendaciones NPK completas
 def obtener_recomendaciones_npk(nutriente, categoria, valor):
     """Devuelve recomendaciones específicas de fertilización NPK"""
@@ -436,7 +465,39 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
 
 # Procesar archivo
 if uploaded_zip:
-    if st.button("🚀 Ejecutar Análisis con Mapas", type="primary"):
+    # Mostrar información del shapefile antes de analizar
+    with st.spinner("Cargando shapefile..."):
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
+                    zip_ref.extractall(tmp_dir)
+                
+                shp_files = [f for f in os.listdir(tmp_dir) if f.endswith('.shp')]
+                if shp_files:
+                    shp_path = os.path.join(tmp_dir, shp_files[0])
+                    gdf_preview = gpd.read_file(shp_path)
+                    
+                    # Mostrar info básica
+                    st.info(f"**📊 Shapefile cargado:** {len(gdf_preview)} polígonos")
+                    st.info(f"**📐 CRS:** {gdf_preview.crs}")
+                    st.info(f"**🔷 Tipo de geometrías:** {gdf_preview.geometry.type.unique()}")
+                    
+                    # Vista previa simple
+                    if st.checkbox("👁️ Mostrar vista previa del shapefile"):
+                        st.write("**Vista previa de datos:**")
+                        st.dataframe(gdf_preview.head(3))
+                        
+                        # Mapa básico de preview
+                        try:
+                            gdf_preview_map = gdf_preview.to_crs('EPSG:4326')
+                            st.map(gdf_preview_map)
+                        except Exception as e:
+                            st.warning(f"No se pudo generar vista previa: {e}")
+        except:
+            pass
+
+    # BOTÓN CON EL TEXTO CORREGIDO
+    if st.button("🚀 Ejecutar Análisis con Formas Reales", type="primary"):
         with st.spinner("Analizando shapefile y generando mapas..."):
             try:
                 with tempfile.TemporaryDirectory() as tmp_dir:
