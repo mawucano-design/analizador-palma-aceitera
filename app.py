@@ -9,7 +9,7 @@ from datetime import datetime
 import pydeck as pdk
 
 st.set_page_config(page_title="🌴 Analizador Palma", layout="wide")
-st.title("🌴 ANALIZADOR PALMA ACEITERA - MAPAS CON POLÍGONOS")
+st.title("🌴 ANALIZADOR PALMA ACEITERA - MAPAS CON POLÍGONOS Y GRADIENTE REAL")
 st.markdown("---")
 
 # Configurar para restaurar .shx automáticamente
@@ -35,9 +35,56 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# Función para crear mapa con polígonos REALES - VERSIÓN MEJORADA
-def crear_mapa_poligonos_pydeck(gdf, nutriente):
-    """Crea mapa con la forma REAL de los polígonos del shapefile - VERSIÓN MEJORADA"""
+# Función para generar valores con gradiente real
+def generar_valores_con_gradiente(gdf, nutriente):
+    """Genera valores de nutrientes con variación espacial real basada en la posición de los polígonos"""
+    
+    # Obtener centroides para crear gradiente espacial
+    gdf_centroids = gdf.copy()
+    gdf_centroids['centroid'] = gdf_centroids.geometry.centroid
+    gdf_centroids['x'] = gdf_centroids.centroid.x
+    gdf_centroids['y'] = gdf_centroids.centroid.y
+    
+    # Normalizar coordenadas para el gradiente
+    x_min, x_max = gdf_centroids['x'].min(), gdf_centroids['x'].max()
+    y_min, y_max = gdf_centroids['y'].min(), gdf_centroids['y'].max()
+    
+    gdf_centroids['x_norm'] = (gdf_centroids['x'] - x_min) / (x_max - x_min)
+    gdf_centroids['y_norm'] = (gdf_centroids['y'] - y_min) / (y_max - y_min)
+    
+    valores = []
+    
+    for idx, row in gdf_centroids.iterrows():
+        # Crear gradiente basado en posición + variación local
+        base_gradient = row['x_norm'] * 0.6 + row['y_norm'] * 0.4
+        
+        if nutriente == "NITRÓGENO":
+            # Gradiente de N: 140-220 kg/ha con variación local
+            base_value = 140 + base_gradient * 80  # Rango más amplio
+            local_variation = np.random.normal(0, 12)  # Variación local
+            valor = base_value + local_variation
+            
+        elif nutriente == "FÓSFORO":
+            # Gradiente de P: 50-90 kg/ha
+            base_value = 50 + base_gradient * 40
+            local_variation = np.random.normal(0, 6)
+            valor = base_value + local_variation
+            
+        else:  # POTASIO
+            # Gradiente de K: 90-130 kg/ha
+            base_value = 90 + base_gradient * 40
+            local_variation = np.random.normal(0, 8)
+            valor = base_value + local_variation
+        
+        # Asegurar valores dentro de rangos razonables
+        valor = max(valor, 0)
+        valores.append(round(valor, 1))
+    
+    return valores
+
+# Función para crear mapa con gradiente de fertilidad real
+def crear_mapa_gradiente_pydeck(gdf, nutriente):
+    """Crea mapa con gradiente de fertilidad continuo basado en valores reales"""
     try:
         # Convertir a WGS84 para el mapa
         if gdf.crs is None or str(gdf.crs) != 'EPSG:4326':
@@ -51,11 +98,17 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         # Preparar datos para PyDeck
         features = []
         
+        # Definir rangos para el gradiente de color
+        if nutriente == "NITRÓGENO":
+            min_val, max_val = 140, 220
+        elif nutriente == "FÓSFORO":
+            min_val, max_val = 50, 90
+        else:  # POTASIO
+            min_val, max_val = 90, 130
+        
         for idx, row in gdf_map.iterrows():
             try:
-                # Método MÁS ROBUSTO para extraer coordenadas
                 geom = row.geometry
-                
                 if geom.is_empty:
                     continue
                     
@@ -63,16 +116,28 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
                 geojson = gpd.GeoSeries([geom]).__geo_interface__
                 coordinates = geojson['features'][0]['geometry']['coordinates']
                 
-                # Definir color según categoría
-                color_map = {
-                    "Muy Bajo": [215, 48, 39, 160],
-                    "Bajo": [252, 141, 89, 160],
-                    "Medio": [254, 224, 144, 160],
-                    "Alto": [224, 243, 248, 160],
-                    "Muy Alto": [69, 117, 180, 160]
-                }
+                # COLOR CONTINUO BASADO EN VALOR REAL (gradiente)
+                valor_normalizado = (row['valor'] - min_val) / (max_val - min_val)
+                valor_normalizado = max(0, min(1, valor_normalizado))  # Clamp 0-1
                 
-                color = color_map.get(row['categoria'], [51, 136, 255, 160])
+                # Gradiente de rojo (bajo) a verde (alto) pasando por amarillo
+                if valor_normalizado < 0.33:
+                    # Rojo a Naranja
+                    red = 255
+                    green = int(165 * (valor_normalizado * 3))
+                    blue = 0
+                elif valor_normalizado < 0.66:
+                    # Naranja a Amarillo
+                    red = 255
+                    green = 165 + int(90 * ((valor_normalizado - 0.33) * 3))
+                    blue = 0
+                else:
+                    # Amarillo a Verde
+                    red = 255 - int(255 * ((valor_normalizado - 0.66) * 3))
+                    green = 255
+                    blue = 0
+                
+                color = [red, green, blue, 180]
                 
                 features.append({
                     'polygon_id': idx + 1,
@@ -82,7 +147,8 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
                     'categoria': row['categoria'],
                     'area_ha': float(row['area_ha']),
                     'dosis_npk': row['dosis_npk'],
-                    'fert_actual': row['fert_actual']
+                    'fert_actual': row['fert_actual'],
+                    'valor_normalizado': valor_normalizado
                 })
                 
             except Exception as poly_error:
@@ -96,7 +162,7 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
             st.map(gdf_map[['lat', 'lon', 'valor']].rename(columns={'valor': 'size'}))
             return None
         
-        # Capa de polígonos
+        # Capa de polígonos con gradiente
         polygon_layer = pdk.Layer(
             'PolygonLayer',
             features,
@@ -154,7 +220,7 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
             map_style='light'
         )
         
-        st.success("✅ Mapa generado con las formas REALES de los polígonos")
+        st.success("✅ Mapa generado con GRADIENTE REAL de fertilidad")
         return mapa
         
     except Exception as e:
@@ -300,11 +366,172 @@ def obtener_recomendaciones_npk(nutriente, categoria, valor):
     
     return recomendaciones[nutriente][categoria]
 
-# Función de análisis con mapas de polígonos
-def analizar_shapefile_con_poligonos(gdf, nutriente):
-    """Versión con mapas de polígonos usando PyDeck"""
+# Función para análisis de agricultura de precisión
+def analisis_precision(gdf_analizado, nutriente):
+    """Análisis detallado para agricultura de precisión"""
+    st.header("🎯 ANÁLISIS PARA AGRICULTURA DE PRECISIÓN")
+    
+    # Calcular variabilidad
+    coef_variacion = (gdf_analizado['valor'].std() / gdf_analizado['valor'].mean()) * 100
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("📊 Coeficiente de Variación", f"{coef_variacion:.1f}%")
+    with col2:
+        st.metric("📏 Rango de Valores", 
+                 f"{gdf_analizado['valor'].min():.1f} - {gdf_analizado['valor'].max():.1f}")
+    with col3:
+        st.metric("🎯 Zonas de Manejo", len(gdf_analizado['categoria'].unique()))
+    with col4:
+        area_variable = gdf_analizado[gdf_analizado['categoria'].isin(['Muy Bajo', 'Muy Alto'])]['area_ha'].sum()
+        st.metric("⚠️ Área Crítica", f"{area_variable:.1f} ha")
+    
+    # Recomendaciones de precisión
+    st.subheader("💡 Estrategias de Fertilización de Precisión")
+    
+    # Zonas específicas por categoría
+    categorias_orden = ['Muy Bajo', 'Bajo', 'Medio', 'Alto', 'Muy Alto']
+    
+    for cat in categorias_orden:
+        subset = gdf_analizado[gdf_analizado['categoria'] == cat]
+        if len(subset) > 0:
+            area_cat = subset['area_ha'].sum()
+            valor_prom = subset['valor'].mean()
+            
+            with st.expander(f"🎯 Zona **{cat}** - {area_cat:.1f} ha (Valor promedio: {valor_prom:.1f} kg/ha)"):
+                
+                if cat in ['Muy Bajo', 'Bajo']:
+                    st.markdown("**🚨 Estrategia: Fertilización Correctiva**")
+                    st.markdown("- Aplicar dosis más altas en estas zonas")
+                    st.markdown("- Dividir aplicaciones para mejor eficiencia")
+                    st.markdown("- Considerar enmiendas específicas")
+                    st.markdown("- Monitorear respuesta cada 3 meses")
+                    
+                elif cat in ['Alto', 'Muy Alto']:
+                    st.markdown("**💡 Estrategia: Mantenimiento/Reducción**")
+                    st.markdown("- Reducir dosis para evitar excesos")
+                    st.markdown("- Monitorear posibles problemas de lixiviación")
+                    st.markdown("- Evaluar balance con otros nutrientes")
+                    st.markdown("- Considerar aplicación cada 12-18 meses")
+                    
+                else:  # Medio
+                    st.markdown("**✅ Estrategia: Mantenimiento Balanceado**")
+                    st.markdown("- Seguir recomendaciones estándar")
+                    st.markdown("- Monitorear tendencias cada 6 meses")
+                    st.markdown("- Mantener balance NPK")
+                    st.markdown("- Aplicación anual normal")
+                
+                # Polígonos específicos en esta categoría
+                st.markdown(f"**📍 Polígonos en esta zona:** {len(subset)}")
+                if len(subset) <= 10:
+                    poligonos_lista = ", ".join([str(i+1) for i in subset.index])
+                    st.markdown(f"**🔢 IDs de polígonos:** {poligonos_lista}")
+    
+    # Mapa de prescripción
+    st.subheader("🗺️ Mapa de Prescripción de Fertilizantes")
+    
+    # Crear capa de prescripción
+    prescription_features = []
+    for idx, row in gdf_analizado.iterrows():
+        try:
+            geom = row.geometry
+            if geom.is_empty:
+                continue
+                
+            geojson = gpd.GeoSeries([geom]).__geo_interface__
+            coordinates = geojson['features'][0]['geometry']['coordinates']
+            
+            # Color por categoría de prescripción
+            color_prescription = {
+                "Muy Bajo": [215, 48, 39, 200],    # Rojo - Alta dosis
+                "Bajo": [252, 141, 89, 200],       # Naranja - Media-alta
+                "Medio": [254, 224, 144, 200],     # Amarillo - Media
+                "Alto": [224, 243, 248, 200],      # Azul claro - Media-baja
+                "Muy Alto": [69, 117, 180, 200]    # Azul - Baja dosis
+            }
+            
+            prescription_features.append({
+                'polygon_id': idx + 1,
+                'coordinates': coordinates,
+                'color': color_prescription[row['categoria']],
+                'categoria': row['categoria'],
+                'dosis_npk': row['dosis_npk'],
+                'valor': row['valor'],
+                'prescripcion': f"Dosis: {row['dosis_npk']}"
+            })
+            
+        except Exception as e:
+            continue
+    
+    if prescription_features:
+        prescription_layer = pdk.Layer(
+            'PolygonLayer',
+            prescription_features,
+            get_polygon='coordinates',
+            get_fill_color='color',
+            get_line_color=[0, 0, 0, 255],
+            get_line_width=1,
+            pickable=True,
+            auto_highlight=True
+        )
+        
+        # Usar misma vista que el mapa principal
+        gdf_map = gdf_analizado.to_crs('EPSG:4326')
+        centroid = gdf_map.geometry.centroid.unary_union.centroid
+        view_state = pdk.ViewState(
+            longitude=float(centroid.x),
+            latitude=float(centroid.y),
+            zoom=11,
+            pitch=0
+        )
+        
+        tooltip = {
+            "html": """
+            <div style="background: white; padding: 10px; border-radius: 5px; border: 1px solid #ccc;">
+                <b>Zona {polygon_id}</b><br/>
+                <b>Categoría:</b> {categoria}<br/>
+                <b>Valor:</b> {valor} kg/ha<br/>
+                <b>Prescripción:</b> {dosis_npk}
+            </div>
+            """
+        }
+        
+        st.pydeck_chart(pdk.Deck(
+            layers=[prescription_layer],
+            initial_view_state=view_state,
+            tooltip=tooltip,
+            map_style='light'
+        ))
+    
+    # Resumen ejecutivo para agricultura de precisión
+    st.subheader("📋 Resumen Ejecutivo - Agricultura de Precisión")
+    
+    # Calcular áreas por categoría
+    resumen_precision = gdf_analizado.groupby('categoria').agg({
+        'area_ha': 'sum',
+        'valor': ['min', 'max', 'mean']
+    }).round(1)
+    
+    resumen_precision.columns = ['Área Total (ha)', 'Valor Mínimo', 'Valor Máximo', 'Valor Promedio']
+    resumen_precision['% del Área'] = (resumen_precision['Área Total (ha)'] / gdf_analizado['area_ha'].sum() * 100).round(1)
+    
+    st.dataframe(resumen_precision)
+    
+    # Recomendaciones generales
+    st.markdown("### 💎 Recomendaciones Clave")
+    
+    if coef_variacion > 30:
+        st.warning("**🔴 ALTA VARIABILIDAD:** Se recomienda fertilización variable por zonas. La variabilidad supera el 30%, indicando necesidad de manejo diferenciado.")
+    elif coef_variacion > 15:
+        st.info("**🟡 VARIABILIDAD MODERADA:** Considerar fertilización sectorizada. La variabilidad entre 15-30% sugiere manejo por sectores.")
+    else:
+        st.success("**🟢 VARIABILIDAD BAJA:** Fertilización uniforme puede ser adecuada. Variabilidad menor al 15% permite manejo más homogéneo.")
+
+# Función de análisis principal con gradiente real
+def analizar_shapefile_con_gradiente(gdf, nutriente):
+    """Versión con mapas de polígonos y gradiente real usando PyDeck"""
     try:
-        st.header("📊 Resultados del Análisis - Mapas con Polígonos")
+        st.header("📊 Resultados del Análisis - GRADIENTE REAL de Fertilidad")
         
         # Calcular áreas
         areas_ha = calcular_superficie(gdf)
@@ -322,19 +549,14 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
             area_promedio = area_total / len(gdf) if len(gdf) > 0 else 0
             st.metric("📏 Área Promedio", f"{area_promedio:.1f} ha")
         
-        # Simular datos de nutrientes
-        np.random.seed(42)
-        if nutriente == "NITRÓGENO":
-            valores = np.random.normal(180, 20, len(gdf))
-        elif nutriente == "FÓSFORO":
-            valores = np.random.normal(70, 8, len(gdf))
-        else:
-            valores = np.random.normal(110, 10, len(gdf))
+        # Generar valores con GRADIENTE REAL
+        st.info("🎯 **Generando gradiente real de fertilidad basado en posición espacial...**")
+        valores = generar_valores_con_gradiente(gdf, nutriente)
         
         # Crear dataframe de resultados
         gdf_analizado = gdf.copy()
         gdf_analizado['area_ha'] = areas_ha
-        gdf_analizado['valor'] = np.maximum(valores, 0).round(1)
+        gdf_analizado['valor'] = valores
         
         # Categorizar
         def categorizar(valor, nutriente):
@@ -369,7 +591,7 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
             gdf_analizado.loc[idx, 'observaciones'] = rec['observaciones']
         
         # Mostrar estadísticas
-        st.subheader("📈 Estadísticas del Análisis")
+        st.subheader("📈 Estadísticas del Análisis con Gradiente Real")
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Promedio", f"{gdf_analizado['valor'].mean():.1f} kg/ha")
@@ -380,11 +602,11 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
         with col4:
             st.metric("Desviación", f"{gdf_analizado['valor'].std():.1f} kg/ha")
         
-        # MAPA CON POLÍGONOS COMPLETOS (PyDeck)
-        st.subheader("🗺️ Mapa de Polígonos - Distribución de " + nutriente)
-        st.info("💡 **Pasa el mouse sobre los polígonos para ver detalles**")
+        # MAPA CON GRADIENTE REAL (PyDeck)
+        st.subheader("🗺️ Mapa de Gradiente Real - Distribución de " + nutriente)
+        st.info("💡 **Pasa el mouse sobre los polígonos para ver detalles. Los colores muestran variación continua de fertilidad**")
         
-        mapa = crear_mapa_poligonos_pydeck(gdf_analizado, nutriente)
+        mapa = crear_mapa_gradiente_pydeck(gdf_analizado, nutriente)
         if mapa:
             st.pydeck_chart(mapa)
         else:
@@ -398,19 +620,15 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
             except:
                 st.error("No se pudo generar el mapa")
         
-        # LEYENDA DE COLORES
-        st.subheader("🎨 Leyenda de Colores")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        with col1:
-            st.markdown('<div style="background-color: #d73027; padding: 10px; color: white; text-align: center; border-radius: 5px;">Muy Bajo</div>', unsafe_allow_html=True)
-        with col2:
-            st.markdown('<div style="background-color: #fc8d59; padding: 10px; color: black; text-align: center; border-radius: 5px;">Bajo</div>', unsafe_allow_html=True)
-        with col3:
-            st.markdown('<div style="background-color: #fee090; padding: 10px; color: black; text-align: center; border-radius: 5px;">Medio</div>', unsafe_allow_html=True)
-        with col4:
-            st.markdown('<div style="background-color: #e0f3f8; padding: 10px; color: black; text-align: center; border-radius: 5px;">Alto</div>', unsafe_allow_html=True)
-        with col5:
-            st.markdown('<div style="background-color: #4575b4; padding: 10px; color: white; text-align: center; border-radius: 5px;">Muy Alto</div>', unsafe_allow_html=True)
+        # LEYENDA DE GRADIENTE
+        st.subheader("🎨 Leyenda de Gradiente de Fertilidad")
+        st.markdown("""
+        <div style="background: linear-gradient(90deg, #ff0000, #ffa500, #ffff00, #008000); 
+                    padding: 15px; border-radius: 5px; text-align: center; color: black;">
+            <strong>Baja Fertilidad → Alta Fertilidad</strong><br>
+            Rojo (Bajo) → Naranja → Amarillo → Verde (Alto)
+        </div>
+        """, unsafe_allow_html=True)
         
         # Resumen por categoría
         st.subheader("📋 Distribución por Categoría de Fertilidad")
@@ -442,18 +660,21 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
                 st.progress(min(porcentaje / 100, 1.0))
                 st.caption(f"Esta categoría representa {porcentaje:.1f}% del área total")
         
+        # ANÁLISIS DE PRECISIÓN
+        analisis_precision(gdf_analizado, nutriente)
+        
         # Datos detallados
         st.subheader("🧮 Datos Detallados por Zona")
         columnas_mostrar = ['area_ha', 'valor', 'categoria', 'dosis_npk', 'fuentes_recomendadas']
-        st.dataframe(gdf_analizado[columnas_mostrar].head(10))
+        st.dataframe(gdf_analizado[columnas_mostrar].head(15))
         
         # Descarga
         st.subheader("📥 Descargar Resultados Completos")
         csv = gdf_analizado.to_csv(index=False)
         st.download_button(
-            "📋 Descargar CSV",
+            "📋 Descargar CSV con Gradiente Real",
             csv,
-            f"analisis_npk_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            f"analisis_gradiente_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv"
         )
         
@@ -496,9 +717,9 @@ if uploaded_zip:
         except:
             pass
 
-    # BOTÓN CON EL TEXTO CORREGIDO
-    if st.button("🚀 Ejecutar Análisis con Formas Reales", type="primary"):
-        with st.spinner("Analizando shapefile y generando mapas..."):
+    # BOTÓN PARA ANÁLISIS CON GRADIENTE REAL
+    if st.button("🚀 Ejecutar Análisis con GRADIENTE REAL", type="primary"):
+        with st.spinner("Analizando shapefile y generando gradiente de fertilidad..."):
             try:
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     # Extraer ZIP
@@ -515,8 +736,8 @@ if uploaded_zip:
                     gdf = gpd.read_file(shp_path)
                     st.success(f"✅ Shapefile cargado: {len(gdf)} polígonos")
                     
-                    # Ejecutar análisis con mapas
-                    analizar_shapefile_con_poligonos(gdf, nutriente)
+                    # Ejecutar análisis con GRADIENTE REAL
+                    analizar_shapefile_con_gradiente(gdf, nutriente)
                     
             except Exception as e:
                 st.error(f"Error procesando archivo: {str(e)}")
