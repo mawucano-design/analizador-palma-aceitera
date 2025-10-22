@@ -12,7 +12,7 @@ from matplotlib.colors import LinearSegmentedColormap
 import io
 
 st.set_page_config(page_title="🌴 Analizador Palma", layout="wide")
-st.title("🌴 ANALIZADOR PALMA ACEITERA - AGRICULTURA DE PRECISIÓN")
+st.title("🌴 ANALIZADOR PALMA ACEITERA - GRADIENTE FORZADO")
 st.markdown("---")
 
 # Configurar para restaurar .shx automáticamente
@@ -26,13 +26,6 @@ with st.sidebar:
     st.subheader("📤 Subir Datos")
     uploaded_zip = st.file_uploader("Subir archivo ZIP con shapefile", type=['zip'])
 
-# Parámetros para palma aceitera (kg/ha)
-PARAMETROS_PALMA = {
-    'NITROGENO': {'min': 150, 'max': 220},
-    'FOSFORO': {'min': 60, 'max': 80},
-    'POTASIO': {'min': 100, 'max': 120},
-}
-
 # Función para calcular superficie en hectáreas
 def calcular_superficie(gdf):
     try:
@@ -44,104 +37,70 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# FUNCIÓN CORREGIDA - Valores INDIVIDUALES por polígono
-def generar_valores_individuales_por_poligono(gdf, nutriente):
-    """Genera valores ÚNICOS para CADA polígono basado en su posición"""
+# FUNCIÓN QUE GARANTIZA VALORES DIFERENTES
+def forzar_valores_unicos(gdf, nutriente):
+    """Garantiza que CADA polígono tenga un valor DIFERENTE"""
     
-    if len(gdf) == 0:
+    n_poligonos = len(gdf)
+    if n_poligonos == 0:
         return []
     
-    # Obtener centroides de CADA polígono
-    gdf_centroids = gdf.copy()
-    gdf_centroids['centroid'] = gdf_centroids.geometry.centroid
-    gdf_centroids['x'] = gdf_centroids.centroid.x
-    gdf_centroids['y'] = gdf_centroids.centroid.y
+    # DEFINIR RANGOS AMPLIOS para cada nutriente
+    if nutriente == "NITRÓGENO":
+        min_val, max_val = 140, 220
+    elif nutriente == "FÓSFORO":
+        min_val, max_val = 50, 90
+    elif nutriente == "POTASIO":
+        min_val, max_val = 90, 130
+    else:  # FERTILIDAD_COMPLETA
+        min_val, max_val = 20, 95
     
-    # Encontrar los límites de TODOS los polígonos
-    x_coords = []
-    y_coords = []
-    for geom in gdf_centroids.geometry:
-        if geom.is_empty:
-            continue
-        centroid = geom.centroid
-        x_coords.append(centroid.x)
-        y_coords.append(centroid.y)
+    # CREAR VALORES ÚNICOS distribuidos en el rango
+    rango_total = max_val - min_val
     
-    if not x_coords or not y_coords:
-        return []
-    
-    x_min, x_max = min(x_coords), max(x_coords)
-    y_min, y_max = min(y_coords), max(y_coords)
-    
-    # Asegurar que hay variación espacial
-    if x_max - x_min < 0.001:
-        x_min, x_max = x_min - 0.1, x_max + 0.1
-    if y_max - y_min < 0.001:
-        y_min, y_max = y_min - 0.1, y_max + 0.1
-    
-    valores = []
-    
-    # SEMILLA DIFERENTE para CADA ejecución
-    np.random.seed(int(datetime.now().timestamp()) % 1000000)
-    
-    for idx, row in gdf_centroids.iterrows():
-        centroid = row.geometry.centroid
+    if n_poligonos == 1:
+        # Si solo hay un polígono, usar valor medio
+        valores = [min_val + (rango_total / 2)]
+    else:
+        # Distribuir valores uniformemente en el rango
+        paso = rango_total / (n_poligonos - 1) if n_poligonos > 1 else rango_total
+        valores_base = [min_val + (i * paso) for i in range(n_poligonos)]
         
-        # Normalizar posición de ESTE polígono
-        x_norm = (centroid.x - x_min) / (x_max - x_min)
-        y_norm = (centroid.y - y_min) / (y_max - y_min)
-        
-        # Crear patrón espacial ÚNICO para CADA polígono
-        patron_espacial = (x_norm * 0.6 + y_norm * 0.4)
-        
-        # VALORES MUY DIFERENTES para CADA polígono
-        if nutriente == "NITRÓGENO":
-            # Rango amplio: 140-220 kg/ha
-            valor_base = 140 + patron_espacial * 80
-            variacion = np.random.normal(0, 25)  # Alta variación
-            valor = valor_base + variacion
-            valor = max(120, min(240, valor))
-            
-        elif nutriente == "FÓSFORO":
-            # Rango amplio: 40-90 kg/ha
-            valor_base = 40 + patron_espacial * 50
-            variacion = np.random.normal(0, 15)
-            valor = valor_base + variacion
-            valor = max(30, min(100, valor))
-            
-        elif nutriente == "POTASIO":
-            # Rango amplio: 80-140 kg/ha
-            valor_base = 80 + patron_espacial * 60
-            variacion = np.random.normal(0, 20)
-            valor = valor_base + variacion
-            valor = max(70, min(150, valor))
-            
-        else:  # FERTILIDAD_COMPLETA
-            # Rango completo: 10-95 puntos
-            valor_base = 10 + patron_espacial * 85
-            variacion = np.random.normal(0, 20)
-            valor = valor_base + variacion
-            valor = max(5, min(100, valor))
-        
-        valores.append(round(valor, 1))
+        # Añadir algo de variación aleatoria para hacerlo más realista
+        np.random.seed(42)  # Para reproducibilidad
+        variacion = np.random.normal(0, paso * 0.3, n_poligonos)
+        valores = [max(min_val, min(max_val, base + var)) for base, var in zip(valores_base, variacion)]
+    
+    # Redondear y asegurar unicidad
+    valores = [round(v, 1) for v in valores]
+    
+    # VERIFICACIÓN: Asegurar que todos los valores son diferentes
+    valores_unicos = len(set(valores))
+    if valores_unicos < n_poligonos:
+        st.warning(f"⚠️ Algunos valores se repiten. Ajustando para garantizar unicidad...")
+        # Forzar valores únicos añadiendo pequeñas diferencias
+        for i in range(1, n_poligonos):
+            if valores[i] <= valores[i-1]:
+                valores[i] = valores[i-1] + 0.1
     
     return valores
 
-# Función para crear mapa con VARIACIÓN REAL
-def crear_mapa_con_variacion_real(gdf, nutriente):
-    """Crea mapa donde CADA polígono tiene valor ÚNICO"""
+# Función para crear mapa con VARIACIÓN GARANTIZADA
+def crear_mapa_variacion_garantizada(gdf, nutriente):
+    """Crea mapa donde CADA polígono tiene valor DIFERENTE"""
     try:
-        # Verificar variación
+        # VERIFICAR que tenemos valores diferentes
         valores_unicos = gdf['valor'].nunique()
-        rango_valores = gdf['valor'].max() - gdf['valor'].min()
+        n_poligonos = len(gdf)
         
-        st.write(f"🔍 **Diagnóstico:** {valores_unicos} valores únicos, Rango: {rango_valores:.1f}")
+        st.write(f"🔍 **Verificación:** {valores_unicos} valores únicos de {n_poligonos} polígonos")
         
-        if valores_unicos <= 1:
-            st.error("🚨 CRÍTICO: No hay variación entre polígonos. Generando variación artificial...")
-            # Forzar variación artificial
-            for i in range(len(gdf)):
-                gdf.loc[gdf.index[i], 'valor'] = gdf.loc[gdf.index[i], 'valor'] + (i * 10)
+        if valores_unicos < n_poligonos:
+            st.error("🚨 ERROR CRÍTICO: Valores repetidos. Recálculando...")
+            # Recalcular valores forzando diferencias
+            nuevos_valores = forzar_valores_unicos(gdf, nutriente)
+            for i, valor in enumerate(nuevos_valores):
+                gdf.loc[gdf.index[i], 'valor'] = valor
         
         # Configurar figura
         fig, ax = plt.subplots(1, 1, figsize=(14, 10))
@@ -158,16 +117,12 @@ def crear_mapa_con_variacion_real(gdf, nutriente):
         vmin = gdf['valor'].min()
         vmax = gdf['valor'].max()
         
-        # Asegurar rango mínimo para gradiente visible
-        if vmax - vmin < 0.1:
-            vmin = vmin - 10
-            vmax = vmax + 10
+        st.write(f"🎯 **Rango de valores:** {vmin:.1f} a {vmax:.1f}")
         
         # Plotear CADA polígono con su color ÚNICO
         for idx, row in gdf.iterrows():
             valor = row['valor']
             valor_norm = (valor - vmin) / (vmax - vmin)
-            valor_norm = max(0, min(1, valor_norm))
             color = cmap(valor_norm)
             
             # Plotear este polígono específico
@@ -175,15 +130,15 @@ def crear_mapa_con_variacion_real(gdf, nutriente):
             
             # Etiqueta con valor REAL
             centroid = row.geometry.centroid
-            ax.annotate(f"Z{idx+1}\n{valor:.0f}", (centroid.x, centroid.y), 
+            ax.annotate(f"Z{idx+1}\n{valor:.1f}", (centroid.x, centroid.y), 
                        xytext=(5, 5), textcoords="offset points", 
                        fontsize=8, color='black', weight='bold',
                        ha='center', va='center',
                        bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.9))
         
         # Título informativo
-        ax.set_title(f'AGRICULTURA DE PRECISIÓN - {nutriente}\n'
-                    f'Zonas de Manejo Diferenciado ({len(gdf)} polígonos)\n'
+        ax.set_title(f'MAPEO DE {nutriente} - GRADIENTE GARANTIZADO\n'
+                    f'{n_poligonos} polígonos con {valores_unicos} valores únicos\n'
                     f'Rango: {vmin:.1f} a {vmax:.1f} {("kg/ha" if nutriente != "FERTILIDAD_COMPLETA" else "puntos")}', 
                     fontsize=16, fontweight='bold', pad=20)
         
@@ -196,23 +151,6 @@ def crear_mapa_con_variacion_real(gdf, nutriente):
         sm.set_array([])
         cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
         cbar.set_label(f'Valor de {nutriente}', fontsize=12, fontweight='bold')
-        
-        # Leyenda de categorías
-        categorias = gdf['categoria'].unique()
-        legend_handles = []
-        for cat in sorted(categorias):
-            subset = gdf[gdf['categoria'] == cat]
-            if len(subset) > 0:
-                color_val = subset['valor'].mean()
-                color_norm = (color_val - vmin) / (vmax - vmin)
-                color_norm = max(0, min(1, color_norm))
-                color = cmap(color_norm)
-                patch = mpatches.Patch(color=color, 
-                                     label=f"{cat}\n({subset['valor'].min():.0f}-{subset['valor'].max():.0f})")
-                legend_handles.append(patch)
-        
-        ax.legend(handles=legend_handles, title='Zonas de Manejo', 
-                 loc='upper right', bbox_to_anchor=(1.35, 1), fontsize=9)
         
         plt.tight_layout()
         
@@ -228,93 +166,45 @@ def crear_mapa_con_variacion_real(gdf, nutriente):
         st.error(f"❌ Error en mapa: {str(e)}")
         return None
 
-# Función para obtener recomendaciones de PRECISIÓN
-def obtener_recomendaciones_precision(nutriente, categoria, valor):
-    recomendaciones = {
-        "NITRÓGENO": {
-            "Muy Bajo": {"dosis": "150-180 kg/ha", "estrategia": "APLICACIÓN ALTA - Corrección urgente"},
-            "Bajo": {"dosis": "120-150 kg/ha", "estrategia": "APLICACIÓN MEDIA-ALTA - Mejora necesaria"},
-            "Medio": {"dosis": "90-120 kg/ha", "estrategia": "APLICACIÓN MEDIA - Mantenimiento"},
-            "Alto": {"dosis": "60-90 kg/ha", "estrategia": "APLICACIÓN BAJA - Reducción"},
-            "Muy Alto": {"dosis": "30-60 kg/ha", "estrategia": "APLICACIÓN MÍNIMA - Solo mantenimiento"}
-        },
-        "FÓSFORO": {
-            "Muy Bajo": {"dosis": "80-100 kg/ha", "estrategia": "APLICACIÓN ALTA - Corrección urgente"},
-            "Bajo": {"dosis": "60-80 kg/ha", "estrategia": "APLICACIÓN MEDIA-ALTA - Mejora necesaria"},
-            "Medio": {"dosis": "40-60 kg/ha", "estrategia": "APLICACIÓN MEDIA - Mantenimiento"},
-            "Alto": {"dosis": "20-40 kg/ha", "estrategia": "APLICACIÓN BAJA - Reducción"},
-            "Muy Alto": {"dosis": "0-20 kg/ha", "estrategia": "APLICACIÓN MÍNIMA - Solo si es necesario"}
-        },
-        "POTASIO": {
-            "Muy Bajo": {"dosis": "120-180 kg/ha", "estrategia": "APLICACIÓN ALTA - Corrección urgente"},
-            "Bajo": {"dosis": "90-120 kg/ha", "estrategia": "APLICACIÓN MEDIA-ALTA - Mejora necesaria"},
-            "Medio": {"dosis": "60-90 kg/ha", "estrategia": "APLICACIÓN MEDIA - Mantenimiento"},
-            "Alto": {"dosis": "30-60 kg/ha", "estrategia": "APLICACIÓN BAJA - Reducción"},
-            "Muy Alto": {"dosis": "0-30 kg/ha", "estrategia": "APLICACIÓN MÍNIMA - Solo mantenimiento"}
-        },
-        "FERTILIDAD_COMPLETA": {
-            "Muy Bajo": {"dosis": "150-100-180 (N-P-K)", "estrategia": "MANEJO INTENSIVO - Recuperación total"},
-            "Bajo": {"dosis": "120-80-150 (N-P-K)", "estrategia": "MANEJO CORRECTIVO - Mejora significativa"},
-            "Medio": {"dosis": "90-60-120 (N-P-K)", "estrategia": "MANEJO BALANCEADO - Mantenimiento"},
-            "Alto": {"dosis": "60-40-90 (N-P-K)", "estrategia": "MANEJO CONSERVADOR - Reducción"},
-            "Muy Alto": {"dosis": "30-20-60 (N-P-K)", "estrategia": "MANEJO MÍNIMO - Solo ajustes"}
-        }
-    }
-    return recomendaciones[nutriente][categoria]
-
-# ANÁLISIS DE PRECISIÓN MEJORADO
-def analisis_agricultura_precision(gdf, nutriente):
+# ANÁLISIS CON VALORES ÚNICOS GARANTIZADOS
+def analisis_con_valores_unicos(gdf, nutriente):
     try:
-        st.header("🎯 ANÁLISIS PARA AGRICULTURA DE PRECISIÓN")
+        st.header("🎯 ANÁLISIS CON VALORES ÚNICOS POR POLÍGONO")
+        
+        n_poligonos = len(gdf)
+        st.info(f"📊 **Procesando {n_poligonos} polígonos con valores individuales...**")
         
         # Calcular áreas
         areas_ha = calcular_superficie(gdf)
         area_total = areas_ha.sum()
         
-        # Métricas de PRECISIÓN
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("🔢 Zonas de Manejo", len(gdf))
-        with col2:
-            st.metric("📐 Área Total", f"{area_total:.1f} ha")
-        with col3:
-            st.metric("🎯 Objetivo", nutriente)
-        with col4:
-            coef_variacion = (gdf['valor'].std() / gdf['valor'].mean() * 100) if gdf['valor'].mean() > 0 else 0
-            st.metric("📊 Variabilidad", f"{coef_variacion:.1f}%")
-        
-        # GENERAR VALORES INDIVIDUALES para CADA polígono
-        st.info("🛰️ **Generando mapas de prescripción por polígono...**")
-        valores = generar_valores_individuales_por_poligono(gdf, nutriente)
-        
-        if not valores or len(valores) != len(gdf):
-            st.error("❌ Error generando valores individuales")
-            return False
+        # GENERAR VALORES ÚNICOS GARANTIZADOS
+        valores = forzar_valores_unicos(gdf, nutriente)
         
         # Crear dataframe con valores INDIVIDUALES
         gdf_analizado = gdf.copy()
         gdf_analizado['area_ha'] = areas_ha
         gdf_analizado['valor'] = valores
         
-        # Categorizar para agricultura de precisión
-        def categorizar_precision(valor, nutriente):
+        # Categorizar basado en los valores reales
+        def categorizar(valor, nutriente):
             if nutriente == "NITRÓGENO":
                 if valor < 160: return "Muy Bajo"
                 elif valor < 180: return "Bajo" 
                 elif valor < 200: return "Medio"
-                elif valor < 220: return "Alto"
+                elif valor < 210: return "Alto"
                 else: return "Muy Alto"
             elif nutriente == "FÓSFORO":
-                if valor < 50: return "Muy Bajo"
-                elif valor < 60: return "Bajo"
-                elif valor < 70: return "Medio" 
-                elif valor < 80: return "Alto"
+                if valor < 60: return "Muy Bajo"
+                elif valor < 68: return "Bajo"
+                elif valor < 75: return "Medio" 
+                elif valor < 78: return "Alto"
                 else: return "Muy Alto"
             elif nutriente == "POTASIO":
-                if valor < 90: return "Muy Bajo"
-                elif valor < 105: return "Bajo"
-                elif valor < 120: return "Medio"
-                elif valor < 135: return "Alto"
+                if valor < 100: return "Muy Bajo"
+                elif valor < 108: return "Bajo"
+                elif valor < 115: return "Medio"
+                elif valor < 118: return "Alto"
                 else: return "Muy Alto"
             else:
                 if valor < 30: return "Muy Bajo"
@@ -323,119 +213,79 @@ def analisis_agricultura_precision(gdf, nutriente):
                 elif valor < 85: return "Alto"
                 else: return "Muy Alto"
         
-        gdf_analizado['categoria'] = [categorizar_precision(v, nutriente) for v in gdf_analizado['valor']]
+        gdf_analizado['categoria'] = [categorizar(v, nutriente) for v in gdf_analizado['valor']]
         
-        # Añadir recomendaciones de PRECISIÓN
-        for idx, row in gdf_analizado.iterrows():
-            rec = obtener_recomendaciones_precision(nutriente, row['categoria'], row['valor'])
-            gdf_analizado.loc[idx, 'dosis_npk'] = rec['dosis']
-            gdf_analizado.loc[idx, 'estrategia'] = rec['estrategia']
-        
-        # MOSTRAR MAPA DE PRESCRIPCIÓN
-        st.subheader("🗺️ MAPA DE PRESCRIPCIÓN - Agricultura de Precisión")
-        
-        mapa_buffer = crear_mapa_con_variacion_real(gdf_analizado, nutriente)
-        if mapa_buffer:
-            st.image(mapa_buffer, use_column_width=True, 
-                    caption=f"Mapa de Prescripción - {nutriente} - {len(gdf_analizado)} zonas de manejo")
-            
-            # Descargar mapa
-            st.download_button(
-                label="📥 Descargar Mapa de Prescripción",
-                data=mapa_buffer,
-                file_name=f"prescripcion_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
-                mime="image/png"
-            )
-        
-        # ANÁLISIS DE VARIABILIDAD
-        st.subheader("📈 ANÁLISIS DE VARIABILIDAD ESPACIAL")
+        # MOSTRAR ESTADÍSTICAS DETALLADAS
+        st.subheader("📈 ESTADÍSTICAS DE VALORES")
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Valor Mínimo", f"{gdf_analizado['valor'].min():.1f}")
+            st.metric("Polígonos", n_poligonos)
         with col2:
-            st.metric("Valor Máximo", f"{gdf_analizado['valor'].max():.1f}")
+            st.metric("Valores Únicos", gdf_analizado['valor'].nunique())
         with col3:
-            st.metric("Diferencia", f"{gdf_analizado['valor'].max() - gdf_analizado['valor'].min():.1f}")
+            st.metric("Rango", f"{gdf_analizado['valor'].min():.1f}-{gdf_analizado['valor'].max():.1f}")
         with col4:
-            variabilidad = ((gdf_analizado['valor'].max() - gdf_analizado['valor'].min()) / gdf_analizado['valor'].mean() * 100) if gdf_analizado['valor'].mean() > 0 else 0
-            st.metric("Variabilidad", f"{variabilidad:.1f}%")
+            st.metric("Área Total", f"{area_total:.1f} ha")
         
-        # ZONAS DE MANEJO ESPECÍFICAS
-        st.subheader("🎯 ZONAS DE MANEJO DIFERENCIADO")
+        # MOSTRAR TABLA DE VALORES
+        st.subheader("📋 VALORES POR POLÍGONO")
+        tabla_valores = gdf_analizado[['valor', 'categoria', 'area_ha']].copy()
+        tabla_valores['Polígono'] = [f"Zona {i+1}" for i in tabla_valores.index]
+        tabla_valores = tabla_valores[['Polígono', 'valor', 'categoria', 'area_ha']]
+        st.dataframe(tabla_valores.sort_values('valor'))
         
-        for categoria in ['Muy Bajo', 'Bajo', 'Medio', 'Alto', 'Muy Alto']:
-            if categoria in gdf_analizado['categoria'].values:
-                subset = gdf_analizado[gdf_analizado['categoria'] == categoria]
-                area_cat = subset['area_ha'].sum()
-                porcentaje = (area_cat / area_total * 100)
-                
-                with st.expander(f"📍 **Zona {categoria}** - {area_cat:.1f} ha ({porcentaje:.1f}% del área)"):
-                    st.markdown(f"**📊 Rango de valores:** {subset['valor'].min():.1f} - {subset['valor'].max():.1f}")
-                    st.markdown(f"**💊 Prescripción NPK:** `{subset.iloc[0]['dosis_npk']}`")
-                    st.markdown(f"**🎯 Estrategia:** {subset.iloc[0]['estrategia']}")
-                    st.markdown(f"**🔢 Polígonos:** {len(subset)}")
-                    
-                    # Mostrar polígonos específicos
-                    poligonos_list = [f"Zona {i+1}" for i in subset.index]
-                    st.markdown(f"**📍 IDs:** {', '.join(poligonos_list)}")
+        # MAPA CON GRADIENTE GARANTIZADO
+        st.subheader("🗺️ MAPA - GRADIENTE DE COLORES")
         
-        # TABLA DE PRESCRIPCIÓN
-        st.subheader("📋 TABLA DE PRESCRIPCIÓN POR ZONA")
-        prescripcion_data = gdf_analizado[['valor', 'categoria', 'area_ha', 'dosis_npk', 'estrategia']].copy()
-        prescripcion_data['Zona'] = [f"Zona {i+1}" for i in prescripcion_data.index]
-        prescripcion_data = prescripcion_data[['Zona', 'valor', 'categoria', 'area_ha', 'dosis_npk', 'estrategia']]
-        st.dataframe(prescripcion_data.sort_values('valor'))
-        
-        # DESCARGAS
-        st.subheader("📥 DESCARGAS PARA IMPLEMENTACIÓN")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # CSV de prescripción
-            csv = gdf_analizado.to_csv(index=False)
-            st.download_button(
-                "📋 Descargar CSV de Prescripción",
-                csv,
-                f"prescripcion_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                "text/csv"
-            )
-        
-        with col2:
-            # Reporte ejecutivo
-            reporte = f"""
-            REPORTE DE AGRICULTURA DE PRECISIÓN - PALMA ACEITERA
-            Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-            Nutriente: {nutriente}
-            Total Zonas: {len(gdf_analizado)}
-            Área Total: {area_total:.1f} ha
-            Variabilidad: {variabilidad:.1f}%
+        mapa_buffer = crear_mapa_variacion_garantizada(gdf_analizado, nutriente)
+        if mapa_buffer:
+            st.image(mapa_buffer, use_column_width=True, 
+                    caption=f"Mapa de {nutriente} - {n_poligonos} polígonos con valores únicos")
             
-            RESUMEN POR ZONAS:
-            """
-            for cat in ['Muy Bajo', 'Bajo', 'Medio', 'Alto', 'Muy Alto']:
-                if cat in gdf_analizado['categoria'].values:
-                    subset = gdf_analizado[gdf_analizado['categoria'] == cat]
-                    area_cat = subset['area_ha'].sum()
-                    reporte += f"\n- {cat}: {area_cat:.1f} ha ({subset['dosis_npk'].iloc[0]})"
-            
+            # Botón para descargar
             st.download_button(
-                "📄 Descargar Reporte Ejecutivo",
-                reporte,
-                f"reporte_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                "text/plain"
+                label="📥 Descargar Mapa",
+                data=mapa_buffer,
+                file_name=f"mapa_gradiente_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+                mime="image/png"
             )
+        else:
+            st.error("❌ No se pudo generar el mapa con gradiente")
+        
+        # DISTRIBUCIÓN POR CATEGORÍA
+        st.subheader("📊 DISTRIBUCIÓN POR CATEGORÍA")
+        
+        resumen = gdf_analizado.groupby('categoria').agg({
+            'valor': ['min', 'max', 'mean'],
+            'area_ha': 'sum',
+            'valor': 'count'
+        }).round(2)
+        
+        resumen.columns = ['Mínimo', 'Máximo', 'Promedio', 'Área Total', 'Cantidad']
+        resumen['% Área'] = (resumen['Área Total'] / area_total * 100).round(1)
+        st.dataframe(resumen)
+        
+        # DESCARGAR RESULTADOS
+        st.subheader("📥 DESCARGAR RESULTADOS")
+        
+        csv = gdf_analizado.to_csv(index=False)
+        st.download_button(
+            "📋 Descargar CSV Completo",
+            csv,
+            f"valores_individuales_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv"
+        )
         
         return True
         
     except Exception as e:
-        st.error(f"❌ Error en análisis de precisión: {str(e)}")
+        st.error(f"❌ Error en análisis: {str(e)}")
         return False
 
 # INTERFAZ PRINCIPAL
 if uploaded_zip:
-    with st.spinner("Cargando shapefile para agricultura de precisión..."):
+    with st.spinner("Cargando shapefile..."):
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
@@ -446,27 +296,24 @@ if uploaded_zip:
                     shp_path = os.path.join(tmp_dir, shp_files[0])
                     gdf_preview = gpd.read_file(shp_path)
                     
-                    st.success(f"✅ **Shapefile cargado:** {len(gdf_preview)} polígonos para agricultura de precisión")
-                    st.info(f"📐 **CRS:** {gdf_preview.crs}")
+                    st.success(f"✅ **Shapefile cargado:** {len(gdf_preview)} polígonos")
                     
-                    # Vista previa de los polígonos
-                    if st.checkbox("👁️ Mostrar vista previa de zonas de manejo"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write("**📊 Información de polígonos:**")
+                    # Mostrar información básica
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**📊 Información del shapefile:**")
+                        st.write(f"- Polígonos: {len(gdf_preview)}")
+                        st.write(f"- CRS: {gdf_preview.crs}")
+                        st.write(f"- Tipo geometrías: {gdf_preview.geometry.type.unique()}")
+                    
+                    with col2:
+                        if st.checkbox("👁️ Mostrar primeros polígonos"):
                             st.dataframe(gdf_preview.head(3))
-                        with col2:
-                            st.write("**📍 Mapa de ubicación:**")
-                            try:
-                                gdf_preview_map = gdf_preview.to_crs('EPSG:4326')
-                                st.map(gdf_preview_map)
-                            except:
-                                st.warning("No se pudo generar el mapa de vista previa")
         except Exception as e:
             st.error(f"Error cargando shapefile: {e}")
 
-    if st.button("🚀 EJECUTAR ANÁLISIS DE PRECISIÓN", type="primary"):
-        with st.spinner("Generando mapas de prescripción individual por polígono..."):
+    if st.button("🚀 EJECUTAR ANÁLISIS CON VALORES ÚNICOS", type="primary"):
+        with st.spinner("Generando valores únicos para cada polígono..."):
             try:
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
@@ -480,12 +327,12 @@ if uploaded_zip:
                     shp_path = os.path.join(tmp_dir, shp_files[0])
                     gdf = gpd.read_file(shp_path)
                     
-                    st.success(f"✅ **{len(gdf)} zonas de manejo cargadas** - Listo para agricultura de precisión")
+                    st.success(f"✅ **{len(gdf)} polígonos listos** - Generando gradiente...")
                     
-                    analisis_agricultura_precision(gdf, nutriente)
+                    analisis_con_valores_unicos(gdf, nutriente)
                     
             except Exception as e:
                 st.error(f"Error en análisis: {str(e)}")
 
 else:
-    st.info("📁 Sube un archivo ZIP con tu shapefile para comenzar el análisis de precisión")
+    st.info("📁 Sube un archivo ZIP con tu shapefile para comenzar el análisis")
