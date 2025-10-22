@@ -7,3 +7,5 @@ streamlit-folium>=0.15.0
 shapely>=2.0.0
 fiona>=1.9.0
 pyproj>=3.6.0
+libpysal>=4.9.0
+rtree>=1.0.1
