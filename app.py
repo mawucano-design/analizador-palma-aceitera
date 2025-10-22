@@ -233,14 +233,13 @@ def analisis_con_valores_unicos(gdf, nutriente):
         tabla_valores = gdf_analizado[['valor', 'categoria', 'area_ha']].copy()
         tabla_valores['Polígono'] = [f"Zona {i+1}" for i in tabla_valores.index]
         tabla_valores = tabla_valores[['Polígono', 'valor', 'categoria', 'area_ha']]
-        st.dataframe(tabla_valores.sort_values('valor'))
+        st.dataframe(tabla_valores.sort_values('valor'), use_container_width=True)
         
         # MAPA CON GRADIENTE GARANTIZADO
         st.subheader("🗺️ MAPA - GRADIENTE DE COLORES")
         
         mapa_buffer = crear_mapa_variacion_garantizada(gdf_analizado, nutriente)
         if mapa_buffer:
-            # CORREGIDO: usar use_container_width en lugar de use_column_width
             st.image(mapa_buffer, use_container_width=True, 
                     caption=f"Mapa de {nutriente} - {n_poligonos} polígonos con valores únicos")
             
@@ -254,20 +253,48 @@ def analisis_con_valores_unicos(gdf, nutriente):
         else:
             st.error("❌ No se pudo generar el mapa con gradiente")
         
-        # DISTRIBUCIÓN POR CATEGORÍA
+        # DISTRIBUCIÓN POR CATEGORÍA - CORREGIDO
         st.subheader("📊 DISTRIBUCIÓN POR CATEGORÍA")
         
+        # FORMA CORREGIDA de hacer el groupby
         resumen = gdf_analizado.groupby('categoria').agg({
             'valor': ['min', 'max', 'mean'],
-            'area_ha': 'sum',
-            'valor': 'count'
+            'area_ha': 'sum'
         }).round(2)
         
-        resumen.columns = ['Mínimo', 'Máximo', 'Promedio', 'Área Total', 'Cantidad']
-        resumen['% Área'] = (resumen['Área Total'] / area_total * 100).round(1)
+        # Añadir columna de cantidad de polígonos
+        resumen['Cantidad'] = gdf_analizado.groupby('categoria').size()
         
-        # CORREGIDO: usar use_container_width en la tabla
+        # Renombrar columnas correctamente
+        resumen.columns = ['Valor_Mín', 'Valor_Máx', 'Valor_Prom', 'Área_Total', 'Cantidad']
+        
+        # Calcular porcentaje del área
+        resumen['%_Área'] = (resumen['Área_Total'] / area_total * 100).round(1)
+        
+        # Reset index para mostrar mejor
+        resumen = resumen.reset_index()
+        
         st.dataframe(resumen, use_container_width=True)
+        
+        # MOSTRAR GRÁFICO DE DISTRIBUCIÓN
+        st.subheader("📊 GRÁFICO DE DISTRIBUCIÓN")
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        
+        # Gráfico 1: Distribución de valores
+        ax1.hist(gdf_analizado['valor'], bins=10, alpha=0.7, color='skyblue', edgecolor='black')
+        ax1.set_xlabel(f'Valor de {nutriente}')
+        ax1.set_ylabel('Frecuencia')
+        ax1.set_title('Distribución de Valores')
+        ax1.grid(True, alpha=0.3)
+        
+        # Gráfico 2: Área por categoría
+        areas_por_categoria = gdf_analizado.groupby('categoria')['area_ha'].sum()
+        ax2.pie(areas_por_categoria.values, labels=areas_por_categoria.index, autopct='%1.1f%%', startangle=90)
+        ax2.set_title('Distribución de Área por Categoría')
+        
+        plt.tight_layout()
+        st.pyplot(fig)
         
         # DESCARGAR RESULTADOS
         st.subheader("📥 DESCARGAR RESULTADOS")
@@ -284,6 +311,8 @@ def analisis_con_valores_unicos(gdf, nutriente):
         
     except Exception as e:
         st.error(f"❌ Error en análisis: {str(e)}")
+        import traceback
+        st.error(f"Detalle del error: {traceback.format_exc()}")
         return False
 
 # INTERFAZ PRINCIPAL
@@ -311,7 +340,6 @@ if uploaded_zip:
                     
                     with col2:
                         if st.checkbox("👁️ Mostrar primeros polígonos"):
-                            # CORREGIDO: usar use_container_width en la tabla
                             st.dataframe(gdf_preview.head(3), use_container_width=True)
         except Exception as e:
             st.error(f"Error cargando shapefile: {e}")
