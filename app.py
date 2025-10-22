@@ -35,9 +35,9 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# Función para crear mapa con polígonos usando PyDeck - VERSIÓN CORREGIDA
+# Función para crear mapa con polígonos usando PyDeck - VERSIÓN SIMPLIFICADA
 def crear_mapa_poligonos_pydeck(gdf, nutriente):
-    """Crea mapa interactivo con polígonos completos usando PyDeck"""
+    """Crea mapa interactivo con polígonos completos - VERSIÓN SIMPLIFICADA"""
     try:
         # Convertir a WGS84 para el mapa
         if gdf.crs is None or str(gdf.crs) != 'EPSG:4326':
@@ -45,86 +45,59 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         else:
             gdf_map = gdf.copy()
         
-        # Preparar datos para PyDeck
+        # Método SIMPLE: usar los bounds para crear rectángulos
         features = []
         for idx, row in gdf_map.iterrows():
-            # Extraer coordenadas del polígono de forma SEGURA
-            coords = []
-            if hasattr(row.geometry, 'exterior'):
-                # Polígono simple
-                exterior_coords = list(row.geometry.exterior.coords)
-                coords = [[lon, lat] for lon, lat in exterior_coords]
-            elif hasattr(row.geometry, 'geoms'):
-                # MultiPolígono
-                for geom in row.geometry.geoms:
-                    if hasattr(geom, 'exterior'):
-                        exterior_coords = list(geom.exterior.coords)
-                        polygon_coords = [[lon, lat] for lon, lat in exterior_coords]
-                        coords.append(polygon_coords)
-            else:
-                # Intentar extraer coordenadas directamente
-                try:
-                    if hasattr(row.geometry, '__geo_interface__'):
-                        geo_interface = row.geometry.__geo_interface__
-                        if geo_interface['type'] == 'Polygon':
-                            coords = geo_interface['coordinates'][0]  # Solo el anillo exterior
-                except:
-                    # Fallback: usar bounds para un rectángulo aproximado
-                    bounds = row.geometry.bounds
-                    coords = [
-                        [bounds[0], bounds[1]],  # minx, miny
-                        [bounds[2], bounds[1]],  # maxx, miny
-                        [bounds[2], bounds[3]],  # maxx, maxy
-                        [bounds[0], bounds[3]],  # minx, maxy
-                        [bounds[0], bounds[1]]   # cerrar polígono
-                    ]
-            
-            # Si no hay coordenadas, saltar este polígono
-            if not coords:
+            try:
+                # Obtener los límites del polígono
+                bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+                
+                # Crear un rectángulo desde los bounds
+                coordinates = [
+                    [bounds[0], bounds[1]],  # Esquina inferior izquierda
+                    [bounds[2], bounds[1]],  # Esquina inferior derecha  
+                    [bounds[2], bounds[3]],  # Esquina superior derecha
+                    [bounds[0], bounds[3]],  # Esquina superior izquierda
+                    [bounds[0], bounds[1]]   # Cerrar el polígono
+                ]
+                
+                # Definir color según categoría
+                color_map = {
+                    "Muy Bajo": [215, 48, 39, 160],    # Rojo
+                    "Bajo": [252, 141, 89, 160],       # Naranja
+                    "Medio": [254, 224, 144, 160],     # Amarillo
+                    "Alto": [224, 243, 248, 160],      # Azul claro
+                    "Muy Alto": [69, 117, 180, 160]    # Azul oscuro
+                }
+                
+                color = color_map.get(row['categoria'], [51, 136, 255, 160])
+                
+                features.append({
+                    'polygon_id': idx,
+                    'coordinates': [coordinates],  # Notar la lista extra para PyDeck
+                    'color': color,
+                    'valor': float(row['valor']),
+                    'categoria': row['categoria'],
+                    'area_ha': float(row['area_ha']),
+                    'dosis_npk': row['dosis_npk']
+                })
+                
+            except Exception as poly_error:
+                st.warning(f"⚠️ No se pudo procesar el polígono {idx}: {str(poly_error)}")
                 continue
-            
-            # Definir color según categoría
-            color_map = {
-                "Muy Bajo": [215, 48, 39, 160],    # Rojo
-                "Bajo": [252, 141, 89, 160],       # Naranja
-                "Medio": [254, 224, 144, 160],     # Amarillo
-                "Alto": [224, 243, 248, 160],      # Azul claro
-                "Muy Alto": [69, 117, 180, 160]    # Azul oscuro
-            }
-            
-            color = color_map.get(row['categoria'], [51, 136, 255, 160])
-            
-            # Asegurarse de que las coordenadas estén en el formato correcto
-            if isinstance(coords[0], list) and isinstance(coords[0][0], list):
-                # Ya está en formato correcto [ [lon,lat], [lon,lat], ... ]
-                polygon_coords = coords
-            else:
-                # Convertir a formato correcto
-                polygon_coords = [coords]
-            
-            features.append({
-                'polygon_id': idx,
-                'coordinates': polygon_coords,
-                'color': color,
-                'valor': float(row['valor']),
-                'categoria': row['categoria'],
-                'area_ha': float(row['area_ha']),
-                'dosis_npk': row['dosis_npk']
-            })
         
-        # Si no hay features, mostrar error
         if not features:
-            st.warning("⚠️ No se pudieron extraer las geometrías para el mapa")
+            st.error("❌ No se pudieron crear features para el mapa")
             return None
-        
+            
         # Capa de polígonos
         polygon_layer = pdk.Layer(
             'PolygonLayer',
             features,
             get_polygon='coordinates',
             get_fill_color='color',
-            get_line_color=[0, 0, 0, 80],
-            get_line_width=2,
+            get_line_color=[0, 0, 0, 100],
+            get_line_width=1,
             pickable=True,
             auto_highlight=True,
             filled=True,
@@ -144,18 +117,15 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         # Tooltip
         tooltip = {
             "html": """
-            <b>Zona {polygon_id}</b><br/>
-            <b>Nutriente:</b> """ + nutriente + """<br/>
-            <b>Valor:</b> {valor} kg/ha<br/>
-            <b>Categoría:</b> {categoria}<br/>
-            <b>Área:</b> {area_ha:.1f} ha<br/>
-            <b>Dosis:</b> {dosis_npk}
-            """,
-            "style": {
-                "backgroundColor": "steelblue",
-                "color": "white",
-                "fontSize": "12px"
-            }
+            <div style="padding: 5px; background: white; border: 1px solid #ccc; border-radius: 5px;">
+                <b>Zona {polygon_id}</b><br/>
+                <b>Nutriente:</b> """ + nutriente + """<br/>
+                <b>Valor:</b> {valor} kg/ha<br/>
+                <b>Categoría:</b> {categoria}<br/>
+                <b>Área:</b> {area_ha:.1f} ha<br/>
+                <b>Dosis:</b> {dosis_npk}
+            </div>
+            """
         }
         
         # Crear mapa
@@ -169,18 +139,18 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         return mapa
         
     except Exception as e:
-        st.error(f"❌ Error creando mapa PyDeck: {str(e)}")
-        # Fallback a mapa simple
+        st.error(f"❌ Error en mapa PyDeck: {str(e)}")
+        # Fallback inmediato a mapa simple
         try:
-            st.info("🔄 Mostrando mapa básico como alternativa...")
+            st.info("🔄 Usando mapa básico de Streamlit...")
             gdf_map = gdf.to_crs('EPSG:4326')
             gdf_map['lon'] = gdf_map.geometry.centroid.x
             gdf_map['lat'] = gdf_map.geometry.centroid.y
             st.map(gdf_map[['lat', 'lon', 'valor']].rename(columns={'valor': 'size'}))
+            return None
         except:
-            st.error("No se pudo generar ningún tipo de mapa")
-        return None
-
+            st.error("❌ No se pudo generar ningún mapa")
+            return None
 # Función para obtener recomendaciones NPK completas
 def obtener_recomendaciones_npk(nutriente, categoria, valor):
     """Devuelve recomendaciones específicas de fertilización NPK"""
