@@ -46,23 +46,20 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
             gdf_map = gdf.copy()
         
         # Preparar datos para PyDeck
-        gdf_map['polygon_id'] = range(len(gdf_map))
-        
-        # Crear lista de polígonos para PyDeck
-        polygons_data = []
+        features = []
         for idx, row in gdf_map.iterrows():
             # Extraer coordenadas del polígono
             if hasattr(row.geometry, 'exterior'):
                 # Polígono simple
-                coords = [[[x, y] for x, y in row.geometry.exterior.coords]]
+                coords = [[x, y] for x, y in row.geometry.exterior.coords]
             else:
-                # MultiPolígono o geometría compleja
+                # Para geometrías más complejas
                 coords = []
                 if hasattr(row.geometry, 'geoms'):
                     for geom in row.geometry.geoms:
-                        coords.append([[x, y] for x, y in geom.exterior.coords])
+                        coords.extend([[x, y] for x, y in geom.exterior.coords])
                 else:
-                    coords = [[[x, y] for x, y in row.geometry.exterior.coords]]
+                    coords = [[x, y] for x, y in row.geometry.exterior.coords]
             
             # Definir color según categoría
             color_map = {
@@ -75,22 +72,28 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
             
             color = color_map.get(row['categoria'], [51, 136, 255, 160])
             
-            polygons_data.append({
-                'polygon_id': idx,
-                'coordinates': coords,
-                'color': color,
-                'valor': row['valor'],
-                'categoria': row['categoria'],
-                'area_ha': row['area_ha'],
-                'dosis_npk': row['dosis_npk']
+            features.append({
+                'type': 'Feature',
+                'geometry': {
+                    'type': 'Polygon',
+                    'coordinates': [coords]
+                },
+                'properties': {
+                    'id': idx,
+                    'valor': row['valor'],
+                    'categoria': row['categoria'],
+                    'area_ha': row['area_ha'],
+                    'dosis_npk': row['dosis_npk'],
+                    'color': color
+                }
             })
         
         # Capa de polígonos
         polygon_layer = pdk.Layer(
             'PolygonLayer',
-            polygons_data,
-            get_polygon='coordinates',
-            get_fill_color='color',
+            features,
+            get_polygon='geometry.coordinates',
+            get_fill_color='properties.color',
             get_line_color=[0, 0, 0, 80],
             get_line_width=2,
             pickable=True,
@@ -112,12 +115,12 @@ def crear_mapa_poligonos_pydeck(gdf, nutriente):
         # Tooltip
         tooltip = {
             "html": """
-            <b>Zona {polygon_id}</b><br/>
+            <b>Zona {properties.id}</b><br/>
             <b>Nutriente:</b> """ + nutriente + """<br/>
-            <b>Valor:</b> {valor} kg/ha<br/>
-            <b>Categoría:</b> {categoria}<br/>
-            <b>Área:</b> {area_ha:.1f} ha<br/>
-            <b>Dosis:</b> {dosis_npk}
+            <b>Valor:</b> {properties.valor} kg/ha<br/>
+            <b>Categoría:</b> {properties.categoria}<br/>
+            <b>Área:</b> {properties.area_ha:.1f} ha<br/>
+            <b>Dosis:</b> {properties.dosis_npk}
             """,
             "style": {
                 "backgroundColor": "steelblue",
@@ -327,6 +330,18 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
             gdf_analizado.loc[idx, 'aplicacion'] = rec['aplicacion']
             gdf_analizado.loc[idx, 'observaciones'] = rec['observaciones']
         
+        # Mostrar estadísticas
+        st.subheader("📈 Estadísticas del Análisis")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Promedio", f"{gdf_analizado['valor'].mean():.1f} kg/ha")
+        with col2:
+            st.metric("Máximo", f"{gdf_analizado['valor'].max():.1f} kg/ha")
+        with col3:
+            st.metric("Mínimo", f"{gdf_analizado['valor'].min():.1f} kg/ha")
+        with col4:
+            st.metric("Desviación", f"{gdf_analizado['valor'].std():.1f} kg/ha")
+        
         # MAPA CON POLÍGONOS COMPLETOS (PyDeck)
         st.subheader("🗺️ Mapa de Polígonos - Distribución de " + nutriente)
         st.info("💡 **Pasa el mouse sobre los polígonos para ver detalles**")
@@ -359,8 +374,56 @@ def analizar_shapefile_con_poligonos(gdf, nutriente):
         with col5:
             st.markdown('<div style="background-color: #4575b4; padding: 10px; color: white; text-align: center; border-radius: 5px;">Muy Alto</div>', unsafe_allow_html=True)
         
-        # Resto del análisis (estadísticas, recomendaciones, etc.) permanece igual...
-        # ... [el resto del código igual que antes]
+        # Resumen por categoría
+        st.subheader("📋 Distribución por Categoría de Fertilidad")
+        resumen = gdf_analizado.groupby('categoria').agg({
+            'valor': 'mean',
+            'area_ha': ['sum', 'count']
+        }).round(2)
+        resumen.columns = ['Valor Promedio', 'Área Total (ha)', 'Número de Polígonos']
+        resumen['% del Área'] = (resumen['Área Total (ha)'] / area_total * 100).round(1)
+        st.dataframe(resumen)
+        
+        # RECOMENDACIONES DETALLADAS
+        st.subheader("💡 RECOMENDACIONES DE FERTILIZACIÓN NPK")
+        
+        for categoria in gdf_analizado['categoria'].unique():
+            subset = gdf_analizado[gdf_analizado['categoria'] == categoria]
+            area_cat = subset['area_ha'].sum()
+            porcentaje = (area_cat / area_total * 100)
+            
+            rec_rep = subset.iloc[0]
+            
+            with st.expander(f"🎯 **{categoria}** - {area_cat:.1f} ha ({porcentaje:.1f}% del área)"):
+                st.markdown(f"**📊 Fertilidad Actual:** {rec_rep['fert_actual']}")
+                st.markdown(f"**🧪 Dosis NPK Recomendada:** `{rec_rep['dosis_npk']}`")
+                st.markdown(f"**🔧 Fuentes:** {rec_rep['fuentes_recomendadas']}")
+                st.markdown(f"**🔄 Estrategia de Aplicación:** {rec_rep['aplicacion']}")
+                st.markdown(f"**📝 Observaciones:** {rec_rep['observaciones']}")
+                
+                st.progress(min(porcentaje / 100, 1.0))
+                st.caption(f"Esta categoría representa {porcentaje:.1f}% del área total")
+        
+        # Datos detallados
+        st.subheader("🧮 Datos Detallados por Zona")
+        columnas_mostrar = ['area_ha', 'valor', 'categoria', 'dosis_npk', 'fuentes_recomendadas']
+        st.dataframe(gdf_analizado[columnas_mostrar].head(10))
+        
+        # Descarga
+        st.subheader("📥 Descargar Resultados Completos")
+        csv = gdf_analizado.to_csv(index=False)
+        st.download_button(
+            "📋 Descargar CSV",
+            csv,
+            f"analisis_npk_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv"
+        )
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error en análisis: {str(e)}")
+        return False
 
 # Procesar archivo
 if uploaded_zip:
