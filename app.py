@@ -6,11 +6,14 @@ import tempfile
 import os
 import zipfile
 from datetime import datetime
-import pydeck as pdk
-import json
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.colors import LinearSegmentedColormap
+import io
+import base64
 
 st.set_page_config(page_title="🌴 Analizador Palma", layout="wide")
-st.title("🌴 ANALIZADOR PALMA ACEITERA - GRADIENTE DE COLORES REAL")
+st.title("🌴 ANALIZADOR PALMA ACEITERA - MAPA CON GRADIENTE REAL")
 st.markdown("---")
 
 # Configurar para restaurar .shx automáticamente
@@ -42,7 +45,7 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# Función para generar valores con gradiente real MEJORADO
+# Función para generar valores con gradiente real
 def generar_valores_con_gradiente(gdf, nutriente):
     """Genera valores de nutrientes con variación espacial real"""
     
@@ -78,7 +81,7 @@ def generar_valores_con_gradiente(gdf, nutriente):
             valor = base_value + local_variation
             
         else:  # FERTILIDAD_COMPLETA
-            base_value = 30 + base_gradient * 70  # 30-100 puntos
+            base_value = 30 + base_gradient * 70
             local_variation = np.random.normal(0, 10)
             valor = base_value + local_variation
         
@@ -87,182 +90,79 @@ def generar_valores_con_gradiente(gdf, nutriente):
     
     return valores
 
-# FUNCIÓN MEJORADA PARA OBTENER COLORES - GRADIENTE VISIBLE
-def obtener_color_gradiente(valor, nutriente):
-    """Devuelve color RGB basado en valor continuo - GRADIENTE VISIBLE"""
-    
-    if nutriente == "NITRÓGENO":
-        min_val, max_val = PARAMETROS_PALMA['NITROGENO']['min'], PARAMETROS_PALMA['NITROGENO']['max']
-        valor_normalizado = (valor - min_val) / (max_val - min_val)
-    elif nutriente == "FÓSFORO":
-        min_val, max_val = PARAMETROS_PALMA['FOSFORO']['min'], PARAMETROS_PALMA['FOSFORO']['max']
-        valor_normalizado = (valor - min_val) / (max_val - min_val)
-    elif nutriente == "POTASIO":
-        min_val, max_val = PARAMETROS_PALMA['POTASIO']['min'], PARAMETROS_PALMA['POTASIO']['max']
-        valor_normalizado = (valor - min_val) / (max_val - min_val)
-    else:  # FERTILIDAD_COMPLETA
-        min_val, max_val = 0, 100
-        valor_normalizado = (valor - min_val) / (max_val - min_val)
-    
-    valor_normalizado = max(0, min(1, valor_normalizado))
-    
-    # GRADIENTE MÁS CONTRASTADO Y VISIBLE
-    if nutriente == "FERTILIDAD_COMPLETA":
-        # Para fertilidad completa: Rojo (malo) a Verde (bueno)
-        if valor_normalizado < 0.2:
-            red, green, blue = 215, 48, 39      # Rojo intenso
-        elif valor_normalizado < 0.4:
-            red, green, blue = 252, 141, 89     # Naranja
-        elif valor_normalizado < 0.6:
-            red, green, blue = 254, 224, 144    # Amarillo
-        elif valor_normalizado < 0.8:
-            red, green, blue = 224, 243, 248    # Azul claro
-        else:
-            red, green, blue = 69, 117, 180     # Azul intenso
-    else:
-        # Para nutrientes: Verde (bajo) a Rojo (alto)
-        if valor_normalizado < 0.2:
-            red, green, blue = 69, 117, 180     # Azul - muy baja dosis
-        elif valor_normalizado < 0.4:
-            red, green, blue = 224, 243, 248    # Azul claro - baja dosis
-        elif valor_normalizado < 0.6:
-            red, green, blue = 254, 224, 144    # Amarillo - dosis media
-        elif valor_normalizado < 0.8:
-            red, green, blue = 252, 141, 89     # Naranja - alta dosis
-        else:
-            red, green, blue = 215, 48, 39      # Rojo - muy alta dosis
-    
-    return [red, green, blue, 180]
-
-# FUNCIÓN MEJORADA PARA CREAR MAPA CON GRADIENTE VISIBLE
-def crear_mapa_gradiente_visible(gdf, nutriente):
-    """Crea mapa con gradiente de colores VISIBLE"""
+# Función para crear mapa con matplotlib (GRADIENTE REAL)
+def crear_mapa_matplotlib(gdf, nutriente):
+    """Crea mapa estático con gradiente de colores real usando matplotlib"""
     try:
-        # Convertir a WGS84
-        if gdf.crs is None or str(gdf.crs) != 'EPSG:4326':
-            gdf_map = gdf.to_crs('EPSG:4326')
+        # Configurar la figura
+        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+        
+        # Definir el colormap basado en el nutriente
+        if nutriente == "FERTILIDAD_COMPLETA":
+            # Rojo (bajo) a Verde (alto)
+            cmap = LinearSegmentedColormap.from_list('fertilidad', ['#d73027', '#fc8d59', '#fee090', '#a6d96a', '#1a9850'])
+            vmin, vmax = 0, 100
         else:
-            gdf_map = gdf.copy()
+            # Verde (baja dosis) a Rojo (alta dosis)
+            cmap = LinearSegmentedColormap.from_list('nutrientes', ['#4575b4', '#e0f3f8', '#fee090', '#fc8d59', '#d73027'])
+            if nutriente == "NITRÓGENO":
+                vmin, vmax = 150, 220
+            elif nutriente == "FÓSFORO":
+                vmin, vmax = 60, 80
+            else:  # POTASIO
+                vmin, vmax = 100, 120
         
-        # VERIFICAR QUE HAY DATOS
-        if len(gdf_map) == 0:
-            st.error("❌ No hay polígonos para mostrar")
-            return None
+        # Plotear cada polígono con su color según el valor
+        for idx, row in gdf.iterrows():
+            valor = row['valor']
+            # Normalizar el valor para el colormap
+            valor_norm = (valor - vmin) / (vmax - vmin)
+            valor_norm = max(0, min(1, valor_norm))  # Asegurar entre 0-1
+            color = cmap(valor_norm)
+            
+            # Plotear el polígono
+            gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=0.8)
+            
+            # Añadir etiqueta con el ID (opcional)
+            centroid = row.geometry.centroid
+            ax.annotate(str(idx+1), (centroid.x, centroid.y), 
+                       xytext=(3, 3), textcoords="offset points", 
+                       fontsize=8, color='black', weight='bold')
         
-        # Crear capa GeoJson con colores individuales
-        features = []
+        # Configurar el gráfico
+        ax.set_title(f'Mapa de {nutriente} - Gradiente de Colores', fontsize=16, fontweight='bold', pad=20)
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
         
-        for idx, row in gdf_map.iterrows():
-            try:
-                geom = row.geometry
-                if geom.is_empty:
-                    continue
-                
-                # Obtener color único para este polígono
-                color = obtener_color_gradiente(row['valor'], nutriente)
-                
-                # Convertir geometría a formato que PyDeck entienda
-                if geom.geom_type == 'Polygon':
-                    # Para Polygon simple
-                    coords = [list(geom.exterior.coords)]
-                    for interior in geom.interiors:
-                        coords.append(list(interior.coords))
-                elif geom.geom_type == 'MultiPolygon':
-                    # Para MultiPolygon
-                    coords = []
-                    for poly in geom.geoms:
-                        poly_coords = [list(poly.exterior.coords)]
-                        for interior in poly.interiors:
-                            poly_coords.append(list(interior.coords))
-                        coords.extend(poly_coords)
-                else:
-                    continue
-                
-                feature = {
-                    'type': 'Feature',
-                    'geometry': {
-                        'type': 'Polygon',
-                        'coordinates': coords
-                    },
-                    'properties': {
-                        'polygon_id': idx + 1,
-                        'valor': float(row['valor']),
-                        'categoria': row['categoria'],
-                        'area_ha': float(row['area_ha']),
-                        'color': color
-                    }
-                }
-                features.append(feature)
-                
-            except Exception as e:
-                continue
+        # Añadir barra de colores
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
+        cbar.set_label(f'{nutriente} ({("kg/ha" if nutriente != "FERTILIDAD_COMPLETA" else "puntos")})', fontsize=12)
         
-        if not features:
-            st.error("❌ No se pudieron procesar las geometrías")
-            return None
+        # Añadir leyenda de categorías
+        categorias = gdf['categoria'].unique()
+        legend_handles = []
+        for cat in categorias:
+            color = cmap((gdf[gdf['categoria'] == cat]['valor'].mean() - vmin) / (vmax - vmin))
+            patch = mpatches.Patch(color=color, label=cat)
+            legend_handles.append(patch)
         
-        # Crear GeoJSON layer
-        geojson_layer = pdk.Layer(
-            'GeoJsonLayer',
-            features,
-            opacity=0.8,
-            stroked=True,
-            filled=True,
-            extruded=False,
-            wireframe=True,
-            get_fill_color='properties.color',
-            get_line_color=[0, 0, 0, 200],
-            get_line_width=2,
-            pickable=True,
-            auto_highlight=True
-        )
+        ax.legend(handles=legend_handles, title='Categorías', loc='upper right', bbox_to_anchor=(1.15, 1))
         
-        # Calcular vista centrada
-        centroid = gdf_map.geometry.centroid.unary_union.centroid
-        view_state = pdk.ViewState(
-            longitude=float(centroid.x),
-            latitude=float(centroid.y),
-            zoom=11,
-            pitch=0,
-            bearing=0
-        )
+        plt.tight_layout()
         
-        # Tooltip informativo
-        tooltip = {
-            "html": """
-            <div style="
-                background: white; 
-                border: 2px solid #2E86AB; 
-                border-radius: 8px; 
-                padding: 10px; 
-                font-size: 12px;
-                color: #333;
-                max-width: 280px;
-            ">
-                <b>🌴 Zona {properties.polygon_id}</b><br/>
-                <b>Valor:</b> {properties.valor} """ + ("kg/ha" if nutriente != "FERTILIDAD_COMPLETA" else "puntos") + """<br/>
-                <b>Categoría:</b> {properties.categoria}<br/>
-                <b>Área:</b> {properties.area_ha:.1f} ha
-            </div>
-            """
-        }
+        # Convertir la figura a imagen para Streamlit
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        plt.close()
         
-        # Crear mapa
-        mapa = pdk.Deck(
-            layers=[geojson_layer],
-            initial_view_state=view_state,
-            tooltip=tooltip,
-            map_style='light'
-        )
-        
-        st.success(f"✅ Mapa generado con {len(features)} polígonos y gradiente visible")
-        return mapa
+        return buf
         
     except Exception as e:
-        st.error(f"❌ Error creando mapa: {str(e)}")
-        # Fallback: mostrar datos en tabla
-        st.info("📊 Mostrando datos en tabla como alternativa:")
-        st.dataframe(gdf[['valor', 'categoria', 'area_ha']].head(10))
+        st.error(f"❌ Error creando mapa matplotlib: {str(e)}")
         return None
 
 # Función para obtener recomendaciones NPK
@@ -300,9 +200,9 @@ def obtener_recomendaciones_npk(nutriente, categoria, valor):
     return recomendaciones[nutriente][categoria]
 
 # Función de análisis principal
-def analizar_con_gradiente_visible(gdf, nutriente):
+def analizar_con_mapa_estatico(gdf, nutriente):
     try:
-        st.header("📊 Resultados - GRADIENTE VISIBLE")
+        st.header("📊 Resultados - Mapa con Gradiente Real")
         
         # Calcular áreas
         areas_ha = calcular_superficie(gdf)
@@ -376,33 +276,46 @@ def analizar_con_gradiente_visible(gdf, nutriente):
         with col4:
             st.metric("Desviación", f"{gdf_analizado['valor'].std():.1f}")
         
-        # MAPA CON GRADIENTE VISIBLE
-        st.subheader("🗺️ Mapa - Gradiente de Colores Visible")
-        st.info("💡 **Cada polígono tiene color único basado en su valor**")
+        # MAPA ESTÁTICO CON GRADIENTE REAL
+        st.subheader("🗺️ Mapa - Gradiente de Colores Real")
+        st.info("💡 **Mapa generado con matplotlib - Gradiente 100% visible**")
         
-        mapa = crear_mapa_gradiente_visible(gdf_analizado, nutriente)
-        if mapa:
-            st.pydeck_chart(mapa)
+        mapa_buffer = crear_mapa_matplotlib(gdf_analizado, nutriente)
+        if mapa_buffer:
+            st.image(mapa_buffer, use_column_width=True, caption=f"Mapa de {nutriente} - Gradiente de Colores")
+            st.success("✅ ¡Gradiente de colores visible correctamente!")
+            
+            # Botón para descargar el mapa
+            st.download_button(
+                label="📥 Descargar Mapa",
+                data=mapa_buffer,
+                file_name=f"mapa_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+                mime="image/png"
+            )
         else:
-            st.warning("⚠️ No se pudo generar el mapa interactivo")
+            st.error("❌ No se pudo generar el mapa")
         
-        # LEYENDA DE COLORES MEJORADA
-        st.subheader("🎨 Leyenda de Colores - Gradiente Visible")
+        # LEYENDA DE COLORES
+        st.subheader("🎨 Leyenda de Colores")
         
         if nutriente == "FERTILIDAD_COMPLETA":
             st.markdown("""
-            <div style="background: linear-gradient(90deg, #d73027, #fc8d59, #fee090, #e0f3f8, #4575b4); 
-                        padding: 20px; border-radius: 5px; text-align: center; color: black; font-weight: bold;">
-                <strong>FERTILIDAD COMPLETA: Rojo (Muy Baja) → Azul (Muy Alta)</strong>
-            </div>
-            """, unsafe_allow_html=True)
+            **Gradiente de Fertilidad Completa:**
+            - 🔴 **Rojo**: 0-30 puntos (Muy Baja)
+            - 🟠 **Naranja**: 30-50 puntos (Baja)  
+            - 🟡 **Amarillo**: 50-70 puntos (Media)
+            - 🟢 **Verde**: 70-85 puntos (Alta)
+            - 🔵 **Azul**: 85-100 puntos (Muy Alta)
+            """)
         else:
             st.markdown("""
-            <div style="background: linear-gradient(90deg, #4575b4, #e0f3f8, #fee090, #fc8d59, #d73027); 
-                        padding: 20px; border-radius: 5px; text-align: center; color: black; font-weight: bold;">
-                <strong>DOSIS: Azul (Baja) → Amarillo (Media) → Rojo (Alta)</strong>
-            </div>
-            """, unsafe_allow_html=True)
+            **Gradiente de Dosis de Fertilizante:**
+            - 🔵 **Azul**: Baja dosis requerida (suelo fértil)
+            - 🔷 **Azul claro**: Dosis media-baja
+            - 🟡 **Amarillo**: Dosis media
+            - 🟠 **Naranja**: Dosis media-alta  
+            - 🔴 **Rojo**: Alta dosis requerida (suelo pobre)
+            """)
         
         # Distribución
         st.subheader("📋 Distribución por Categoría")
@@ -418,6 +331,16 @@ def analizar_con_gradiente_visible(gdf, nutriente):
         st.subheader("🧮 Datos Detallados")
         columnas_mostrar = ['area_ha', 'valor', 'categoria', 'dosis_npk', 'fert_actual']
         st.dataframe(gdf_analizado[columnas_mostrar].head(10))
+        
+        # Descarga CSV
+        st.subheader("📥 Descargar Resultados")
+        csv = gdf_analizado.to_csv(index=False)
+        st.download_button(
+            "📋 Descargar CSV",
+            csv,
+            f"analisis_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv"
+        )
         
         return True
         
@@ -443,8 +366,8 @@ if uploaded_zip:
         except Exception as e:
             st.error(f"Error cargando shapefile: {e}")
 
-    if st.button("🚀 Ejecutar Análisis con Gradiente Visible", type="primary"):
-        with st.spinner("Generando mapa con gradiente de colores..."):
+    if st.button("🚀 Ejecutar Análisis con Mapa Estático", type="primary"):
+        with st.spinner("Generando mapa con gradiente real..."):
             try:
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
@@ -459,7 +382,7 @@ if uploaded_zip:
                     gdf = gpd.read_file(shp_path)
                     st.success(f"✅ Shapefile cargado: {len(gdf)} polígonos")
                     
-                    analizar_con_gradiente_visible(gdf, nutriente)
+                    analizar_con_mapa_estatico(gdf, nutriente)
                     
             except Exception as e:
                 st.error(f"Error procesando archivo: {str(e)}")
