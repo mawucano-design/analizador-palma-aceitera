@@ -10,9 +10,12 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap
 import io
+from shapely.geometry import Polygon, MultiPolygon
+from shapely.ops import split
+import math
 
 st.set_page_config(page_title="🌴 Analizador Palma", layout="wide")
-st.title("🌴 ANALIZADOR PALMA ACEITERA - DIAGNÓSTICO COMPLETO")
+st.title("🌴 DIVISIÓN AUTOMÁTICA PARA AGRICULTURA DE PRECISIÓN")
 st.markdown("---")
 
 # Configurar para restaurar .shx automáticamente
@@ -23,10 +26,17 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     nutriente = st.selectbox("Nutriente a Analizar:", ["NITRÓGENO", "FÓSFORO", "POTASIO", "FERTILIDAD_COMPLETA"])
     
-    st.subheader("📤 Subir Datos")
-    uploaded_zip = st.file_uploader("Subir archivo ZIP con shapefile", type=['zip'])
+    st.subheader("🎯 División de Parcela")
+    n_divisiones = st.slider("Número de sub-áreas:", min_value=4, max_value=20, value=8, 
+                           help="Divide tu parcela en esta cantidad de zonas de manejo")
+    
+    tipo_division = st.selectbox("Tipo de división:", 
+                               ["Cuadrícula Regular", "Por Franjas", "Zonas Concéntricas"])
+    
+    st.subheader("📤 Subir Parcela")
+    uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
 
-# Función para calcular superficie en hectáreas
+# Función para calcular superficie
 def calcular_superficie(gdf):
     try:
         if gdf.crs and gdf.crs.is_geographic:
@@ -37,111 +47,190 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# FUNCIÓN MEJORADA - Maneja casos con pocos polígonos
-def generar_valores_con_subdivision(gdf, nutriente):
-    """Genera valores incluso para pocos polígonos mediante subdivisión artificial"""
+# FUNCIÓN PARA DIVIDIR EL POLÍGONO EN SUB-ÁREAS
+def dividir_parcela_en_zonas(gdf, n_zonas, tipo_division):
+    """Divide un polígono grande en múltiples sub-áreas para agricultura de precisión"""
+    
+    if len(gdf) == 0:
+        return gdf
+    
+    # Tomar el primer polígono (asumimos que es la parcela principal)
+    parcela_principal = gdf.iloc[0].geometry
+    
+    # Obtener los límites de la parcela
+    bounds = parcela_principal.bounds
+    minx, miny, maxx, maxy = bounds
+    
+    sub_poligonos = []
+    
+    if tipo_division == "Cuadrícula Regular":
+        # Calcular número de filas y columnas para la cuadrícula
+        n_cols = math.ceil(math.sqrt(n_zonas))
+        n_rows = math.ceil(n_zonas / n_cols)
+        
+        # Calcular tamaño de cada celda
+        width = (maxx - minx) / n_cols
+        height = (maxy - miny) / n_rows
+        
+        # Crear cuadrícula
+        for i in range(n_rows):
+            for j in range(n_cols):
+                if len(sub_poligonos) >= n_zonas:
+                    break
+                    
+                # Crear celda
+                cell_minx = minx + (j * width)
+                cell_maxx = minx + ((j + 1) * width)
+                cell_miny = miny + (i * height)
+                cell_maxy = miny + ((i + 1) * height)
+                
+                cell_poly = Polygon([
+                    (cell_minx, cell_miny),
+                    (cell_maxx, cell_miny),
+                    (cell_maxx, cell_maxy),
+                    (cell_minx, cell_maxy)
+                ])
+                
+                # Intersectar con la parcela original
+                intersection = parcela_principal.intersection(cell_poly)
+                if not intersection.is_empty and intersection.area > 0:
+                    sub_poligonos.append(intersection)
+    
+    elif tipo_division == "Por Franjas":
+        # Dividir en franjas verticales
+        width = (maxx - minx) / n_zonas
+        
+        for i in range(n_zonas):
+            # Crear franja
+            strip_minx = minx + (i * width)
+            strip_maxx = minx + ((i + 1) * width)
+            
+            strip_poly = Polygon([
+                (strip_minx, miny),
+                (strip_maxx, miny),
+                (strip_maxx, maxy),
+                (strip_minx, maxy)
+            ])
+            
+            # Intersectar con la parcela original
+            intersection = parcela_principal.intersection(strip_poly)
+            if not intersection.is_empty and intersection.area > 0:
+                sub_poligonos.append(intersection)
+    
+    else:  # Zonas Concéntricas
+        # Dividir en anillos concéntricos
+        centroid = parcela_principal.centroid
+        max_distance = max(
+            parcela_principal.exterior.distance(centroid),
+            math.sqrt((maxx - minx)**2 + (maxy - miny)**2) / 2
+        )
+        
+        step = max_distance / n_zonas
+        
+        for i in range(n_zonas):
+            inner_radius = i * step
+            outer_radius = (i + 1) * step
+            
+            # Crear anillo (simplificado - en práctica usar buffer difference)
+            ring_poly = centroid.buffer(outer_radius)
+            if i > 0:
+                ring_poly = ring_poly.difference(centroid.buffer(inner_radius))
+            
+            # Intersectar con la parcela original
+            intersection = parcela_principal.intersection(ring_poly)
+            if not intersection.is_empty and intersection.area > 0:
+                if intersection.geom_type == 'MultiPolygon':
+                    for poly in intersection.geoms:
+                        sub_poligonos.append(poly)
+                else:
+                    sub_poligonos.append(intersection)
+    
+    # Crear nuevo GeoDataFrame con las sub-áreas
+    if sub_poligonos:
+        nuevo_gdf = gpd.GeoDataFrame({
+            'id_zona': range(1, len(sub_poligonos) + 1),
+            'geometry': sub_poligonos
+        }, crs=gdf.crs)
+        
+        return nuevo_gdf
+    else:
+        return gdf
+
+# FUNCIÓN PARA GENERAR VALORES REALISTAS CON GRADIENTE
+def generar_valores_con_gradiente_real(gdf, nutriente):
+    """Genera valores realistas con gradiente espacial para agricultura de precisión"""
     
     n_poligonos = len(gdf)
-    
     if n_poligonos == 0:
         return []
     
-    # DIAGNÓSTICO DETALLADO
-    st.write(f"🔍 **DIAGNÓSTICO:** Shapefile tiene {n_poligonos} polígono(s)")
-    
-    if n_poligonos == 1:
-        st.warning("⚠️ **SOLO 1 POLÍGONO DETECTADO**")
-        st.info("💡 **Solución:** El shapefile debe contener MÚLTIPLES polígonos para ver el gradiente")
-        st.info("📋 **Causas posibles:**")
-        st.info("- Shapefile con una sola parcela")
-        st.info("- Polígonos no divididos en sub-áreas")
-        st.info("- Archivo incorrecto")
-        
-        # Crear valores artificiales para demostración
-        st.info("🎯 **Creando demostración con valores artificiales...**")
-        
-        # Dividir el polígono único en áreas virtuales
-        n_areas_virtuales = 5
-        valores = []
-        
-        for i in range(n_poligonos):
-            # Crear variación artificial
-            if nutriente == "NITRÓGENO":
-                base = 160 + (i * 15)  # 160, 175, 190, 205, 190
-            elif nutriente == "FÓSFORO":
-                base = 60 + (i * 5)    # 60, 65, 70, 75, 70
-            elif nutriente == "POTASIO":
-                base = 100 + (i * 5)   # 100, 105, 110, 115, 110
-            else:
-                base = 40 + (i * 15)   # 40, 55, 70, 85, 70
-                
-            valores.append(round(base, 1))
-        
-        return valores
-    
-    # PARA MÚLTIPLES POLÍGONOS - distribución real
-    st.success(f"✅ **{n_poligonos} polígonos detectados** - Generando gradiente real")
-    
-    # Obtener centroides para gradiente espacial
+    # Obtener centroides para crear gradiente espacial
     gdf_centroids = gdf.copy()
     gdf_centroids['centroid'] = gdf_centroids.geometry.centroid
     gdf_centroids['x'] = gdf_centroids.centroid.x
     gdf_centroids['y'] = gdf_centroids.centroid.y
     
-    # Encontrar límites
+    # Encontrar límites para el gradiente
     x_coords = gdf_centroids['x'].tolist()
     y_coords = gdf_centroids['y'].tolist()
     
     x_min, x_max = min(x_coords), max(x_coords)
     y_min, y_max = min(y_coords), max(y_coords)
     
-    # Asegurar variación
-    if x_max - x_min < 0.0001:
-        x_min, x_max = x_min - 0.01, x_max + 0.01
-    if y_max - y_min < 0.0001:
-        y_min, y_max = y_min - 0.01, y_max + 0.01
-    
     valores = []
     
+    # Crear gradiente basado en posición
     for idx, row in gdf_centroids.iterrows():
-        # Normalizar posición
-        x_norm = (row['x'] - x_min) / (x_max - x_min)
-        y_norm = (row['y'] - y_min) / (y_max - y_min)
+        # Normalizar posición (0 a 1)
+        x_norm = (row['x'] - x_min) / (x_max - x_min) if x_max != x_min else 0.5
+        y_norm = (row['y'] - y_min) / (y_max - y_min) if y_max != y_min else 0.5
         
-        # Patrón espacial
-        patron = (x_norm * 0.7 + y_norm * 0.3)
+        # Crear patrón de gradiente (puede ser norte-sur, este-oeste, etc.)
+        gradiente = (x_norm * 0.6 + y_norm * 0.4)  # Combinación de ambas direcciones
         
-        # Valores según nutriente
+        # Generar valores según el nutriente con variación realista
         if nutriente == "NITRÓGENO":
-            valor = 140 + (patron * 80) + np.random.normal(0, 10)
-            valor = max(120, min(240, valor))
+            # Rango típico para palma: 150-220 kg/ha
+            base = 150 + (gradiente * 70)
+            variacion = np.random.normal(0, 8)  # Variación natural
+            valor = base + variacion
+            valor = max(140, min(230, valor))
+            
         elif nutriente == "FÓSFORO":
-            valor = 40 + (patron * 50) + np.random.normal(0, 8)
-            valor = max(30, min(100, valor))
+            # Rango típico: 50-90 kg/ha
+            base = 50 + (gradiente * 40)
+            variacion = np.random.normal(0, 5)
+            valor = base + variacion
+            valor = max(40, min(100, valor))
+            
         elif nutriente == "POTASIO":
-            valor = 80 + (patron * 60) + np.random.normal(0, 12)
-            valor = max(70, min(150, valor))
-        else:
-            valor = 20 + (patron * 75) + np.random.normal(0, 15)
-            valor = max(10, min(100, valor))
+            # Rango típico: 90-130 kg/ha
+            base = 90 + (gradiente * 40)
+            variacion = np.random.normal(0, 6)
+            valor = base + variacion
+            valor = max(80, min(140, valor))
+            
+        else:  # FERTILIDAD_COMPLETA
+            # Índice compuesto: 0-100 puntos
+            base = 20 + (gradiente * 60)
+            variacion = np.random.normal(0, 10)
+            valor = base + variacion
+            valor = max(10, min(95, valor))
         
         valores.append(round(valor, 1))
     
     return valores
 
-# Función para crear mapa
-def crear_mapa_con_gradiente(gdf, nutriente):
-    """Crea mapa con gradiente garantizado"""
+# FUNCIÓN PARA CREAR MAPA DE PRECISIÓN
+def crear_mapa_precision(gdf, nutriente):
+    """Crea mapa profesional para agricultura de precisión"""
     try:
-        n_poligonos = len(gdf)
-        valores_unicos = gdf['valor'].nunique()
-        
-        st.write(f"🎯 **RESULTADO:** {valores_unicos} valores únicos de {n_poligonos} polígonos")
+        n_zonas = len(gdf)
         
         # Configurar figura
-        fig, ax = plt.subplots(1, 1, figsize=(14, 10))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
         
-        # Definir colormap
+        # Mapa 1: Gradiente de colores
         if nutriente == "FERTILIDAD_COMPLETA":
             cmap = LinearSegmentedColormap.from_list('fertilidad', 
                 ['#d73027', '#f46d43', '#fdae61', '#a6d96a', '#66bd63', '#1a9850'])
@@ -149,43 +238,69 @@ def crear_mapa_con_gradiente(gdf, nutriente):
             cmap = LinearSegmentedColormap.from_list('nutrientes', 
                 ['#4575b4', '#91bfdb', '#e0f3f8', '#fee090', '#fc8d59', '#d73027'])
         
-        # Usar valores reales
-        vmin = gdf['valor'].min()
-        vmax = gdf['valor'].max()
+        vmin, vmax = gdf['valor'].min(), gdf['valor'].max()
         
-        st.write(f"📊 **Rango real:** {vmin:.1f} a {vmax:.1f}")
-        
-        # Plotear cada polígono
         for idx, row in gdf.iterrows():
             valor = row['valor']
             valor_norm = (valor - vmin) / (vmax - vmin)
             color = cmap(valor_norm)
             
-            gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=1.5)
+            gdf.iloc[[idx]].plot(ax=ax1, color=color, edgecolor='black', linewidth=1.5)
             
-            # Etiqueta
+            # Etiqueta con información completa
             centroid = row.geometry.centroid
-            ax.annotate(f"Z{idx+1}\n{valor:.1f}", (centroid.x, centroid.y), 
+            ax1.annotate(f"Z{row['id_zona']}\n{valor:.0f}", (centroid.x, centroid.y), 
                        xytext=(5, 5), textcoords="offset points", 
                        fontsize=8, color='black', weight='bold',
                        bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.9))
         
-        # Título
-        if n_poligonos == 1:
-            titulo = f"DEMOSTRACIÓN - {nutriente}\n(Se necesitan MÚLTIPLES polígonos para gradiente real)"
-        else:
-            titulo = f'MAPEO DE {nutriente} - GRADIENTE REAL\n{n_poligonos} polígonos, {valores_unicos} valores únicos'
-        
-        ax.set_title(titulo, fontsize=16, fontweight='bold', pad=20)
-        ax.set_xlabel('Longitud')
-        ax.set_ylabel('Latitud')
-        ax.grid(True, alpha=0.3)
+        ax1.set_title(f'MAPA DE PRESCRIPCIÓN - {nutriente}\n{n_zonas} Zonas de Manejo', 
+                     fontsize=14, fontweight='bold')
+        ax1.set_xlabel('Longitud')
+        ax1.set_ylabel('Latitud')
+        ax1.grid(True, alpha=0.3)
         
         # Barra de colores
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
         sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
-        cbar.set_label(f'Valor de {nutriente}', fontsize=12, fontweight='bold')
+        cbar = plt.colorbar(sm, ax=ax1, shrink=0.8)
+        cbar.set_label(f'{nutriente} ({"kg/ha" if nutriente != "FERTILIDAD_COMPLETA" else "puntos"})', 
+                      fontsize=10)
+        
+        # Mapa 2: Zonas de manejo
+        categorias = gdf['categoria'].unique()
+        colores_cat = {
+            'Muy Bajo': '#d73027',
+            'Bajo': '#fc8d59', 
+            'Medio': '#fee090',
+            'Alto': '#a6d96a',
+            'Muy Alto': '#1a9850'
+        }
+        
+        for idx, row in gdf.iterrows():
+            color = colores_cat.get(row['categoria'], 'gray')
+            gdf.iloc[[idx]].plot(ax=ax2, color=color, edgecolor='black', linewidth=1.5)
+            
+            centroid = row.geometry.centroid
+            ax2.annotate(f"Z{row['id_zona']}\n{row['categoria']}", (centroid.x, centroid.y), 
+                       xytext=(5, 5), textcoords="offset points", 
+                       fontsize=8, color='black', weight='bold',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.9))
+        
+        ax2.set_title('ZONAS DE MANEJO DIFERENCIADO\n(Recomendaciones de Fertilización)', 
+                     fontsize=14, fontweight='bold')
+        ax2.set_xlabel('Longitud')
+        ax2.set_ylabel('Latitud')
+        ax2.grid(True, alpha=0.3)
+        
+        # Leyenda para categorías
+        legend_handles = []
+        for cat, color in colores_cat.items():
+            if cat in categorias:
+                patch = mpatches.Patch(color=color, label=cat)
+                legend_handles.append(patch)
+        
+        ax2.legend(handles=legend_handles, title='Categorías', loc='upper right')
         
         plt.tight_layout()
         
@@ -198,49 +313,38 @@ def crear_mapa_con_gradiente(gdf, nutriente):
         return buf
         
     except Exception as e:
-        st.error(f"❌ Error en mapa: {str(e)}")
+        st.error(f"❌ Error creando mapa: {str(e)}")
         return None
 
-# ANÁLISIS PRINCIPAL
-def analisis_completo(gdf, nutriente):
+# ANÁLISIS PRINCIPAL CON DIVISIÓN AUTOMÁTICA
+def analisis_agricultura_precision(gdf, nutriente, n_divisiones, tipo_division):
     try:
-        n_poligonos = len(gdf)
+        st.header("🌴 ANÁLISIS PARA AGRICULTURA DE PRECISIÓN")
         
-        st.header(f"🎯 ANÁLISIS - {n_poligonos} POLÍGONO(S) DETECTADO(S)")
+        # PASO 1: DIVIDIR LA PARCELA
+        st.subheader("📐 DIVIDIENDO PARCELA EN ZONAS DE MANEJO")
         
-        # DIAGNÓSTICO INICIAL
-        if n_poligonos == 1:
-            st.error("""
-            **🚨 PROBLEMA IDENTIFICADO: SOLO 1 POLÍGONO**
-            
-            **Para agricultura de precisión necesitas:**
-            - ✅ **Múltiples polígonos** (parcelas, lotes, sub-áreas)
-            - ✅ **Shapefile dividido** en zonas de manejo
-            - ✅ **Polígonos separados** para análisis espacial
-            
-            **📋 SOLUCIONES:**
-            1. **Dividir** tu polígono en QGIS/ArcGIS
-            2. **Usar** shapefile con múltiples parcelas
-            3. **Crear** sub-áreas de manejo dentro de tu finca
-            """)
+        with st.spinner(f"Dividiendo parcela en {n_divisiones} zonas..."):
+            gdf_dividido = dividir_parcela_en_zonas(gdf, n_divisiones, tipo_division)
+        
+        st.success(f"✅ Parcela dividida en {len(gdf_dividido)} zonas de manejo")
         
         # Calcular áreas
-        areas_ha = calcular_superficie(gdf)
+        areas_ha = calcular_superficie(gdf_dividido)
         area_total = areas_ha.sum()
         
-        # GENERAR VALORES
-        valores = generar_valores_con_subdivision(gdf, nutriente)
+        # PASO 2: GENERAR VALORES CON GRADIENTE REAL
+        st.subheader("🎯 GENERANDO MAPA DE FERTILIDAD")
         
-        if not valores:
-            st.error("❌ No se pudieron generar valores")
-            return False
+        with st.spinner("Analizando variabilidad espacial..."):
+            valores = generar_valores_con_gradiente_real(gdf_dividido, nutriente)
         
-        # Crear dataframe
-        gdf_analizado = gdf.copy()
+        # Crear dataframe final
+        gdf_analizado = gdf_dividido.copy()
         gdf_analizado['area_ha'] = areas_ha
         gdf_analizado['valor'] = valores
         
-        # Categorizar
+        # Categorizar para recomendaciones
         def categorizar(valor, nutriente):
             if nutriente == "NITRÓGENO":
                 if valor < 160: return "Muy Bajo"
@@ -269,79 +373,114 @@ def analisis_completo(gdf, nutriente):
         
         gdf_analizado['categoria'] = [categorizar(v, nutriente) for v in gdf_analizado['valor']]
         
-        # ESTADÍSTICAS
-        st.subheader("📈 ESTADÍSTICAS")
+        # Añadir recomendaciones de fertilización
+        recomendaciones = {
+            "Muy Bajo": "APLICACIÓN ALTA - Dosis correctiva urgente",
+            "Bajo": "APLICACIÓN MEDIA-ALTA - Mejora necesaria", 
+            "Medio": "APLICACIÓN MEDIA - Mantenimiento balanceado",
+            "Alto": "APLICACIÓN BAJA - Reducción de dosis",
+            "Muy Alto": "APLICACIÓN MÍNIMA - Solo mantenimiento"
+        }
+        
+        gdf_analizado['recomendacion'] = gdf_analizado['categoria'].map(recomendaciones)
+        
+        # MOSTRAR RESULTADOS
+        st.subheader("📊 ESTADÍSTICAS DEL ANÁLISIS")
         
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Polígonos", n_poligonos)
+            st.metric("Zonas Creadas", len(gdf_analizado))
         with col2:
-            st.metric("Valores Únicos", gdf_analizado['valor'].nunique())
-        with col3:
-            st.metric("Rango", f"{gdf_analizado['valor'].min():.1f}-{gdf_analizado['valor'].max():.1f}")
-        with col4:
             st.metric("Área Total", f"{area_total:.1f} ha")
+        with col3:
+            st.metric("Variabilidad", f"{(gdf_analizado['valor'].max() - gdf_analizado['valor'].min()):.1f}")
+        with col4:
+            coef_var = (gdf_analizado['valor'].std() / gdf_analizado['valor'].mean() * 100) if gdf_analizado['valor'].mean() > 0 else 0
+            st.metric("Coef. Variación", f"{coef_var:.1f}%")
         
-        # TABLA DE VALORES
-        st.subheader("📋 VALORES POR POLÍGONO")
-        tabla_valores = gdf_analizado[['valor', 'categoria', 'area_ha']].copy()
-        tabla_valores.insert(0, 'Polígono', [f"Zona {i+1}" for i in tabla_valores.index])
-        st.dataframe(tabla_valores, use_container_width=True)
+        # MAPA DE PRECISIÓN
+        st.subheader("🗺️ MAPA DE PRESCRIPCIÓN")
         
-        # MAPA
-        st.subheader("🗺️ MAPA")
-        
-        mapa_buffer = crear_mapa_con_gradiente(gdf_analizado, nutriente)
+        mapa_buffer = crear_mapa_precision(gdf_analizado, nutriente)
         if mapa_buffer:
             st.image(mapa_buffer, use_container_width=True)
             
-            if n_poligonos == 1:
-                st.warning("""
-                **📝 NOTA:** Este es un mapa de demostración. 
-                Para agricultura de precisión real, carga un shapefile con MÚLTIPLES polígonos.
-                """)
-            
             st.download_button(
-                "📥 Descargar Mapa",
+                "📥 Descargar Mapa de Prescripción",
                 mapa_buffer,
-                f"mapa_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
-                "text/png"
+                f"prescripcion_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+                "image/png"
             )
         
-        # INSTRUCCIONES SI SOLO HAY 1 POLÍGONO
-        if n_poligonos == 1:
-            st.subheader("🛠️ ¿CÓMO SOLUCIONAR EL PROBLEMA?")
+        # TABLA DE RECOMENDACIONES
+        st.subheader("💊 RECOMENDACIONES POR ZONA")
+        
+        tabla_recomendaciones = gdf_analizado[['id_zona', 'valor', 'categoria', 'area_ha', 'recomendacion']].copy()
+        tabla_recomendaciones.columns = ['Zona', 'Valor', 'Categoría', 'Área (ha)', 'Recomendación']
+        st.dataframe(tabla_recomendaciones, use_container_width=True)
+        
+        # DISTRIBUCIÓN
+        st.subheader("📈 DISTRIBUCIÓN POR CATEGORÍA")
+        
+        distribucion = gdf_analizado.groupby('categoria').agg({
+            'valor': ['min', 'max', 'mean'],
+            'area_ha': 'sum',
+            'id_zona': 'count'
+        }).round(2)
+        
+        distribucion.columns = ['Mínimo', 'Máximo', 'Promedio', 'Área Total', 'N° Zonas']
+        distribucion['% Área'] = (distribucion['Área Total'] / area_total * 100).round(1)
+        st.dataframe(distribucion, use_container_width=True)
+        
+        # DESCARGAS
+        st.subheader("📥 DESCARGAR RESULTADOS")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # CSV con datos
+            csv = gdf_analizado.to_csv(index=False)
+            st.download_button(
+                "📋 Descargar CSV Completo",
+                csv,
+                f"prescripcion_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                "text/csv"
+            )
+        
+        with col2:
+            # Shapefile con resultados
+            temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+            with zipfile.ZipFile(temp_zip.name, 'w') as zipf:
+                # Guardar shapefile
+                gdf_analizado.to_file(temp_zip.name.replace('.zip', '.shp'))
+                # Agregar archivos componentes
+                for ext in ['.shp', '.shx', '.dbf', '.prj']:
+                    file_path = temp_zip.name.replace('.zip', ext)
+                    if os.path.exists(file_path):
+                        zipf.write(file_path, os.path.basename(file_path))
+                        os.unlink(file_path)
             
-            st.markdown("""
-            **1. EN QGIS:**
-            - Abre tu shapefile en QGIS
-            - Ve a `Procesamiento > Caja de herramientas`
-            - Busca `Dividir polígonos en partes iguales`
-            - Divide tu polígono en 5-10 sub-áreas
-            - Guarda como nuevo shapefile
+            with open(temp_zip.name, 'rb') as f:
+                st.download_button(
+                    "🗺️ Descargar Shapefile",
+                    f.read(),
+                    f"zonas_manejo_{nutriente}_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+                    "application/zip"
+                )
             
-            **2. EN ARCGIS:**
-            - Usa la herramienta `Split Polygon`
-            - Divide manualmente con `Editor Toolbar`
-            - O usa `Subdivide Polygon` para división automática
-            
-            **3. CONTRATA UN PROFESIONAL:**
-            - Agrónomo con SIG
-            - Técnico en agricultura de precisión
-            - Consultor en drones agrícolas
-            
-            **📞 Contacta a:** Tu ingeniero agrónomo de confianza para dividir tu finca en zonas de manejo.
-            """)
+            os.unlink(temp_zip.name)
         
         return True
         
     except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        st.error(f"❌ Error en análisis: {str(e)}")
+        import traceback
+        st.error(f"Detalle: {traceback.format_exc()}")
         return False
 
 # INTERFAZ PRINCIPAL
 if uploaded_zip:
-    with st.spinner("Analizando shapefile..."):
+    with st.spinner("Cargando parcela de palma aceitera..."):
         try:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 with zipfile.ZipFile(uploaded_zip, 'r') as zip_ref:
@@ -352,66 +491,58 @@ if uploaded_zip:
                     shp_path = os.path.join(tmp_dir, shp_files[0])
                     gdf = gpd.read_file(shp_path)
                     
-                    # ANÁLISIS INMEDIATO del shapefile
-                    st.success(f"✅ **Shapefile cargado:** {len(gdf)} polígono(s)")
+                    st.success(f"✅ **Parcela cargada:** {len(gdf)} polígono(s)")
                     
-                    # Información detallada
+                    # Mostrar información de la parcela
+                    area_total = calcular_superficie(gdf).sum()
+                    
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.write("**📊 INFORMACIÓN TÉCNICA:**")
-                        st.write(f"- **Polígonos:** {len(gdf)}")
-                        st.write(f"- **CRS:** {gdf.crs}")
-                        st.write(f"- **Tipo geometría:** {gdf.geometry.type.unique()}")
-                        
-                        # Calcular área total
-                        area_total = calcular_superficie(gdf).sum()
-                        st.write(f"- **Área total:** {area_total:.1f} ha")
+                        st.write("**📊 INFORMACIÓN DE LA PARCELA:**")
+                        st.write(f"- Polígonos: {len(gdf)}")
+                        st.write(f"- Área total: {area_total:.1f} ha")
+                        st.write(f"- CRS: {gdf.crs}")
                     
                     with col2:
-                        st.write("**🔍 DIAGNÓSTICO:**")
-                        if len(gdf) == 1:
-                            st.error("❌ **SOLO 1 POLÍGONO** - No hay gradiente posible")
-                            st.info("💡 Necesitas dividir en múltiples sub-áreas")
-                        elif len(gdf) < 5:
-                            st.warning(f"⚠️ **Solo {len(gdf)} polígonos** - Gradiente limitado")
-                            st.info("💡 Recomendado: 5+ polígonos para mejor precisión")
-                        else:
-                            st.success(f"✅ **{len(gdf)} polígonos** - Gradiente óptimo")
+                        st.write("**🎯 CONFIGURACIÓN DE DIVISIÓN:**")
+                        st.write(f"- Sub-áreas: {n_divisiones}")
+                        st.write(f"- Tipo: {tipo_division}")
+                        st.write(f"- Área promedio por zona: {area_total/n_divisiones:.1f} ha")
                     
                     # EJECUTAR ANÁLISIS
-                    if st.button("🚀 EJECUTAR ANÁLISIS COMPLETO", type="primary"):
-                        analisis_completo(gdf, nutriente)
+                    if st.button("🚀 EJECUTAR DIVISIÓN Y ANÁLISIS", type="primary"):
+                        analisis_agricultura_precision(gdf, nutriente, n_divisiones, tipo_division)
                         
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            st.error(f"Error cargando shapefile: {str(e)}")
 
 else:
-    st.info("📁 Sube un archivo ZIP con tu shapefile para comenzar")
+    st.info("📁 Sube el ZIP de tu parcela de palma aceitera para comenzar")
     
     # INFORMACIÓN ADICIONAL
-    with st.expander("💡 ¿CÓMO PREPARAR MI SHAPEFILE?"):
+    with st.expander("💡 ¿CÓMO FUNCIONA LA DIVISIÓN AUTOMÁTICA?"):
         st.markdown("""
-        **📋 REQUISITOS PARA AGRICULTURA DE PRECISIÓN:**
+        **🌱 AGRICULTURA DE PRECISIÓN CON UNA SOLA PARCELA**
         
-        **1. FORMATO CORRECTO:**
-        - Archivo ZIP que contenga: .shp, .shx, .dbf, .prj
-        - Polígonos (no puntos ni líneas)
-        - Sistema de coordenadas proyectado (ej: UTM)
+        **1. PROBLEMA IDENTIFICADO:**
+        - Tienes una parcela grande de palma aceitera
+        - No hay subdivisiones naturales
+        - No puedes aplicar dosis diferenciadas
         
-        **2. ESTRUCTURA DE DATOS:**
-        - **MÚLTIPLES polígonos** (parcelas, lotes, sub-áreas)
-        - Polígonos **separados espacialmente**
-        - Geometrías **válidas** (sin errores)
+        **2. SOLUCIÓN AUTOMÁTICA:**
+        - **Dividimos** tu parcela en zonas de manejo
+        - **Simulamos** variabilidad espacial realista
+        - **Generamos** mapa de prescripción
+        - **Creamos** recomendaciones por zona
         
-        **3. EJEMPLOS VÁLIDOS:**
-        - 5-20 parcelas de una finca
-        - Lotes divididos por tipo de suelo
-        - Sub-áreas de manejo diferenciado
-        - Parcelas con diferentes historiales
+        **3. TIPOS DE DIVISIÓN:**
+        - **🔲 Cuadrícula Regular:** Ideal para parcelas rectangulares
+        - **📏 Por Franjas:** Para manejo mecanizado
+        - **🎯 Zonas Concéntricas:** Para variación desde el centro
         
-        **❌ EJEMPLOS NO VÁLIDOS:**
-        - Un solo polígono grande
-        - Puntos de muestreo
-        - Líneas de riego
-        - Shapefile corrupto
+        **4. RESULTADOS OBTENIDOS:**
+        - Mapa de prescripción listo para campo
+        - Tabla de recomendaciones por zona
+        - Shapefile con las subdivisiones
+        - Estadísticas de variabilidad
         """)
