@@ -20,6 +20,48 @@ st.markdown("---")
 # Configurar para restaurar .shx automáticamente
 os.environ['SHAPE_RESTORE_SHX'] = 'YES'
 
+# PARÁMETROS GEE PARA PALMA ACEITERA
+PARAMETROS_PALMA = {
+    'NITROGENO': {'min': 150, 'max': 220},
+    'FOSFORO': {'min': 60, 'max': 80},
+    'POTASIO': {'min': 100, 'max': 120},
+    'MATERIA_ORGANICA_OPTIMA': 4.0,
+    'HUMEDAD_OPTIMA': 0.3
+}
+
+# FACTORES ESTACIONALES (DEFINIDOS A NIVEL GLOBAL)
+FACTORES_MES = {
+    "ENERO": 0.9, "FEBRERO": 0.95, "MARZO": 1.0, "ABRIL": 1.05,
+    "MAYO": 1.1, "JUNIO": 1.0, "JULIO": 0.95, "AGOSTO": 0.9,
+    "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
+}
+
+FACTORES_N_MES = {
+    "ENERO": 1.0, "FEBRERO": 1.05, "MARZO": 1.1, "ABRIL": 1.15,
+    "MAYO": 1.2, "JUNIO": 1.1, "JULIO": 1.0, "AGOSTO": 0.9,
+    "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
+}
+
+FACTORES_P_MES = {
+    "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.05, "ABRIL": 1.1,
+    "MAYO": 1.15, "JUNIO": 1.1, "JULIO": 1.05, "AGOSTO": 1.0,
+    "SEPTIEMBRE": 1.0, "OCTUBRE": 1.05, "NOVIEMBRE": 1.1, "DICIEMBRE": 1.05
+}
+
+FACTORES_K_MES = {
+    "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.0, "ABRIL": 1.05,
+    "MAYO": 1.1, "JUNIO": 1.15, "JULIO": 1.2, "AGOSTO": 1.15,
+    "SEPTIEMBRE": 1.1, "OCTUBRE": 1.05, "NOVIEMBRE": 1.0, "DICIEMBRE": 1.0
+}
+
+# PALETAS GEE MEJORADAS
+PALETAS_GEE = {
+    'FERTILIDAD': ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'],
+    'NITROGENO': ['#00ff00', '#80ff00', '#ffff00', '#ff8000', '#ff0000'],
+    'FOSFORO': ['#0000ff', '#4040ff', '#8080ff', '#c0c0ff', '#ffffff'],
+    'POTASIO': ['#4B0082', '#6A0DAD', '#8A2BE2', '#9370DB', '#D8BFD8']
+}
+
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -39,23 +81,6 @@ with st.sidebar:
     
     st.subheader("📤 Subir Parcela")
     uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
-
-# PARÁMETROS GEE PARA PALMA ACEITERA
-PARAMETROS_PALMA = {
-    'NITROGENO': {'min': 150, 'max': 220},
-    'FOSFORO': {'min': 60, 'max': 80},
-    'POTASIO': {'min': 100, 'max': 120},
-    'MATERIA_ORGANICA_OPTIMA': 4.0,
-    'HUMEDAD_OPTIMA': 0.3
-}
-
-# PALETAS GEE MEJORADAS
-PALETAS_GEE = {
-    'FERTILIDAD': ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'],
-    'NITROGENO': ['#00ff00', '#80ff00', '#ffff00', '#ff8000', '#ff0000'],
-    'FOSFORO': ['#0000ff', '#4040ff', '#8080ff', '#c0c0ff', '#ffffff'],
-    'POTASIO': ['#4B0082', '#6A0DAD', '#8A2BE2', '#9370DB', '#D8BFD8']
-}
 
 # Función para calcular superficie
 def calcular_superficie(gdf):
@@ -125,14 +150,7 @@ def calcular_indices_satelitales_gee(gdf, mes_analisis):
     n_poligonos = len(gdf)
     resultados = []
     
-    # Mapeo de meses a factores estacionales (ajustar según zona geográfica)
-    factores_mes = {
-        "ENERO": 0.9, "FEBRERO": 0.95, "MARZO": 1.0, "ABRIL": 1.05,
-        "MAYO": 1.1, "JUNIO": 1.0, "JULIO": 0.95, "AGOSTO": 0.9,
-        "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
-    }
-    
-    factor_mes = factores_mes.get(mes_analisis, 1.0)
+    factor_mes = FACTORES_MES.get(mes_analisis, 1.0)
     
     # Obtener centroides para gradiente espacial
     gdf_centroids = gdf.copy()
@@ -198,28 +216,9 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis):
     """
     recomendaciones = []
     
-    # Factores de ajuste por mes para cada nutriente
-    factores_n_mes = {
-        "ENERO": 1.0, "FEBRERO": 1.05, "MARZO": 1.1, "ABRIL": 1.15,
-        "MAYO": 1.2, "JUNIO": 1.1, "JULIO": 1.0, "AGOSTO": 0.9,
-        "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
-    }
-    
-    factores_p_mes = {
-        "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.05, "ABRIL": 1.1,
-        "MAYO": 1.15, "JUNIO": 1.1, "JULIO": 1.05, "AGOSTO": 1.0,
-        "SEPTIEMBRE": 1.0, "OCTUBRE": 1.05, "NOVIEMBRE": 1.1, "DICIEMBRE": 1.05
-    }
-    
-    factores_k_mes = {
-        "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.0, "ABRIL": 1.05,
-        "MAYO": 1.1, "JUNIO": 1.15, "JULIO": 1.2, "AGOSTO": 1.15,
-        "SEPTIEMBRE": 1.1, "OCTUBRE": 1.05, "NOVIEMBRE": 1.0, "DICIEMBRE": 1.0
-    }
-    
-    factor_mes_n = factores_n_mes.get(mes_analisis, 1.0)
-    factor_mes_p = factores_p_mes.get(mes_analisis, 1.0)
-    factor_mes_k = factores_k_mes.get(mes_analisis, 1.0)
+    factor_mes_n = FACTORES_N_MES.get(mes_analisis, 1.0)
+    factor_mes_p = FACTORES_P_MES.get(mes_analisis, 1.0)
+    factor_mes_k = FACTORES_K_MES.get(mes_analisis, 1.0)
     
     for idx in indices:
         ndre = idx['ndre']
@@ -520,10 +519,10 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             
             **🎯 FACTORES ESTACIONALES APLICADOS:**
             - **Mes Actual:** {mes_analisis}
-            - **Ajuste NDVI/NDRE:** {factores_mes.get(mes_analisis, 1.0):.2f}x
-            - **Nitrógeno:** {factores_n_mes.get(mes_analisis, 1.0):.2f}x
-            - **Fósforo:** {factores_p_mes.get(mes_analisis, 1.0):.2f}x  
-            - **Potasio:** {factores_k_mes.get(mes_analisis, 1.0):.2f}x
+            - **Ajuste NDVI/NDRE:** {FACTORES_MES.get(mes_analisis, 1.0):.2f}x
+            - **Nitrógeno:** {FACTORES_N_MES.get(mes_analisis, 1.0):.2f}x
+            - **Fósforo:** {FACTORES_P_MES.get(mes_analisis, 1.0):.2f}x  
+            - **Potasio:** {FACTORES_K_MES.get(mes_analisis, 1.0):.2f}x
             
             **🎯 ÍNDICES CALCULADOS:**
             - **Materia Orgánica:** `(B11 - B4) / (B11 + B4) * 2.5 + 0.5`
