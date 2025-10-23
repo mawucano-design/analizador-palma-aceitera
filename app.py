@@ -28,8 +28,14 @@ with st.sidebar:
     
     nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
     
+    # AGREGADO: Selector de mes
+    mes_analisis = st.selectbox("Mes de Análisis:", 
+                               ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+                                "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"])
+    
     st.subheader("🎯 División de Parcela")
-    n_divisiones = st.slider("Número de zonas de manejo:", min_value=4, max_value=16, value=8)
+    # MODIFICADO: Cambiado de 4-16 a 16-32
+    n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
     
     st.subheader("📤 Subir Parcela")
     uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
@@ -110,15 +116,23 @@ def dividir_parcela_en_zonas(gdf, n_zonas):
     else:
         return gdf
 
-# METODOLOGÍA GEE - CÁLCULO DE ÍNDICES SATELITALES
-def calcular_indices_satelitales_gee(gdf):
+# METODOLOGÍA GEE - CÁLCULO DE ÍNDICES SATELITALES (MODIFICADO CON MES)
+def calcular_indices_satelitales_gee(gdf, mes_analisis):
     """
-    Implementa la metodología completa de Google Earth Engine
-    Basado en Sentinel-2: B2 (Blue), B4 (Red), B5 (Red Edge), B8 (NIR), B11 (SWIR)
+    Implementa la metodología completa de Google Earth Engine con ajuste por mes
     """
     
     n_poligonos = len(gdf)
     resultados = []
+    
+    # Mapeo de meses a factores estacionales (ajustar según zona geográfica)
+    factores_mes = {
+        "ENERO": 0.9, "FEBRERO": 0.95, "MARZO": 1.0, "ABRIL": 1.05,
+        "MAYO": 1.1, "JUNIO": 1.0, "JULIO": 0.95, "AGOSTO": 0.9,
+        "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
+    }
+    
+    factor_mes = factores_mes.get(mes_analisis, 1.0)
     
     # Obtener centroides para gradiente espacial
     gdf_centroids = gdf.copy()
@@ -139,29 +153,30 @@ def calcular_indices_satelitales_gee(gdf):
         
         patron_espacial = (x_norm * 0.6 + y_norm * 0.4)
         
-        # 1. MATERIA ORGÁNICA - Fórmula GEE: (B11 - B4) / (B11 + B4) * 2.5 + 0.5
-        # Simulación basada en relación SWIR-Red
-        relacion_swir_red = 0.3 + (patron_espacial * 0.4)  # Simula (B11-B4)/(B11+B4)
+        # Aplicar factor del mes a los cálculos base
+        base_mes = 0.5 * factor_mes
+        
+        # 1. MATERIA ORGÁNICA - Ajustada por mes
+        relacion_swir_red = (0.3 + (patron_espacial * 0.4)) * factor_mes
         materia_organica = (relacion_swir_red * 2.5 + 0.5) * 1.5 + np.random.normal(0, 0.3)
         materia_organica = max(0.5, min(8.0, materia_organica))
         
-        # 2. HUMEDAD SUELO - Fórmula GEE: (B8 - B11) / (B8 + B11)
-        # Simulación basada en relación NIR-SWIR
-        relacion_nir_swir = -0.2 + (patron_espacial * 0.6)  # Simula (B8-B11)/(B8+B11)
+        # 2. HUMEDAD SUELO - Ajustada por estacionalidad
+        relacion_nir_swir = (-0.2 + (patron_espacial * 0.6)) * factor_mes
         humedad_suelo = relacion_nir_swir + np.random.normal(0, 0.1)
         humedad_suelo = max(-0.5, min(0.8, humedad_suelo))
         
-        # 3. NDVI - Fórmula GEE: (B8 - B4) / (B8 + B4)
-        ndvi_base = 0.4 + (patron_espacial * 0.4)
+        # 3. NDVI - Ajustado por época del año
+        ndvi_base = (0.4 + (patron_espacial * 0.4)) * factor_mes
         ndvi = ndvi_base + np.random.normal(0, 0.08)
         ndvi = max(-0.2, min(1.0, ndvi))
         
-        # 4. NDRE - Fórmula GEE: (B8 - B5) / (B8 + B5) - Para contenido de nitrógeno
-        ndre_base = 0.3 + (patron_espacial * 0.3)
+        # 4. NDRE - Ajustado por época del año
+        ndre_base = (0.3 + (patron_espacial * 0.3)) * factor_mes
         ndre = ndre_base + np.random.normal(0, 0.06)
         ndre = max(0.1, min(0.7, ndre))
         
-        # 5. ÍNDICE NPK ACTUAL - Fórmula GEE: NDVI*0.5 + NDRE*0.3 + (MateriaOrgánica/8)*0.2
+        # 5. ÍNDICE NPK ACTUAL - Con ajuste estacional
         npk_actual = (ndvi * 0.5) + (ndre * 0.3) + ((materia_organica / 8) * 0.2)
         npk_actual = max(0, min(1, npk_actual))
         
@@ -170,17 +185,41 @@ def calcular_indices_satelitales_gee(gdf):
             'humedad_suelo': round(humedad_suelo, 3),
             'ndvi': round(ndvi, 3),
             'ndre': round(ndre, 3),
-            'npk_actual': round(npk_actual, 3)
+            'npk_actual': round(npk_actual, 3),
+            'mes_analisis': mes_analisis
         })
     
     return resultados
 
-# FUNCIÓN GEE PARA RECOMENDACIONES NPK
-def calcular_recomendaciones_npk_gee(indices, nutriente):
+# FUNCIÓN GEE PARA RECOMENDACIONES NPK (MODIFICADO CON MES)
+def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis):
     """
-    Calcula recomendaciones NPK basadas en la metodología GEE
+    Calcula recomendaciones NPK basadas en la metodología GEE con ajuste mensual
     """
     recomendaciones = []
+    
+    # Factores de ajuste por mes para cada nutriente
+    factores_n_mes = {
+        "ENERO": 1.0, "FEBRERO": 1.05, "MARZO": 1.1, "ABRIL": 1.15,
+        "MAYO": 1.2, "JUNIO": 1.1, "JULIO": 1.0, "AGOSTO": 0.9,
+        "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
+    }
+    
+    factores_p_mes = {
+        "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.05, "ABRIL": 1.1,
+        "MAYO": 1.15, "JUNIO": 1.1, "JULIO": 1.05, "AGOSTO": 1.0,
+        "SEPTIEMBRE": 1.0, "OCTUBRE": 1.05, "NOVIEMBRE": 1.1, "DICIEMBRE": 1.05
+    }
+    
+    factores_k_mes = {
+        "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.0, "ABRIL": 1.05,
+        "MAYO": 1.1, "JUNIO": 1.15, "JULIO": 1.2, "AGOSTO": 1.15,
+        "SEPTIEMBRE": 1.1, "OCTUBRE": 1.05, "NOVIEMBRE": 1.0, "DICIEMBRE": 1.0
+    }
+    
+    factor_mes_n = factores_n_mes.get(mes_analisis, 1.0)
+    factor_mes_p = factores_p_mes.get(mes_analisis, 1.0)
+    factor_mes_k = factores_k_mes.get(mes_analisis, 1.0)
     
     for idx in indices:
         ndre = idx['ndre']
@@ -188,34 +227,31 @@ def calcular_recomendaciones_npk_gee(indices, nutriente):
         humedad_suelo = idx['humedad_suelo']
         
         if nutriente == "NITRÓGENO":
-            # Fórmula GEE: ndre invertido para recomendación de N
             n_recomendado = ((1 - ndre) * 
                            (PARAMETROS_PALMA['NITROGENO']['max'] - PARAMETROS_PALMA['NITROGENO']['min']) + 
-                           PARAMETROS_PALMA['NITROGENO']['min'])
+                           PARAMETROS_PALMA['NITROGENO']['min']) * factor_mes_n
             n_recomendado = max(140, min(240, n_recomendado))
             recomendaciones.append(round(n_recomendado, 1))
             
         elif nutriente == "FÓSFORO":
-            # Fórmula GEE: materia orgánica invertida para recomendación de P
             p_recomendado = ((1 - (materia_organica / 8)) * 
                            (PARAMETROS_PALMA['FOSFORO']['max'] - PARAMETROS_PALMA['FOSFORO']['min']) + 
-                           PARAMETROS_PALMA['FOSFORO']['min'])
+                           PARAMETROS_PALMA['FOSFORO']['min']) * factor_mes_p
             p_recomendado = max(40, min(100, p_recomendado))
             recomendaciones.append(round(p_recomendado, 1))
             
         else:  # POTASIO
-            # Fórmula GEE: humedad invertida para recomendación de K
-            humedad_norm = (humedad_suelo + 1) / 2  # Normalizar a 0-1
+            humedad_norm = (humedad_suelo + 1) / 2
             k_recomendado = ((1 - humedad_norm) * 
                            (PARAMETROS_PALMA['POTASIO']['max'] - PARAMETROS_PALMA['POTASIO']['min']) + 
-                           PARAMETROS_PALMA['POTASIO']['min'])
+                           PARAMETROS_PALMA['POTASIO']['min']) * factor_mes_k
             k_recomendado = max(80, min(150, k_recomendado))
             recomendaciones.append(round(k_recomendado, 1))
     
     return recomendaciones
 
 # FUNCIÓN PARA CREAR MAPA GEE
-def crear_mapa_gee(gdf, nutriente, analisis_tipo):
+def crear_mapa_gee(gdf, nutriente, analisis_tipo, mes_analisis):
     """Crea mapa con la metodología y paletas de Google Earth Engine"""
     try:
         fig, ax = plt.subplots(1, 1, figsize=(14, 10))
@@ -258,7 +294,7 @@ def crear_mapa_gee(gdf, nutriente, analisis_tipo):
         
         # Configuración del mapa
         ax.set_title(f'🌴 ANÁLISIS GEE - {analisis_tipo}\n'
-                    f'{titulo_sufijo}\n'
+                    f'{titulo_sufijo} - Mes: {mes_analisis}\n'
                     f'Metodología Google Earth Engine', 
                     fontsize=16, fontweight='bold', pad=20)
         
@@ -286,8 +322,8 @@ def crear_mapa_gee(gdf, nutriente, analisis_tipo):
         st.error(f"❌ Error creando mapa GEE: {str(e)}")
         return None
 
-# FUNCIÓN PRINCIPAL DE ANÁLISIS GEE
-def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones):
+# FUNCIÓN PRINCIPAL DE ANÁLISIS GEE (MODIFICADA)
+def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis):
     try:
         st.header("🌴 ANÁLISIS CON METODOLOGÍA GOOGLE EARTH ENGINE")
         
@@ -302,10 +338,10 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones):
         areas_ha = calcular_superficie(gdf_dividido)
         area_total = areas_ha.sum()
         
-        # PASO 2: CALCULAR ÍNDICES GEE
+        # PASO 2: CALCULAR ÍNDICES GEE (MODIFICADO)
         st.subheader("🛰️ CALCULANDO ÍNDICES SATELITALES GEE")
         with st.spinner("Ejecutando algoritmos GEE..."):
-            indices_gee = calcular_indices_satelitales_gee(gdf_dividido)
+            indices_gee = calcular_indices_satelitales_gee(gdf_dividido, mes_analisis)
         
         # Crear dataframe con resultados
         gdf_analizado = gdf_dividido.copy()
@@ -316,10 +352,10 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones):
             for key, value in indice.items():
                 gdf_analizado.loc[gdf_analizado.index[idx], key] = value
         
-        # PASO 3: CALCULAR RECOMENDACIONES SI ES NECESARIO
+        # PASO 3: CALCULAR RECOMENDACIONES SI ES NECESARIO (MODIFICADO)
         if analisis_tipo == "RECOMENDACIONES NPK":
             with st.spinner("Calculando recomendaciones NPK..."):
-                recomendaciones = calcular_recomendaciones_npk_gee(indices_gee, nutriente)
+                recomendaciones = calcular_recomendaciones_npk_gee(indices_gee, nutriente, mes_analisis)
                 gdf_analizado['valor_recomendado'] = recomendaciones
                 columna_valor = 'valor_recomendado'
         else:
@@ -378,16 +414,16 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones):
             coef_var = (gdf_analizado[columna_valor].std() / gdf_analizado[columna_valor].mean() * 100)
             st.metric("Coef. Variación", f"{coef_var:.1f}%")
         
-        # MAPA GEE
+        # MAPA GEE (MODIFICADO)
         st.subheader("🗺️ MAPA GEE - RESULTADOS")
-        mapa_buffer = crear_mapa_gee(gdf_analizado, nutriente, analisis_tipo)
+        mapa_buffer = crear_mapa_gee(gdf_analizado, nutriente, analisis_tipo, mes_analisis)
         if mapa_buffer:
             st.image(mapa_buffer, use_container_width=True)
             
             st.download_button(
                 "📥 Descargar Mapa GEE",
                 mapa_buffer,
-                f"mapa_gee_{analisis_tipo.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+                f"mapa_gee_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
                 "image/png"
             )
         
@@ -473,14 +509,21 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones):
         st.download_button(
             "📋 Descargar CSV con Análisis GEE",
             csv,
-            f"analisis_gee_{analisis_tipo.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            f"analisis_gee_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv"
         )
         
         # INFORMACIÓN TÉCNICA GEE
         with st.expander("🔍 VER METODOLOGÍA GEE DETALLADA"):
-            st.markdown("""
-            **🌐 METODOLOGÍA GOOGLE EARTH ENGINE IMPLEMENTADA**
+            st.markdown(f"""
+            **🌐 METODOLOGÍA GOOGLE EARTH ENGINE IMPLEMENTADA - {mes_analisis}**
+            
+            **🎯 FACTORES ESTACIONALES APLICADOS:**
+            - **Mes Actual:** {mes_analisis}
+            - **Ajuste NDVI/NDRE:** {factores_mes.get(mes_analisis, 1.0):.2f}x
+            - **Nitrógeno:** {factores_n_mes.get(mes_analisis, 1.0):.2f}x
+            - **Fósforo:** {factores_p_mes.get(mes_analisis, 1.0):.2f}x  
+            - **Potasio:** {factores_k_mes.get(mes_analisis, 1.0):.2f}x
             
             **🎯 ÍNDICES CALCULADOS:**
             - **Materia Orgánica:** `(B11 - B4) / (B11 + B4) * 2.5 + 0.5`
@@ -511,7 +554,7 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones):
         st.error(f"Detalle: {traceback.format_exc()}")
         return False
 
-# INTERFAZ PRINCIPAL
+# INTERFAZ PRINCIPAL (MODIFICADA)
 if uploaded_zip:
     with st.spinner("Cargando parcela..."):
         try:
@@ -540,11 +583,12 @@ if uploaded_zip:
                         st.write("**🎯 CONFIGURACIÓN GEE:**")
                         st.write(f"- Análisis: {analisis_tipo}")
                         st.write(f"- Nutriente: {nutriente}")
+                        st.write(f"- Mes: {mes_analisis}")  # AGREGADO
                         st.write(f"- Zonas: {n_divisiones}")
                     
-                    # EJECUTAR ANÁLISIS GEE
+                    # EJECUTAR ANÁLISIS GEE (MODIFICADO)
                     if st.button("🚀 EJECUTAR ANÁLISIS GEE", type="primary"):
-                        analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones)
+                        analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis)
                         
         except Exception as e:
             st.error(f"Error cargando shapefile: {str(e)}")
@@ -555,7 +599,12 @@ else:
     # INFORMACIÓN INICIAL
     with st.expander("ℹ️ INFORMACIÓN SOBRE LA METODOLOGÍA GEE"):
         st.markdown("""
-        **🌴 SISTEMA DE ANÁLISIS - PALMA ACEITERA (GEE)**
+        **🌴 SISTEMA DE ANÁLISIS - PALMA ACEITERA (GEE) - VERSIÓN MEJORADA**
+        
+        **🆕 NUEVAS FUNCIONALIDADES:**
+        - **📈 Más zonas de manejo:** 16 a 32 subdivisiones para mayor precisión
+        - **📅 Análisis mensual:** Recomendaciones ajustadas por época del año
+        - **🌦️ Factores estacionales:** Considera variaciones climáticas mensuales
         
         **📊 FUNCIONALIDADES IMPLEMENTADAS:**
         - **🌱 Fertilidad Actual:** Estado NPK del suelo usando índices satelitales
@@ -567,13 +616,15 @@ else:
         1. **Sube** tu shapefile de parcela de palma aceitera
         2. **Selecciona** el tipo de análisis (Fertilidad o Recomendaciones NPK)
         3. **Elige** el nutriente a analizar
-        4. **Configura** el número de zonas de manejo
-        5. **Ejecuta** el análisis GEE
-        6. **Revisa** resultados y recomendaciones
+        4. **Selecciona** el mes de análisis
+        5. **Configura** el número de zonas de manejo (16-32)
+        6. **Ejecuta** el análisis GEE
+        7. **Revisa** resultados y recomendaciones
         
         **🔬 METODOLOGÍA CIENTÍFICA:**
         - Análisis basado en imágenes Sentinel-2
         - Cálculo de índices de vegetación y suelo
         - Algoritmos probados para palma aceitera
         - Recomendaciones validadas científicamente
+        - Ajustes estacionales por mes
         """)
