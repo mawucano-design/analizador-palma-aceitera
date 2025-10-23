@@ -6,3 +6,4 @@ matplotlib>=3.5.0
 shapely>=2.0.0
 fiona>=1.9.0
 rtree>=1.0.0
+pyproj>=3.0.0
