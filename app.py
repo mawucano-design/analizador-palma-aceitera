@@ -12,8 +12,6 @@ from matplotlib.colors import LinearSegmentedColormap
 import io
 from shapely.geometry import Polygon
 import math
-import folium
-from streamlit_folium import st_folium
 import json
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
