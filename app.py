@@ -14,7 +14,7 @@ from shapely.geometry import Polygon
 import math
 
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
-st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA")
+st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
 st.markdown("---")
 
 # Configurar para restaurar .shx automáticamente
@@ -45,11 +45,114 @@ PARAMETROS_CULTIVOS = {
     }
 }
 
+# PRINCIPIOS AGROECOLÓGICOS - RECOMENDACIONES ESPECÍFICAS
+RECOMENDACIONES_AGROECOLOGICAS = {
+    'PALMA_ACEITERA': {
+        'COBERTURAS_VIVAS': [
+            "Leguminosas: Centrosema pubescens, Pueraria phaseoloides",
+            "Coberturas mixtas: Maní forrajero (Arachis pintoi)",
+            "Plantas de cobertura baja: Dichondra repens"
+        ],
+        'ABONOS_VERDES': [
+            "Crotalaria juncea: 3-4 kg/ha antes de la siembra",
+            "Mucuna pruriens: 2-3 kg/ha para control de malezas",
+            "Canavalia ensiformis: Fijación de nitrógeno"
+        ],
+        'BIOFERTILIZANTES': [
+            "Bocashi: 2-3 ton/ha cada 6 meses",
+            "Compost de racimo vacío: 1-2 ton/ha",
+            "Biofertilizante líquido: Aplicación foliar mensual"
+        ],
+        'MANEJO_ECOLOGICO': [
+            "Uso de trampas amarillas para insectos",
+            "Cultivos trampa: Maíz alrededor de la plantación",
+            "Conservación de enemigos naturales"
+        ],
+        'ASOCIACIONES': [
+            "Piña en calles durante primeros 2 años",
+            "Yuca en calles durante establecimiento",
+            "Leguminosas arbustivas como cercas vivas"
+        ]
+    },
+    'CACAO': {
+        'COBERTURAS_VIVAS': [
+            "Leguminosas rastreras: Arachis pintoi",
+            "Coberturas sombreadas: Erythrina poeppigiana",
+            "Plantas aromáticas: Lippia alba para control plagas"
+        ],
+        'ABONOS_VERDES': [
+            "Frijol terciopelo (Mucuna pruriens): 3 kg/ha",
+            "Guandul (Cajanus cajan): Podas periódicas",
+            "Crotalaria: Control de nematodos"
+        ],
+        'BIOFERTILIZANTES': [
+            "Compost de cacaoteca: 3-4 ton/ha",
+            "Bocashi especial cacao: 2 ton/ha",
+            "Té de compost aplicado al suelo"
+        ],
+        'MANEJO_ECOLOGICO': [
+            "Sistema agroforestal multiestrato",
+            "Manejo de sombra regulada (30-50%)",
+            "Control biológico con hongos entomopatógenos"
+        ],
+        'ASOCIACIONES': [
+            "Árboles maderables: Cedro, Caoba",
+            "Frutales: Cítricos, Aguacate",
+            "Plantas medicinales: Jengibre, Cúrcuma"
+        ]
+    },
+    'BANANO': {
+        'COBERTURAS_VIVAS': [
+            "Arachis pintoi entre calles",
+            "Leguminosas de porte bajo",
+            "Coberturas para control de malas hierbas"
+        ],
+        'ABONOS_VERDES': [
+            "Mucuna pruriens: 4 kg/ha entre ciclos",
+            "Canavalia ensiformis: Fijación de N",
+            "Crotalaria spectabilis: Control nematodos"
+        ],
+        'BIOFERTILIZANTES': [
+            "Compost de pseudotallo: 4-5 ton/ha",
+            "Bocashi bananero: 3 ton/ha",
+            "Biofertilizante a base de micorrizas"
+        ],
+        'MANEJO_ECOLOGICO': [
+            "Trampas cromáticas para picudos",
+            "Barreras vivas con citronela",
+            "Uso de trichoderma para control enfermedades"
+        ],
+        'ASOCIACIONES': [
+            "Leguminosas arbustivas en linderos",
+            "Cítricos como cortavientos",
+            "Plantas repelentes: Albahaca, Menta"
+        ]
+    }
+}
+
 # FACTORES ESTACIONALES
 FACTORES_MES = {
     "ENERO": 0.9, "FEBRERO": 0.95, "MARZO": 1.0, "ABRIL": 1.05,
     "MAYO": 1.1, "JUNIO": 1.0, "JULIO": 0.95, "AGOSTO": 0.9,
     "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
+}
+
+FACTORES_N_MES = {
+    "ENERO": 1.0, "FEBRERO": 1.05, "MARZO": 1.1, "ABRIL": 1.15,
+    "MAYO": 1.2, "JUNIO": 1.1, "JULIO": 1.0, "AGOSTO": 0.9,
+    "SEPTIEMBRE": 0.95, "OCTUBRE": 1.0, "NOVIEMBRE": 1.05, "DICIEMBRE": 1.0
+}
+
+FACTORES_P_MES = {
+    "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.05, "ABRIL": 1.1,
+    "MAYO": 1.15, "JUNIO": 1.1, "JULIO": 1.05, "AGOSTO": 1.0,
+    "SEPTIEMBRE": 1.0, "OCTUBRE": 1.05, "NOVIEMBRE": 1.1, "DICIEMBRE": 1.05
+}
+
+FACTORES_K_MES = {
+    "ENERO": 1.0, "FEBRERO": 1.0, "MARZO": 1.0, "ABRIL": 1.05,
+    "MAYO": 1.1, "JUNIO": 1.15, "JULIO": 1.2, "AGOSTO": 1.15,
+    "SEPTIEMBRE": 1.1, "OCTUBRE": 1.05, "NOVIEMBRE": 1.0, "DICIEMBRE": 1.0
 }
 
 # PALETAS GEE MEJORADAS
@@ -93,10 +196,11 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# FUNCIÓN PARA CREAR MAPA ESTÁTICO
-def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
-    """Crea mapa estático con matplotlib"""
+# FUNCIÓN PARA CREAR MAPA INTERACTIVO SIMPLIFICADO
+def crear_mapa_interactivo_simple(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
+    """Crea un mapa interactivo simple sin folium"""
     try:
+        # Crear figura de matplotlib
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
         # Configurar colores según el tipo de análisis
@@ -163,6 +267,121 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
     except Exception as e:
         st.error(f"Error creando mapa: {str(e)}")
         return None
+
+# FUNCIÓN PARA MOSTRAR RECOMENDACIONES AGROECOLÓGICAS
+def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis_tipo, nutriente=None):
+    """Muestra recomendaciones agroecológicas específicas"""
+    
+    st.markdown("### 🌿 RECOMENDACIONES AGROECOLÓGICAS")
+    
+    # Determinar el enfoque según la categoría
+    if categoria in ["MUY BAJA", "MUY BAJO", "BAJA", "BAJO"]:
+        enfoque = "🚨 **ENFOQUE: RECUPERACIÓN Y REGENERACIÓN**"
+        intensidad = "Alta"
+    elif categoria in ["MEDIA", "MEDIO"]:
+        enfoque = "✅ **ENFOQUE: MANTENIMIENTO Y MEJORA**"
+        intensidad = "Media"
+    else:
+        enfoque = "🌟 **ENFOQUE: CONSERVACIÓN Y OPTIMIZACIÓN**"
+        intensidad = "Baja"
+    
+    st.success(f"{enfoque} - Intensidad: {intensidad}")
+    
+    # Obtener recomendaciones específicas del cultivo
+    recomendaciones = RECOMENDACIONES_AGROECOLOGICAS.get(cultivo, {})
+    
+    # Mostrar por categorías
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        with st.expander("🌱 **COBERTURAS VIVAS**", expanded=True):
+            for rec in recomendaciones.get('COBERTURAS_VIVAS', []):
+                st.markdown(f"• {rec}")
+            
+            # Recomendaciones adicionales según área
+            if area_ha > 10:
+                st.info("**Para áreas grandes:** Implementar en franjas progresivas")
+            else:
+                st.info("**Para áreas pequeñas:** Cobertura total recomendada")
+    
+    with col2:
+        with st.expander("🌿 **ABONOS VERDES**", expanded=True):
+            for rec in recomendaciones.get('ABONOS_VERDES', []):
+                st.markdown(f"• {rec}")
+            
+            # Ajustar según intensidad
+            if intensidad == "Alta":
+                st.warning("**Prioridad alta:** Sembrar inmediatamente después de análisis")
+    
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        with st.expander("💩 **BIOFERTILIZANTES**", expanded=True):
+            for rec in recomendaciones.get('BIOFERTILIZANTES', []):
+                st.markdown(f"• {rec}")
+            
+            # Recomendaciones específicas por nutriente
+            if analisis_tipo == "RECOMENDACIONES NPK" and nutriente:
+                if nutriente == "NITRÓGENO":
+                    st.markdown("• **Enmienda nitrogenada:** Compost de leguminosas")
+                elif nutriente == "FÓSFORO":
+                    st.markdown("• **Enmienda fosfatada:** Rocas fosfóricas molidas")
+                else:
+                    st.markdown("• **Enmienda potásica:** Cenizas de biomasa")
+    
+    with col4:
+        with st.expander("🐞 **MANEJO ECOLÓGICO**", expanded=True):
+            for rec in recomendaciones.get('MANEJO_ECOLOGICO', []):
+                st.markdown(f"• {rec}")
+            
+            # Recomendaciones según categoría
+            if categoria in ["MUY BAJA", "MUY BAJO"]:
+                st.markdown("• **Urgente:** Implementar control biológico intensivo")
+    
+    with st.expander("🌳 **ASOCIACIONES Y DIVERSIFICACIÓN**", expanded=True):
+        for rec in recomendaciones.get('ASOCIACIONES', []):
+            st.markdown(f"• {rec}")
+        
+        # Beneficios de las asociaciones
+        st.markdown("""
+        **Beneficios agroecológicos:**
+        • Mejora la biodiversidad funcional
+        • Reduce incidencia de plagas y enfermedades
+        • Optimiza el uso de recursos (agua, luz, nutrientes)
+        • Incrementa la resiliencia del sistema
+        """)
+    
+    # PLAN DE IMPLEMENTACIÓN
+    st.markdown("### 📅 PLAN DE IMPLEMENTACIÓN AGROECOLÓGICA")
+    
+    timeline_col1, timeline_col2, timeline_col3 = st.columns(3)
+    
+    with timeline_col1:
+        st.markdown("**🏁 INMEDIATO (0-15 días)**")
+        st.markdown("""
+        • Preparación del terreno
+        • Siembra de abonos verdes
+        • Aplicación de biofertilizantes
+        • Instalación de trampas
+        """)
+    
+    with timeline_col2:
+        st.markdown("**📈 CORTO PLAZO (1-3 meses)**")
+        st.markdown("""
+        • Establecimiento coberturas
+        • Monitoreo inicial
+        • Ajustes de manejo
+        • Podas de formación
+        """)
+    
+    with timeline_col3:
+        st.markdown("**🎯 MEDIANO PLAZO (3-12 meses)**")
+        st.markdown("""
+        • Evaluación de resultados
+        • Diversificación
+        • Optimización del sistema
+        • Réplica en otras zonas
+        """)
 
 # FUNCIÓN PARA DIVIDIR PARCELA
 def dividir_parcela_en_zonas(gdf, n_zonas):
@@ -307,6 +526,10 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
     """Calcula recomendaciones NPK basadas en la metodología GEE"""
     recomendaciones = []
     
+    factor_mes_n = FACTORES_N_MES.get(mes_analisis, 1.0)
+    factor_mes_p = FACTORES_P_MES.get(mes_analisis, 1.0)
+    factor_mes_k = FACTORES_K_MES.get(mes_analisis, 1.0)
+    
     # Obtener parámetros del cultivo seleccionado
     parametros_cultivo = PARAMETROS_CULTIVOS.get(cultivo, PARAMETROS_CULTIVOS['PALMA_ACEITERA'])
     
@@ -318,7 +541,7 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
         if nutriente == "NITRÓGENO":
             n_recomendado = ((1 - ndre) * 
                            (parametros_cultivo['NITROGENO']['max'] - parametros_cultivo['NITROGENO']['min']) + 
-                           parametros_cultivo['NITROGENO']['min'])
+                           parametros_cultivo['NITRÓGENO']['min']) * factor_mes_n
             n_recomendado = max(parametros_cultivo['NITROGENO']['min'] - 20, 
                               min(parametros_cultivo['NITROGENO']['max'] + 20, n_recomendado))
             recomendaciones.append(round(n_recomendado, 1))
@@ -326,7 +549,7 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
         elif nutriente == "FÓSFORO":
             p_recomendado = ((1 - (materia_organica / 8)) * 
                            (parametros_cultivo['FOSFORO']['max'] - parametros_cultivo['FOSFORO']['min']) + 
-                           parametros_cultivo['FOSFORO']['min'])
+                           parametros_cultivo['FOSFORO']['min']) * factor_mes_p
             p_recomendado = max(parametros_cultivo['FOSFORO']['min'] - 10, 
                               min(parametros_cultivo['FOSFORO']['max'] + 10, p_recomendado))
             recomendaciones.append(round(p_recomendado, 1))
@@ -335,12 +558,84 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
             humedad_norm = (humedad_suelo + 1) / 2
             k_recomendado = ((1 - humedad_norm) * 
                            (parametros_cultivo['POTASIO']['max'] - parametros_cultivo['POTASIO']['min']) + 
-                           parametros_cultivo['POTASIO']['min'])
+                           parametros_cultivo['POTASIO']['min']) * factor_mes_k
             k_recomendado = max(parametros_cultivo['POTASIO']['min'] - 15, 
                               min(parametros_cultivo['POTASIO']['max'] + 15, k_recomendado))
             recomendaciones.append(round(k_recomendado, 1))
     
     return recomendaciones
+
+# FUNCIÓN PARA CREAR MAPA GEE
+def crear_mapa_gee(gdf, nutriente, analisis_tipo, mes_analisis):
+    """Crea mapa con la metodología y paletas de Google Earth Engine"""
+    try:
+        fig, ax = plt.subplots(1, 1, figsize=(14, 10))
+        
+        # Seleccionar paleta según el análisis
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
+            vmin, vmax = 0, 1
+            columna = 'npk_actual'
+            titulo_sufijo = 'Índice NPK Actual (0-1)'
+        else:
+            if nutriente == "NITRÓGENO":
+                cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
+                vmin, vmax = 140, 240
+            elif nutriente == "FÓSFORO":
+                cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
+                vmin, vmax = 40, 100
+            else:
+                cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
+                vmin, vmax = 80, 150
+            
+            columna = 'valor_recomendado'
+            titulo_sufijo = f'Recomendación {nutriente} (kg/ha)'
+        
+        # Plotear cada polígono
+        for idx, row in gdf.iterrows():
+            valor = row[columna]
+            valor_norm = (valor - vmin) / (vmax - vmin)
+            valor_norm = max(0, min(1, valor_norm))
+            color = cmap(valor_norm)
+            
+            gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=1.5)
+            
+            # Etiqueta con valor
+            centroid = row.geometry.centroid
+            ax.annotate(f"Z{row['id_zona']}\n{valor:.1f}", (centroid.x, centroid.y), 
+                       xytext=(5, 5), textcoords="offset points", 
+                       fontsize=8, color='black', weight='bold',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.9))
+        
+        # Configuración del mapa
+        ax.set_title(f'🌴 ANÁLISIS GEE - {analisis_tipo}\n'
+                    f'{titulo_sufijo} - Mes: {mes_analisis}\n'
+                    f'Metodología Google Earth Engine', 
+                    fontsize=16, fontweight='bold', pad=20)
+        
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
+        
+        # Barra de colores
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
+        cbar.set_label(titulo_sufijo, fontsize=12, fontweight='bold')
+        
+        plt.tight_layout()
+        
+        # Convertir a imagen
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        plt.close()
+        
+        return buf
+        
+    except Exception as e:
+        st.error(f"❌ Error creando mapa GEE: {str(e)}")
+        return None
 
 # FUNCIÓN PRINCIPAL DE ANÁLISIS GEE
 def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis, cultivo):
@@ -439,10 +734,10 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             coef_var = (gdf_analizado[columna_valor].std() / gdf_analizado[columna_valor].mean() * 100)
             st.metric("Coef. Variación", f"{coef_var:.1f}%")
         
-        # MAPA ESTÁTICO
-        st.subheader("🗺️ MAPA DE RESULTADOS")
+        # MAPA INTERACTIVO SIMPLIFICADO
+        st.subheader("🗺️ MAPA INTERACTIVO - RESULTADOS")
         
-        mapa_estatico = crear_mapa_estatico(
+        mapa_interactivo = crear_mapa_interactivo_simple(
             gdf_analizado, 
             f"Análisis GEE - {analisis_tipo} - {cultivo}",
             columna_valor,
@@ -450,16 +745,8 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             nutriente
         )
         
-        if mapa_estatico:
-            st.image(mapa_estatico, use_container_width=True)
-            
-            # Botón para descargar el mapa
-            st.download_button(
-                "📸 Descargar Mapa PNG",
-                mapa_estatico.getvalue(),
-                f"mapa_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}.png",
-                "image/png"
-            )
+        if mapa_interactivo:
+            st.image(mapa_interactivo, use_container_width=True)
         
         # BOTONES DE EXPORTACIÓN
         st.subheader("📥 DESCARGAR RESULTADOS")
@@ -472,7 +759,7 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             st.download_button(
                 "📋 Descargar CSV",
                 csv,
-                f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}.csv",
+                f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 "text/csv"
             )
         
@@ -482,29 +769,44 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             st.download_button(
                 "🗺️ Descargar GeoJSON",
                 geojson_str,
-                f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}.geojson",
+                f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.geojson",
                 "application/geo+json"
             )
         
         with col_export3:
-            # Exportar Shapefile
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                shp_path = os.path.join(tmp_dir, "resultados_gee.shp")
-                gdf_analizado.to_file(shp_path)
-                
-                # Crear ZIP con shapefile
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                    for file in os.listdir(tmp_dir):
-                        zip_file.write(os.path.join(tmp_dir, file), file)
-                zip_buffer.seek(0)
-                
+            # Exportar Mapa PNG
+            if mapa_interactivo:
                 st.download_button(
-                    "📁 Descargar Shapefile (ZIP)",
-                    zip_buffer,
-                    f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}.zip",
-                    "application/zip"
+                    "🖼️ Descargar Mapa PNG",
+                    mapa_interactivo.getvalue(),
+                    f"mapa_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+                    "image/png"
                 )
+        
+        # RECOMENDACIONES AGROECOLÓGICAS POR CATEGORÍA
+        st.subheader("🌿 RECOMENDACIONES AGROECOLÓGICAS POR ZONA")
+        
+        categorias = gdf_analizado['categoria'].unique()
+        for cat in sorted(categorias):
+            subset = gdf_analizado[gdf_analizado['categoria'] == cat]
+            area_cat = subset['area_ha'].sum()
+            
+            with st.expander(f"🎯 **ZONAS {cat}** - {area_cat:.1f} ha ({(area_cat/area_total*100):.1f}% del área)", expanded=True):
+                
+                # Mostrar recomendaciones agroecológicas
+                mostrar_recomendaciones_agroecologicas(cultivo, cat, area_cat, analisis_tipo, nutriente)
+                
+                # Mostrar estadísticas de la categoría
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Número de Zonas", len(subset))
+                with col2:
+                    if analisis_tipo == "FERTILIDAD ACTUAL":
+                        st.metric("NPK Promedio", f"{subset['npk_actual'].mean():.3f}")
+                    else:
+                        st.metric("Valor Promedio", f"{subset['valor_recomendado'].mean():.1f}")
+                with col3:
+                    st.metric("Área Total", f"{area_cat:.1f} ha")
         
         # TABLA DE ÍNDICES GEE
         st.subheader("🔬 ÍNDICES SATELITALES GEE POR ZONA")
@@ -520,56 +822,12 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
         
         st.dataframe(tabla_indices, use_container_width=True)
         
-        # RECOMENDACIONES GENERALES
-        st.subheader("💡 RECOMENDACIONES GENERALES")
-        
-        # Mostrar recomendaciones por categoría
-        categorias = gdf_analizado['categoria'].unique()
-        for cat in sorted(categorias):
-            subset = gdf_analizado[gdf_analizado['categoria'] == cat]
-            area_cat = subset['area_ha'].sum()
-            
-            with st.expander(f"🎯 **ZONAS {cat}** - {area_cat:.1f} ha ({(area_cat/area_total*100):.1f}% del área)"):
-                
-                if cat in ["MUY BAJA", "MUY BAJO", "BAJA", "BAJO"]:
-                    st.markdown("**🚨 ESTRATEGIA: FERTILIZACIÓN CORRECTIVA**")
-                    st.markdown("""
-                    - Aplicar dosis completas de NPK
-                    - Incorporar materia orgánica
-                    - Monitorear cada 3 meses
-                    - Considerar enmiendas específicas
-                    """)
-                elif cat in ["MEDIA", "MEDIO"]:
-                    st.markdown("**✅ ESTRATEGIA: MANTENIMIENTO BALANCEADO**")
-                    st.markdown("""
-                    - Seguir programa estándar de fertilización
-                    - Monitorear cada 6 meses
-                    - Mantener coberturas vegetales
-                    """)
-                else:
-                    st.markdown("**🌟 ESTRATEGIA: MANTENIMIENTO CONSERVADOR**")
-                    st.markdown("""
-                    - Reducir dosis de fertilizantes
-                    - Enfoque en sostenibilidad
-                    - Promover biodiversidad
-                    """)
-                
-                # Mostrar estadísticas de la categoría
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Número de Zonas", len(subset))
-                with col2:
-                    if analisis_tipo == "FERTILIDAD ACTUAL":
-                        st.metric("NPK Promedio", f"{subset['npk_actual'].mean():.3f}")
-                    else:
-                        st.metric("Valor Promedio", f"{subset['valor_recomendado'].mean():.1f}")
-                with col3:
-                    st.metric("Área Total", f"{area_cat:.1f} ha")
-        
         return gdf_analizado
         
     except Exception as e:
         st.error(f"❌ Error en análisis GEE: {str(e)}")
+        import traceback
+        st.error(f"Detalle: {traceback.format_exc()}")
         return None
 
 # INTERFAZ PRINCIPAL
@@ -607,7 +865,7 @@ if uploaded_zip:
                     
                     # VISUALIZAR PARCELA ORIGINAL
                     st.subheader("🗺️ VISUALIZACIÓN DE LA PARCELA")
-                    mapa_parcela = crear_mapa_estatico(gdf, "Parcela Original")
+                    mapa_parcela = crear_mapa_interactivo_simple(gdf, "Parcela Original - Base ESRI Satélite")
                     if mapa_parcela:
                         st.image(mapa_parcela, use_container_width=True)
                     
@@ -622,39 +880,50 @@ else:
     st.info("📁 Sube el ZIP de tu parcela para comenzar el análisis")
     
     # INFORMACIÓN INICIAL
-    with st.expander("ℹ️ INFORMACIÓN SOBRE EL SISTEMA"):
+    with st.expander("ℹ️ INFORMACIÓN SOBRE EL SISTEMA AGROECOLÓGICO GEE"):
         st.markdown("""
-        ## 🌱 SISTEMA DE ANÁLISIS MULTICULTIVO GEE
+        ## 🌱 SISTEMA DE ANÁLISIS MULTICULTIVO CON ENFOQUE AGROECOLÓGICO
 
-        **🎯 FUNCIONALIDADES PRINCIPALES:**
+        **🆕 NUEVAS FUNCIONALIDADES AGROECOLÓGICAS:**
 
-        ### 📊 ANÁLISIS GEE COMPLETO:
-        - **Metodología Google Earth Engine** con imágenes Sentinel-2
-        - **Índices de vegetación**: NDVI, NDRE, Materia Orgánica
-        - **Análisis de fertilidad** actual del suelo
-        - **Recomendaciones NPK** específicas por zona
+        ### 🌿 PRINCIPIOS AGROECOLÓGICOS IMPLEMENTADOS:
+        - **Coberturas vivas y abonos verdes**
+        - **Biofertilizantes y compostajes**
+        - **Manejo ecológico de plagas**
+        - **Asociaciones y diversificación**
+        - **Manejo sostenible del suelo**
 
         ### 🎯 CULTIVOS DISPONIBLES:
-        - **🌴 PALMA ACEITERA**
-        - **🍫 CACAO** 
-        - **🍌 BANANO**
+        - **🌴 PALMA ACEITERA**: Sistema agroecológico integrado
+        - **🍫 CACAO**: Sistemas agroforestales multiestrato
+        - **🍌 BANANO**: Manejo ecológico intensivo
 
-        ### 📥 EXPORTACIÓN MULTIFORMATO:
-        - **CSV** para análisis de datos
-        - **GeoJSON** para aplicaciones web
-        - **Shapefile** para sistemas GIS
-        - **Mapas PNG** de alta calidad
+        ### 📊 METODOLOGÍA GEE MEJORADA:
+        - **Análisis de fertilidad actual** con índices satelitales
+        - **Recomendaciones NPK** precisas por zona
+        - **Factores estacionales** mensuales
+        - **Mapas interactivos** con visualización profesional
 
-        **🚀 INSTRUCCIONES:**
+        ### 🌍 BENEFICIOS AGROECOLÓGICOS:
+        - ✅ **Aumenta** la biodiversidad funcional
+        - ✅ **Mejora** la salud del suelo
+        - ✅ **Reduce** el uso de insumos externos
+        - ✅ **Incrementa** la resiliencia climática
+        - ✅ **Optimiza** los recursos naturales
+
+        **🚀 INSTRUCCIONES DE USO:**
         1. **Sube** tu shapefile en formato ZIP
-        2. **Configura** los parámetros de análisis
-        3. **Ejecuta** el análisis GEE completo
-        4. **Revisa** resultados y recomendaciones
-        5. **Exporta** en los formatos que necesites
+        2. **Selecciona** el cultivo a analizar
+        3. **Elige** el tipo de análisis (Fertilidad o NPK)
+        4. **Configura** los parámetros de análisis
+        5. **Ejecuta** el análisis GEE completo
+        6. **Revisa** recomendaciones agroecológicas
+        7. **Exporta** resultados en múltiples formatos
 
-        **🔬 METODOLOGÍA CIENTÍFICA:**
-        - Algoritmos probados de Google Earth Engine
+        **🔬 BASE CIENTÍFICA:**
+        - Metodología Google Earth Engine
         - Sensores remotos Sentinel-2
         - Parámetros edafoclimáticos específicos
-        - Agricultura de precisión por zonas
+        - Principios de agroecología aplicada
+        - Agricultura de precisión espacial
         """)
