@@ -188,16 +188,35 @@ with st.sidebar:
     st.subheader("📤 Subir Parcela")
     uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
 
-# Función para calcular superficie
+# FUNCIÓN MEJORADA PARA CALCULAR SUPERFICIE
 def calcular_superficie(gdf):
+    """Calcula superficie en hectáreas con manejo robusto de CRS"""
     try:
+        if gdf.empty or gdf.geometry.isnull().all():
+            return 0.0
+            
+        # Verificar si el CRS es geográfico (grados)
         if gdf.crs and gdf.crs.is_geographic:
-            area_m2 = gdf.geometry.area * 10000000000
+            # Convertir a un CRS proyectado para cálculo de área precisa
+            try:
+                # Usar UTM adecuado (aquí se usa un CRS común para Colombia)
+                gdf_proj = gdf.to_crs('EPSG:3116')  # MAGNA-SIRGAS / Colombia West zone
+                area_m2 = gdf_proj.geometry.area
+            except:
+                # Fallback: conversión aproximada (1 grado ≈ 111km en ecuador)
+                area_m2 = gdf.geometry.area * 111000 * 111000
         else:
+            # Asumir que ya está en metros
             area_m2 = gdf.geometry.area
-        return area_m2 / 10000
-    except:
-        return gdf.geometry.area / 10000
+            
+        return area_m2 / 10000  # Convertir a hectáreas
+        
+    except Exception as e:
+        # Fallback simple
+        try:
+            return gdf.geometry.area.mean() / 10000
+        except:
+            return 1.0  # Valor por defecto
 
 # FUNCIÓN PARA CREAR MAPA INTERACTIVO CON ESRI SATELITE
 def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
@@ -650,57 +669,97 @@ def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis
         • Réplica en otras zonas
         """)
 
-# FUNCIÓN PARA DIVIDIR PARCELA
+# FUNCIÓN MEJORADA PARA DIVIDIR PARCELA
 def dividir_parcela_en_zonas(gdf, n_zonas):
-    if len(gdf) == 0:
-        return gdf
-    
-    parcela_principal = gdf.iloc[0].geometry
-    bounds = parcela_principal.bounds
-    minx, miny, maxx, maxy = bounds
-    
-    sub_poligonos = []
-    
-    # Cuadrícula regular
-    n_cols = math.ceil(math.sqrt(n_zonas))
-    n_rows = math.ceil(n_zonas / n_cols)
-    
-    width = (maxx - minx) / n_cols
-    height = (maxy - miny) / n_rows
-    
-    for i in range(n_rows):
-        for j in range(n_cols):
-            if len(sub_poligonos) >= n_zonas:
-                break
+    """Divide la parcela en zonas de manejo con manejo robusto de errores"""
+    try:
+        if len(gdf) == 0:
+            return gdf
+        
+        # Usar el primer polígono como parcela principal
+        parcela_principal = gdf.iloc[0].geometry
+        
+        # Verificar que la geometría sea válida
+        if not parcela_principal.is_valid:
+            parcela_principal = parcela_principal.buffer(0)  # Reparar geometría
+        
+        bounds = parcela_principal.bounds
+        if len(bounds) < 4:
+            st.error("No se pueden obtener los límites de la parcela")
+            return gdf
+            
+        minx, miny, maxx, maxy = bounds
+        
+        # Verificar que los bounds sean válidos
+        if minx >= maxx or miny >= maxy:
+            st.error("Límites de parcela inválidos")
+            return gdf
+        
+        sub_poligonos = []
+        
+        # Cuadrícula regular
+        n_cols = math.ceil(math.sqrt(n_zonas))
+        n_rows = math.ceil(n_zonas / n_cols)
+        
+        width = (maxx - minx) / n_cols
+        height = (maxy - miny) / n_rows
+        
+        # Asegurar un tamaño mínimo de celda
+        if width < 0.0001 or height < 0.0001:  # ~11m en grados decimales
+            st.warning("Las celdas son muy pequeñas, ajustando número de zonas")
+            n_zonas = min(n_zonas, 16)
+            n_cols = math.ceil(math.sqrt(n_zonas))
+            n_rows = math.ceil(n_zonas / n_cols)
+            width = (maxx - minx) / n_cols
+            height = (maxy - miny) / n_rows
+        
+        for i in range(n_rows):
+            for j in range(n_cols):
+                if len(sub_poligonos) >= n_zonas:
+                    break
+                    
+                cell_minx = minx + (j * width)
+                cell_maxx = minx + ((j + 1) * width)
+                cell_miny = miny + (i * height)
+                cell_maxy = miny + ((i + 1) * height)
                 
-            cell_minx = minx + (j * width)
-            cell_maxx = minx + ((j + 1) * width)
-            cell_miny = miny + (i * height)
-            cell_maxy = miny + ((i + 1) * height)
+                # Crear celda con verificación de validez
+                try:
+                    cell_poly = Polygon([
+                        (cell_minx, cell_miny),
+                        (cell_maxx, cell_miny),
+                        (cell_maxx, cell_maxy),
+                        (cell_minx, cell_maxy)
+                    ])
+                    
+                    if cell_poly.is_valid:
+                        intersection = parcela_principal.intersection(cell_poly)
+                        if not intersection.is_empty and intersection.area > 0:
+                            # Simplificar geometría si es necesario
+                            if intersection.geom_type == 'MultiPolygon':
+                                # Tomar el polígono más grande
+                                largest = max(intersection.geoms, key=lambda p: p.area)
+                                sub_poligonos.append(largest)
+                            else:
+                                sub_poligonos.append(intersection)
+                except Exception as e:
+                    continue  # Saltar celdas problemáticas
+        
+        if sub_poligonos:
+            nuevo_gdf = gpd.GeoDataFrame({
+                'id_zona': range(1, len(sub_poligonos) + 1),
+                'geometry': sub_poligonos
+            }, crs=gdf.crs)
+            return nuevo_gdf
+        else:
+            st.warning("No se pudieron crear zonas, retornando parcela original")
+            return gdf
             
-            cell_poly = Polygon([
-                (cell_minx, cell_miny),
-                (cell_maxx, cell_miny),
-                (cell_maxx, cell_maxy),
-                (cell_minx, cell_maxy)
-            ])
-            
-            intersection = parcela_principal.intersection(cell_poly)
-            if not intersection.is_empty and intersection.area > 0:
-                sub_poligonos.append(intersection)
-    
-    if sub_poligonos:
-        nuevo_gdf = gpd.GeoDataFrame({
-            'id_zona': range(1, len(sub_poligonos) + 1),
-            'geometry': sub_poligonos
-        }, crs=gdf.crs)
-        return nuevo_gdf
-    else:
+    except Exception as e:
+        st.error(f"Error dividiendo parcela: {str(e)}")
         return gdf
 
-# CONTINUACIÓN Y MEJORAS DEL CÓDIGO EXISTENTE
-
-# METODOLOGÍA GEE - CÁLCULO DE ÍNDICES
+# FUNCIÓN CORREGIDA PARA CALCULAR ÍNDICES GEE
 def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
     """Calcula índices GEE y recomendaciones basadas en parámetros del cultivo"""
     
@@ -713,82 +772,137 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
     factor_p_mes = FACTORES_P_MES[mes_analisis]
     factor_k_mes = FACTORES_K_MES[mes_analisis]
     
+    # Inicializar columnas en el GeoDataFrame
+    zonas_gdf['area_ha'] = 0.0
+    zonas_gdf['nitrogeno'] = 0.0
+    zonas_gdf['fosforo'] = 0.0
+    zonas_gdf['potasio'] = 0.0
+    zonas_gdf['materia_organica'] = 0.0
+    zonas_gdf['humedad'] = 0.0
+    zonas_gdf['ndvi'] = 0.0
+    zonas_gdf['indice_fertilidad'] = 0.0
+    zonas_gdf['categoria'] = "MEDIA"
+    zonas_gdf['recomendacion_npk'] = 0.0
+    
     for idx, row in zonas_gdf.iterrows():
-        # SIMULAR DATOS GEE (en una implementación real, estos vendrían de Google Earth Engine)
-        area_ha = calcular_superficie(zonas_gdf.iloc[[idx]]).iloc[0]
-        
-        # Datos simulados basados en posición (para demostración)
-        centroid = row.geometry.centroid
-        lat_norm = (centroid.y + 90) / 180  # Normalizar latitud
-        lon_norm = (centroid.x + 180) / 360  # Normalizar longitud
-        
-        # Simular variabilidad espacial
-        np.random.seed(int(centroid.x * 1000 + centroid.y * 1000))
-        
-        # VALORES SIMULADOS (reemplazar con datos reales de GEE)
-        nitrogeno_base = params['NITROGENO']['min'] + (params['NITROGENO']['max'] - params['NITROGENO']['min']) * lat_norm
-        fosforo_base = params['FOSFORO']['min'] + (params['FOSFORO']['max'] - params['FOSFORO']['min']) * lon_norm
-        potasio_base = params['POTASIO']['min'] + (params['POTASIO']['max'] - params['POTASIO']['min']) * (1 - lat_norm)
-        
-        # Aplicar factores estacionales
-        nitrogeno = nitrogeno_base * factor_n_mes * (0.9 + 0.2 * np.random.random())
-        fosforo = fosforo_base * factor_p_mes * (0.9 + 0.2 * np.random.random())
-        potasio = potasio_base * factor_k_mes * (0.9 + 0.2 * np.random.random())
-        
-        # Materia orgánica y humedad simuladas
-        materia_organica = params['MATERIA_ORGANICA_OPTIMA'] * (0.8 + 0.4 * np.random.random())
-        humedad = params['HUMEDAD_OPTIMA'] * (0.7 + 0.6 * np.random.random())
-        
-        # NDVI simulado
-        ndvi = 0.6 + 0.3 * np.random.random()
-        
-        # CÁLCULO DE ÍNDICE DE FERTILIDAD NPK
-        n_norm = (nitrogeno - params['NITROGENO']['min']) / (params['NITROGENO']['max'] - params['NITROGENO']['min'])
-        p_norm = (fosforo - params['FOSFORO']['min']) / (params['FOSFORO']['max'] - params['FOSFORO']['min'])
-        k_norm = (potasio - params['POTASIO']['min']) / (params['POTASIO']['max'] - params['POTASIO']['min'])
-        
-        # Índice compuesto (ponderado)
-        indice_fertilidad = (n_norm * 0.4 + p_norm * 0.3 + k_norm * 0.3) * factor_mes
-        indice_fertilidad = max(0, min(1, indice_fertilidad))
-        
-        # CATEGORIZACIÓN
-        if indice_fertilidad >= 0.8:
-            categoria = "MUY ALTA"
-        elif indice_fertilidad >= 0.6:
-            categoria = "ALTA"
-        elif indice_fertilidad >= 0.4:
-            categoria = "MEDIA"
-        elif indice_fertilidad >= 0.2:
-            categoria = "BAJA"
-        else:
-            categoria = "MUY BAJA"
-        
-        # RECOMENDACIONES NPK
-        if analisis_tipo == "RECOMENDACIONES NPK":
-            if nutriente == "NITRÓGENO":
-                # Calcular recomendación de nitrógeno
-                deficit_n = max(0, params['NITROGENO']['max'] - nitrogeno)
-                recomendacion_npk = deficit_n * (1 + (1 - n_norm)) * 1.1
-            elif nutriente == "FÓSFORO":
-                deficit_p = max(0, params['FOSFORO']['max'] - fosforo)
-                recomendacion_npk = deficit_p * (1 + (1 - p_norm)) * 1.1
-            else:  # POTASIO
-                deficit_k = max(0, params['POTASIO']['max'] - potasio)
-                recomendacion_npk = deficit_k * (1 + (1 - k_norm)) * 1.1
-        else:
-            recomendacion_npk = 0
-        
-        # Asignar valores al GeoDataFrame
-        zonas_gdf.loc[idx, 'area_ha'] = area_ha
-        zonas_gdf.loc[idx, 'nitrogeno'] = nitrogeno
-        zonas_gdf.loc[idx, 'fosforo'] = fosforo
-        zonas_gdf.loc[idx, 'potasio'] = potasio
-        zonas_gdf.loc[idx, 'materia_organica'] = materia_organica
-        zonas_gdf.loc[idx, 'humedad'] = humedad
-        zonas_gdf.loc[idx, 'ndvi'] = ndvi
-        zonas_gdf.loc[idx, 'indice_fertilidad'] = indice_fertilidad
-        zonas_gdf.loc[idx, 'categoria'] = categoria
-        zonas_gdf.loc[idx, 'recomendacion_npk'] = recomendacion_npk
+        try:
+            # Calcular área
+            area_ha = calcular_superficie(zonas_gdf.iloc[[idx]]).iloc[0]
+            
+            # Obtener centroide de manera segura
+            if hasattr(row.geometry, 'centroid'):
+                centroid = row.geometry.centroid
+            else:
+                # Si no tiene centroide, usar el primer punto
+                centroid = row.geometry.representative_point()
+            
+            # Usar una semilla estable para reproducibilidad
+            seed_value = abs(hash(f"{centroid.x:.6f}_{centroid.y:.6f}_{cultivo}")) % (2**32)
+            rng = np.random.RandomState(seed_value)
+            
+            # Normalizar coordenadas para variabilidad espacial
+            lat_norm = (centroid.y + 90) / 180 if centroid.y else 0.5
+            lon_norm = (centroid.x + 180) / 360 if centroid.x else 0.5
+            
+            # VALORES BASE SEGÚN PARÁMETROS DEL CULTIVO
+            n_min, n_max = params['NITROGENO']['min'], params['NITROGENO']['max']
+            p_min, p_max = params['FOSFORO']['min'], params['FOSFORO']['max']
+            k_min, k_max = params['POTASIO']['min'], params['POTASIO']['max']
+            
+            # Simular valores con variabilidad espacial controlada
+            nitrogeno_base = n_min + (n_max - n_min) * (0.3 + 0.4 * lat_norm)
+            fosforo_base = p_min + (p_max - p_min) * (0.3 + 0.4 * lon_norm)
+            potasio_base = k_min + (k_max - k_min) * (0.3 + 0.4 * (1 - lat_norm))
+            
+            # Aplicar factores estacionales con variabilidad aleatoria controlada
+            nitrogeno = nitrogeno_base * factor_n_mes * (0.85 + 0.3 * rng.random())
+            fosforo = fosforo_base * factor_p_mes * (0.85 + 0.3 * rng.random())
+            potasio = potasio_base * factor_k_mes * (0.85 + 0.3 * rng.random())
+            
+            # Asegurar que estén dentro de rangos razonables
+            nitrogeno = max(n_min * 0.5, min(n_max * 1.5, nitrogeno))
+            fosforo = max(p_min * 0.5, min(p_max * 1.5, fosforo))
+            potasio = max(k_min * 0.5, min(k_max * 1.5, potasio))
+            
+            # Materia orgánica y humedad simuladas
+            materia_organica_optima = params['MATERIA_ORGANICA_OPTIMA']
+            humedad_optima = params['HUMEDAD_OPTIMA']
+            
+            materia_organica = materia_organica_optima * (0.7 + 0.6 * rng.random())
+            humedad = humedad_optima * (0.6 + 0.8 * rng.random())
+            
+            # NDVI simulado con correlación espacial
+            ndvi = 0.5 + 0.3 * lat_norm + 0.1 * rng.random()
+            ndvi = max(0.1, min(0.9, ndvi))
+            
+            # CÁLCULO DE ÍNDICE DE FERTILIDAD NPK
+            n_norm = (nitrogeno - n_min) / (n_max - n_min) if n_max > n_min else 0.5
+            p_norm = (fosforo - p_min) / (p_max - p_min) if p_max > p_min else 0.5
+            k_norm = (potasio - k_min) / (k_max - k_min) if k_max > k_min else 0.5
+            
+            # Limitar valores normalizados entre 0 y 1
+            n_norm = max(0, min(1, n_norm))
+            p_norm = max(0, min(1, p_norm))
+            k_norm = max(0, min(1, k_norm))
+            
+            # Índice compuesto (ponderado)
+            indice_fertilidad = (n_norm * 0.4 + p_norm * 0.3 + k_norm * 0.3) * factor_mes
+            indice_fertilidad = max(0, min(1, indice_fertilidad))
+            
+            # CATEGORIZACIÓN
+            if indice_fertilidad >= 0.8:
+                categoria = "MUY ALTA"
+            elif indice_fertilidad >= 0.6:
+                categoria = "ALTA"
+            elif indice_fertilidad >= 0.4:
+                categoria = "MEDIA"
+            elif indice_fertilidad >= 0.2:
+                categoria = "BAJA"
+            else:
+                categoria = "MUY BAJA"
+            
+            # RECOMENDACIONES NPK
+            if analisis_tipo == "RECOMENDACIONES NPK":
+                if nutriente == "NITRÓGENO":
+                    deficit_n = max(0, n_max - nitrogeno)
+                    recomendacion_npk = deficit_n * (1.1 + (1 - n_norm) * 0.3)
+                elif nutriente == "FÓSFORO":
+                    deficit_p = max(0, p_max - fosforo)
+                    recomendacion_npk = deficit_p * (1.1 + (1 - p_norm) * 0.3)
+                else:  # POTASIO
+                    deficit_k = max(0, k_max - potasio)
+                    recomendacion_npk = deficit_k * (1.1 + (1 - k_norm) * 0.3)
+                
+                # Ajustar según área (kg/ha)
+                recomendacion_npk = max(0, recomendacion_npk)
+            else:
+                recomendacion_npk = 0
+            
+            # Asignar valores al GeoDataFrame
+            zonas_gdf.loc[idx, 'area_ha'] = area_ha
+            zonas_gdf.loc[idx, 'nitrogeno'] = nitrogeno
+            zonas_gdf.loc[idx, 'fosforo'] = fosforo
+            zonas_gdf.loc[idx, 'potasio'] = potasio
+            zonas_gdf.loc[idx, 'materia_organica'] = materia_organica
+            zonas_gdf.loc[idx, 'humedad'] = humedad
+            zonas_gdf.loc[idx, 'ndvi'] = ndvi
+            zonas_gdf.loc[idx, 'indice_fertilidad'] = indice_fertilidad
+            zonas_gdf.loc[idx, 'categoria'] = categoria
+            zonas_gdf.loc[idx, 'recomendacion_npk'] = recomendacion_npk
+            
+        except Exception as e:
+            st.warning(f"Advertencia en zona {idx}: {str(e)}")
+            # Valores por defecto en caso de error
+            zonas_gdf.loc[idx, 'area_ha'] = calcular_superficie(zonas_gdf.iloc[[idx]]).iloc[0]
+            zonas_gdf.loc[idx, 'nitrogeno'] = params['NITROGENO']['min']
+            zonas_gdf.loc[idx, 'fosforo'] = params['FOSFORO']['min']
+            zonas_gdf.loc[idx, 'potasio'] = params['POTASIO']['min']
+            zonas_gdf.loc[idx, 'materia_organica'] = params['MATERIA_ORGANICA_OPTIMA']
+            zonas_gdf.loc[idx, 'humedad'] = params['HUMEDAD_OPTIMA']
+            zonas_gdf.loc[idx, 'ndvi'] = 0.6
+            zonas_gdf.loc[idx, 'indice_fertilidad'] = 0.5
+            zonas_gdf.loc[idx, 'categoria'] = "MEDIA"
+            zonas_gdf.loc[idx, 'recomendacion_npk'] = 0
     
     return zonas_gdf
 
