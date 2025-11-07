@@ -16,6 +16,12 @@ import folium
 from folium import plugins
 from streamlit_folium import st_folium
 import json
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+import base64
 
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
@@ -403,6 +409,294 @@ def crear_mapa_visualizador_parcela(gdf):
     
     return m
 
+# FUNCIÓN PARA CREAR MAPA ESTÁTICO PARA PDF
+def crear_mapa_estatico_pdf(gdf, nutriente, analisis_tipo, mes_analisis, cultivo):
+    """Crea mapa estático para incluir en el PDF"""
+    try:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+        
+        # Seleccionar paleta según el análisis
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
+            vmin, vmax = 0, 1
+            columna = 'npk_actual'
+            titulo_sufijo = 'Índice NPK Actual (0-1)'
+        else:
+            if nutriente == "NITRÓGENO":
+                cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
+                vmin, vmax = 140, 240
+            elif nutriente == "FÓSFORO":
+                cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
+                vmin, vmax = 40, 100
+            else:
+                cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
+                vmin, vmax = 80, 150
+            
+            columna = 'valor_recomendado'
+            titulo_sufijo = f'Recomendación {nutriente} (kg/ha)'
+        
+        # Plotear cada polígono
+        for idx, row in gdf.iterrows():
+            valor = row[columna]
+            valor_norm = (valor - vmin) / (vmax - vmin)
+            valor_norm = max(0, min(1, valor_norm))
+            color = cmap(valor_norm)
+            
+            gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=1)
+            
+            # Etiqueta con valor
+            centroid = row.geometry.centroid
+            ax.annotate(f"{valor:.1f}", (centroid.x, centroid.y), 
+                       xytext=(0, 0), textcoords="offset points", 
+                       fontsize=6, color='black', weight='bold',
+                       ha='center', va='center')
+        
+        # Configuración del mapa
+        ax.set_title(f'ANÁLISIS GEE - {analisis_tipo}\n{cultivo} - {mes_analisis}', 
+                    fontsize=12, fontweight='bold', pad=10)
+        
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
+        
+        # Barra de colores
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
+        cbar.set_label(titulo_sufijo, fontsize=10)
+        
+        plt.tight_layout()
+        
+        # Convertir a imagen para PDF
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+        buf.seek(0)
+        plt.close()
+        
+        return buf
+        
+    except Exception as e:
+        st.error(f"Error creando mapa para PDF: {str(e)}")
+        return None
+
+# FUNCIÓN PARA GENERAR PDF
+def generar_pdf_reporte(gdf_analizado, cultivo, analisis_tipo, nutriente, mes_analisis, area_total):
+    """Genera un reporte PDF con todos los resultados"""
+    
+    try:
+        # Crear buffer para PDF
+        pdf_buffer = io.BytesIO()
+        doc = SimpleDocTemplate(pdf_buffer, pagesize=A4, topMargin=1*inch)
+        elements = []
+        styles = getSampleStyleSheet()
+        
+        # Estilo personalizado para títulos
+        titulo_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            textColor=colors.darkgreen,
+            spaceAfter=12,
+            alignment=1  # Centrado
+        )
+        
+        # Título principal
+        elements.append(Paragraph(f"REPORTE DE ANÁLISIS GEE - {cultivo}", titulo_style))
+        elements.append(Spacer(1, 12))
+        
+        # Información general
+        info_style = ParagraphStyle(
+            'InfoStyle',
+            parent=styles['Normal'],
+            fontSize=10,
+            spaceAfter=6
+        )
+        
+        elements.append(Paragraph(f"<b>Tipo de Análisis:</b> {analisis_tipo}", info_style))
+        if analisis_tipo == "RECOMENDACIONES NPK":
+            elements.append(Paragraph(f"<b>Nutriente Analizado:</b> {nutriente}", info_style))
+        elements.append(Paragraph(f"<b>Mes de Análisis:</b> {mes_analisis}", info_style))
+        elements.append(Paragraph(f"<b>Área Total:</b> {area_total:.2f} ha", info_style))
+        elements.append(Paragraph(f"<b>Zonas Analizadas:</b> {len(gdf_analizado)}", info_style))
+        elements.append(Paragraph(f"<b>Fecha de Generación:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}", info_style))
+        elements.append(Spacer(1, 20))
+        
+        # Mapa estático
+        mapa_buffer = crear_mapa_estatico_pdf(gdf_analizado, nutriente, analisis_tipo, mes_analisis, cultivo)
+        if mapa_buffer:
+            elements.append(Paragraph("<b>Mapa de Resultados</b>", styles['Heading2']))
+            elements.append(Spacer(1, 12))
+            
+            # Convertir imagen para ReportLab
+            img = Image(mapa_buffer, width=6*inch, height=4.5*inch)
+            elements.append(img)
+            elements.append(Spacer(1, 20))
+        
+        # Estadísticas resumen
+        elements.append(Paragraph("<b>Estadísticas Resumen</b>", styles['Heading2']))
+        elements.append(Spacer(1, 12))
+        
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            valor_prom = gdf_analizado['npk_actual'].mean()
+            valor_min = gdf_analizado['npk_actual'].min()
+            valor_max = gdf_analizado['npk_actual'].max()
+            coef_var = (gdf_analizado['npk_actual'].std() / valor_prom * 100)
+            
+            stats_data = [
+                ['Estadística', 'Valor'],
+                ['Promedio Índice NPK', f'{valor_prom:.3f}'],
+                ['Mínimo', f'{valor_min:.3f}'],
+                ['Máximo', f'{valor_max:.3f}'],
+                ['Coeficiente de Variación', f'{coef_var:.1f}%']
+            ]
+        else:
+            valor_prom = gdf_analizado['valor_recomendado'].mean()
+            valor_min = gdf_analizado['valor_recomendado'].min()
+            valor_max = gdf_analizado['valor_recomendado'].max()
+            coef_var = (gdf_analizado['valor_recomendado'].std() / valor_prom * 100)
+            
+            stats_data = [
+                ['Estadística', 'Valor'],
+                [f'Promedio {nutriente}', f'{valor_prom:.1f} kg/ha'],
+                ['Mínimo', f'{valor_min:.1f} kg/ha'],
+                ['Máximo', f'{valor_max:.1f} kg/ha'],
+                ['Coeficiente de Variación', f'{coef_var:.1f}%']
+            ]
+        
+        stats_table = Table(stats_data, colWidths=[3*inch, 2*inch])
+        stats_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 10),
+            ('FONTSIZE', (0, 1), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        elements.append(stats_table)
+        elements.append(Spacer(1, 20))
+        
+        # Distribución por categorías
+        elements.append(Paragraph("<b>Distribución por Categorías</b>", styles['Heading2']))
+        elements.append(Spacer(1, 12))
+        
+        categorias = gdf_analizado['categoria'].value_counts().reset_index()
+        categorias.columns = ['Categoría', 'Número de Zonas']
+        
+        cat_data = [['Categoría', 'Zonas', 'Área (ha)', '% del Total']]
+        for _, cat in categorias.iterrows():
+            cat_nombre = cat['Categoría']
+            subset = gdf_analizado[gdf_analizado['categoria'] == cat_nombre]
+            area_cat = subset['area_ha'].sum()
+            porcentaje = (area_cat / area_total) * 100
+            cat_data.append([cat_nombre, str(cat['Número de Zonas']), f'{area_cat:.1f}', f'{porcentaje:.1f}%'])
+        
+        cat_table = Table(cat_data, colWidths=[1.5*inch, 1*inch, 1*inch, 1.2*inch])
+        cat_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 9),
+            ('FONTSIZE', (0, 1), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.lightblue),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        elements.append(cat_table)
+        elements.append(Spacer(1, 20))
+        
+        # Tabla de resultados detallados (primeras 10 filas)
+        elements.append(Paragraph("<b>Resultados Detallados (Primeras 10 Zonas)</b>", styles['Heading2']))
+        elements.append(Spacer(1, 12))
+        
+        # Preparar datos para tabla
+        columnas = ['id_zona', 'area_ha']
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            columnas.extend(['npk_actual', 'materia_organica', 'ndvi', 'ndre', 'categoria'])
+            headers = ['Zona', 'Área (ha)', 'NPK', 'Materia Org%', 'NDVI', 'NDRE', 'Categoría']
+        else:
+            columnas.extend(['valor_recomendado', 'materia_organica', 'ndvi', 'categoria'])
+            headers = ['Zona', 'Área (ha)', f'{nutriente} (kg/ha)', 'Materia Org%', 'NDVI', 'Categoría']
+        
+        tabla_data = gdf_analizado[columnas].head(10).copy()
+        
+        # Crear tabla para PDF
+        pdf_table_data = [headers]
+        for _, row in tabla_data.iterrows():
+            if analisis_tipo == "FERTILIDAD ACTUAL":
+                pdf_table_data.append([
+                    str(int(row['id_zona'])),
+                    f"{row['area_ha']:.2f}",
+                    f"{row['npk_actual']:.3f}",
+                    f"{row['materia_organica']:.1f}",
+                    f"{row['ndvi']:.3f}",
+                    f"{row['ndre']:.3f}",
+                    row['categoria']
+                ])
+            else:
+                pdf_table_data.append([
+                    str(int(row['id_zona'])),
+                    f"{row['area_ha']:.2f}",
+                    f"{row['valor_recomendado']:.1f}",
+                    f"{row['materia_organica']:.1f}",
+                    f"{row['ndvi']:.3f}",
+                    row['categoria']
+                ])
+        
+        # Ajustar ancho de columnas según el tipo de análisis
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            col_widths = [0.5*inch, 0.8*inch, 0.7*inch, 0.9*inch, 0.7*inch, 0.7*inch, 1.2*inch]
+        else:
+            col_widths = [0.5*inch, 0.8*inch, 1.2*inch, 0.9*inch, 0.7*inch, 1.2*inch]
+        
+        pdf_table = Table(pdf_table_data, colWidths=col_widths)
+        pdf_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.darkgreen),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 8),
+            ('FONTSIZE', (0, 1), (-1, -1), 7),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+        ]))
+        elements.append(pdf_table)
+        elements.append(Spacer(1, 12))
+        elements.append(Paragraph(f"<i>Mostrando 10 de {len(gdf_analizado)} zonas. Descargue el CSV para todos los datos.</i>", 
+                                ParagraphStyle('Note', parent=styles['Italic'], fontSize=7)))
+        elements.append(Spacer(1, 20))
+        
+        # Recomendaciones agroecológicas
+        elements.append(Paragraph("<b>Recomendaciones Agroecológicas</b>", styles['Heading2']))
+        elements.append(Spacer(1, 12))
+        
+        recomendaciones = RECOMENDACIONES_AGROECOLOGICAS.get(cultivo, {})
+        for categoria, recs in recomendaciones.items():
+            elements.append(Paragraph(f"<b>{categoria.replace('_', ' ').title()}</b>", styles['Heading3']))
+            for rec in recs[:3]:  # Mostrar solo las 3 principales de cada categoría
+                elements.append(Paragraph(f"• {rec}", styles['Normal']))
+            elements.append(Spacer(1, 6))
+        
+        # Pie de página
+        elements.append(Spacer(1, 20))
+        elements.append(Paragraph("<i>Reporte generado automáticamente por el Sistema de Análisis GEE con Agroecología</i>", 
+                                ParagraphStyle('Footer', parent=styles['Italic'], fontSize=8, alignment=1)))
+        
+        # Construir PDF
+        doc.build(elements)
+        pdf_buffer.seek(0)
+        
+        return pdf_buffer
+        
+    except Exception as e:
+        st.error(f"Error generando PDF: {str(e)}")
+        return None
+
 # FUNCIÓN PARA MOSTRAR RECOMENDACIONES AGROECOLÓGICAS
 def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis_tipo, nutriente=None):
     """Muestra recomendaciones agroecológicas específicas"""
@@ -656,7 +950,7 @@ def calcular_indices_satelitales_gee(gdf, mes_analisis, cultivo):
     
     return resultados
 
-# FUNCIÓN GEE PARA RECOMENDACIONES NPK
+# FUNCIÓN GEE PARA RECOMENDACIONES NPK (CORREGIDA)
 def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
     """Calcula recomendaciones NPK basadas en la metodología GEE"""
     recomendaciones = []
@@ -674,6 +968,7 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
         humedad_suelo = idx['humedad_suelo']
         
         if nutriente == "NITRÓGENO":
+            # CORRECCIÓN: Usar 'NITROGENO' en lugar de 'NITRÓGENO'
             n_recomendado = ((1 - ndre) * 
                            (parametros_cultivo['NITROGENO']['max'] - parametros_cultivo['NITROGENO']['min']) + 
                            parametros_cultivo['NITROGENO']['min']) * factor_mes_n
@@ -682,6 +977,7 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
             recomendaciones.append(round(n_recomendado, 1))
             
         elif nutriente == "FÓSFORO":
+            # CORRECCIÓN: Usar 'FOSFORO' en lugar de 'FÓSFORO'
             p_recomendado = ((1 - (materia_organica / 8)) * 
                            (parametros_cultivo['FOSFORO']['max'] - parametros_cultivo['FOSFORO']['min']) + 
                            parametros_cultivo['FOSFORO']['min']) * factor_mes_p
@@ -690,6 +986,7 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
             recomendaciones.append(round(p_recomendado, 1))
             
         else:  # POTASIO
+            # CORRECCIÓN: Usar 'POTASIO' en lugar de 'POTASIO' (está bien, pero por consistencia)
             humedad_norm = (humedad_suelo + 1) / 2
             k_recomendado = ((1 - humedad_norm) * 
                            (parametros_cultivo['POTASIO']['max'] - parametros_cultivo['POTASIO']['min']) + 
@@ -814,7 +1111,7 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
         # BOTONES DE EXPORTACIÓN
         st.subheader("📥 DESCARGAR RESULTADOS")
         
-        col_export1, col_export2, col_export3 = st.columns(3)
+        col_export1, col_export2, col_export3, col_export4 = st.columns(4)
         
         with col_export1:
             # Exportar CSV
@@ -855,6 +1152,18 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
                     f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
                     "application/zip"
                 )
+        
+        with col_export4:
+            # Generar y exportar PDF
+            with st.spinner("Generando reporte PDF..."):
+                pdf_buffer = generar_pdf_reporte(gdf_analizado, cultivo, analisis_tipo, nutriente, mes_analisis, area_total)
+                if pdf_buffer:
+                    st.download_button(
+                        "📄 Descargar Reporte PDF",
+                        pdf_buffer.getvalue(),
+                        f"reporte_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                        "application/pdf"
+                    )
         
         # RECOMENDACIONES AGROECOLÓGICAS POR CATEGORÍA
         st.subheader("🌿 RECOMENDACIONES AGROECOLÓGICAS POR ZONA")
@@ -965,17 +1274,18 @@ else:
         - **Controles interactivos**: Zoom, pan, medición, pantalla completa
         - **Mini mapa**: Vista de contexto regional
 
+        ### 📄 EXPORTACIÓN A PDF:
+        - **Reporte completo** con todos los resultados
+        - **Mapas estáticos** incluidos en el PDF
+        - **Tablas resumen** y estadísticas
+        - **Recomendaciones agroecológicas** detalladas
+        - **Formato profesional** listo para imprimir
+
         ### 🌿 PRINCIPIOS AGROECOLÓGICOS:
         - **Coberturas vivas y abonos verdes**
         - **Biofertilizantes y compostajes**
         - **Manejo ecológico de plagas**
         - **Asociaciones y diversificación**
-        - **Manejo sostenible del suelo**
-
-        ### 🎯 CULTIVOS DISPONIBLES:
-        - **🌴 PALMA ACEITERA**: Sistema agroecológico integrado
-        - **🍫 CACAO**: Sistemas agroforestales multiestrato
-        - **🍌 BANANO**: Manejo ecológico intensivo
 
         **🚀 CARACTERÍSTICAS TÉCNICAS:**
         - Metodología Google Earth Engine
@@ -988,5 +1298,6 @@ else:
         - CSV para análisis de datos
         - GeoJSON para aplicaciones web
         - Shapefile para sistemas GIS
+        - PDF para reportes impresos
         - Mapas interactivos con ESRI Satélite
         """)
