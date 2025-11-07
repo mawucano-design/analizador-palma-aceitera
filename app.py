@@ -12,6 +12,10 @@ from matplotlib.colors import LinearSegmentedColormap
 import io
 from shapely.geometry import Polygon
 import math
+import folium
+from folium import plugins
+from streamlit_folium import st_folium
+import json
 
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
@@ -196,77 +200,208 @@ def calcular_superficie(gdf):
     except:
         return gdf.geometry.area / 10000
 
-# FUNCIÓN PARA CREAR MAPA INTERACTIVO SIMPLIFICADO
-def crear_mapa_interactivo_simple(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
-    """Crea un mapa interactivo simple sin folium"""
-    try:
-        # Crear figura de matplotlib
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        
-        # Configurar colores según el tipo de análisis
-        if columna_valor and analisis_tipo:
-            if analisis_tipo == "FERTILIDAD ACTUAL":
-                cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
-                vmin, vmax = 0, 1
-            else:
-                if nutriente == "NITRÓGENO":
-                    cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
-                    vmin, vmax = 140, 240
-                elif nutriente == "FÓSFORO":
-                    cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
-                    vmin, vmax = 40, 100
-                else:
-                    cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
-                    vmin, vmax = 80, 150
-            
-            # Plotear cada polígono con color según valor
-            for idx, row in gdf.iterrows():
-                valor = row[columna_valor]
-                valor_norm = (valor - vmin) / (vmax - vmin)
-                valor_norm = max(0, min(1, valor_norm))
-                color = cmap(valor_norm)
-                
-                gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=1)
-                
-                # Etiqueta con valor
-                centroid = row.geometry.centroid
-                ax.annotate(f"Z{row['id_zona']}\n{valor:.1f}", (centroid.x, centroid.y), 
-                           xytext=(3, 3), textcoords="offset points", 
-                           fontsize=6, color='black', weight='bold',
-                           bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
+# FUNCIÓN PARA CREAR MAPA INTERACTIVO CON ESRI SATELITE
+def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
+    """Crea mapa interactivo con base ESRI Satélite"""
+    
+    # Obtener centro y bounds del GeoDataFrame
+    centroid = gdf.geometry.centroid.iloc[0]
+    bounds = gdf.total_bounds
+    
+    # Crear mapa centrado
+    m = folium.Map(
+        location=[centroid.y, centroid.x],
+        zoom_start=14,
+        tiles=None  # Desactivar tiles por defecto
+    )
+    
+    # Añadir base ESRI Satélite
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Esri Satélite',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Añadir base ESRI Calles
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Esri Calles',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Añadir base OpenStreetMap como alternativa
+    folium.TileLayer(
+        tiles='OpenStreetMap',
+        name='OpenStreetMap',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Configurar colores según el tipo de análisis
+    if columna_valor and analisis_tipo:
+        # Definir rangos y colores según el análisis
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            vmin, vmax = 0, 1
+            colores = PALETAS_GEE['FERTILIDAD']
         else:
-            # Mapa simple del polígono original
-            gdf.plot(ax=ax, color='lightblue', edgecolor='black', linewidth=2, alpha=0.7)
-        
-        # Configuración del mapa
-        ax.set_title(f'🗺️ {titulo}', fontsize=14, fontweight='bold', pad=15)
-        ax.set_xlabel('Longitud')
-        ax.set_ylabel('Latitud')
-        ax.grid(True, alpha=0.3)
-        
-        # Añadir barra de colores si hay valores
-        if columna_valor and analisis_tipo:
-            sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
-            sm.set_array([])
-            cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
-            if analisis_tipo == "FERTILIDAD ACTUAL":
-                cbar.set_label('Índice NPK Actual (0-1)', fontsize=10)
+            if nutriente == "NITRÓGENO":
+                vmin, vmax = 140, 240
+                colores = PALETAS_GEE['NITROGENO']
+            elif nutriente == "FÓSFORO":
+                vmin, vmax = 40, 100
+                colores = PALETAS_GEE['FOSFORO']
             else:
-                cbar.set_label(f'Recomendación {nutriente} (kg/ha)', fontsize=10)
+                vmin, vmax = 80, 150
+                colores = PALETAS_GEE['POTASIO']
         
-        plt.tight_layout()
+        # Función para obtener color basado en valor
+        def obtener_color(valor, vmin, vmax, colores):
+            valor_norm = (valor - vmin) / (vmax - vmin)
+            valor_norm = max(0, min(1, valor_norm))
+            idx = int(valor_norm * (len(colores) - 1))
+            return colores[idx]
         
-        # Convertir a imagen
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        plt.close()
+        # Añadir cada polígono con color según valor
+        for idx, row in gdf.iterrows():
+            valor = row[columna_valor]
+            color = obtener_color(valor, vmin, vmax, colores)
+            
+            # Crear popup informativo
+            if analisis_tipo == "FERTILIDAD ACTUAL":
+                popup_text = f"""
+                <b>Zona {row['id_zona']}</b><br>
+                <b>Índice NPK:</b> {valor:.3f}<br>
+                <b>Área:</b> {row.get('area_ha', 0):.2f} ha<br>
+                <b>Categoría:</b> {row.get('categoria', 'N/A')}<br>
+                <b>Materia Org:</b> {row.get('materia_organica', 'N/A')}%<br>
+                <b>NDVI:</b> {row.get('ndvi', 'N/A')}
+                """
+            else:
+                popup_text = f"""
+                <b>Zona {row['id_zona']}</b><br>
+                <b>Recomendación {nutriente}:</b> {valor:.1f} kg/ha<br>
+                <b>Área:</b> {row.get('area_ha', 0):.2f} ha<br>
+                <b>Categoría:</b> {row.get('categoria', 'N/A')}<br>
+                <b>Materia Org:</b> {row.get('materia_organica', 'N/A')}%<br>
+                <b>NDVI:</b> {row.get('ndvi', 'N/A')}
+                """
+            
+            # Añadir polígono al mapa
+            folium.GeoJson(
+                row.geometry.__geo_interface__,
+                style_function=lambda x, color=color: {
+                    'fillColor': color,
+                    'color': 'black',
+                    'weight': 2,
+                    'fillOpacity': 0.7,
+                    'opacity': 0.9
+                },
+                popup=folium.Popup(popup_text, max_width=300),
+                tooltip=f"Zona {row['id_zona']}: {valor:.2f}"
+            ).add_to(m)
+    else:
+        # Mapa simple del polígono original
+        for idx, row in gdf.iterrows():
+            folium.GeoJson(
+                row.geometry.__geo_interface__,
+                style_function=lambda x: {
+                    'fillColor': 'blue',
+                    'color': 'black',
+                    'weight': 3,
+                    'fillOpacity': 0.3,
+                    'opacity': 0.8
+                },
+                popup=folium.Popup(f"Polígono {idx + 1}<br>Área: {calcular_superficie(gdf.iloc[[idx]]).iloc[0]:.2f} ha", 
+                                 max_width=300),
+                tooltip=f"Polígono {idx + 1}"
+            ).add_to(m)
+    
+    # Ajustar bounds del mapa
+    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    
+    # Añadir control de capas
+    folium.LayerControl().add_to(m)
+    
+    # Añadir medida de escala
+    plugins.MeasureControl(position='bottomleft').add_to(m)
+    
+    # Añadir mini mapa
+    plugins.MiniMap(toggle_display=True).add_to(m)
+    
+    # Añadir botón de pantalla completa
+    plugins.Fullscreen(position='topright').add_to(m)
+    
+    return m
+
+# FUNCIÓN PARA CREAR MAPA VISUALIZADOR DE PARCELA
+def crear_mapa_visualizador_parcela(gdf):
+    """Crea mapa interactivo para visualizar la parcela original"""
+    
+    # Obtener centro y bounds
+    centroid = gdf.geometry.centroid.iloc[0]
+    bounds = gdf.total_bounds
+    
+    # Crear mapa
+    m = folium.Map(
+        location=[centroid.y, centroid.x],
+        zoom_start=14,
+        tiles=None
+    )
+    
+    # Añadir base ESRI Satélite
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Esri Satélite',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Añadir base ESRI Calles
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Esri Calles',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Añadir polígonos de la parcela
+    for idx, row in gdf.iterrows():
+        area_ha = calcular_superficie(gdf.iloc[[idx]]).iloc[0]
         
-        return buf
-        
-    except Exception as e:
-        st.error(f"Error creando mapa: {str(e)}")
-        return None
+        folium.GeoJson(
+            row.geometry.__geo_interface__,
+            style_function=lambda x: {
+                'fillColor': '#1f77b4',
+                'color': '#2ca02c',
+                'weight': 3,
+                'fillOpacity': 0.4,
+                'opacity': 0.8
+            },
+            popup=folium.Popup(
+                f"<b>Parcela {idx + 1}</b><br>"
+                f"<b>Área:</b> {area_ha:.2f} ha<br>"
+                f"<b>Coordenadas:</b> {centroid.y:.4f}, {centroid.x:.4f}",
+                max_width=300
+            ),
+            tooltip=f"Parcela {idx + 1} - {area_ha:.2f} ha"
+        ).add_to(m)
+    
+    # Ajustar bounds
+    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    
+    # Añadir controles
+    folium.LayerControl().add_to(m)
+    plugins.MeasureControl(position='bottomleft').add_to(m)
+    plugins.MiniMap(toggle_display=True).add_to(m)
+    plugins.Fullscreen(position='topright').add_to(m)
+    
+    return m
 
 # FUNCIÓN PARA MOSTRAR RECOMENDACIONES AGROECOLÓGICAS
 def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis_tipo, nutriente=None):
@@ -541,7 +676,7 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
         if nutriente == "NITRÓGENO":
             n_recomendado = ((1 - ndre) * 
                            (parametros_cultivo['NITROGENO']['max'] - parametros_cultivo['NITROGENO']['min']) + 
-                           parametros_cultivo['NITRÓGENO']['min']) * factor_mes_n
+                           parametros_cultivo['NITROGENO']['min']) * factor_mes_n
             n_recomendado = max(parametros_cultivo['NITROGENO']['min'] - 20, 
                               min(parametros_cultivo['NITROGENO']['max'] + 20, n_recomendado))
             recomendaciones.append(round(n_recomendado, 1))
@@ -564,78 +699,6 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
             recomendaciones.append(round(k_recomendado, 1))
     
     return recomendaciones
-
-# FUNCIÓN PARA CREAR MAPA GEE
-def crear_mapa_gee(gdf, nutriente, analisis_tipo, mes_analisis):
-    """Crea mapa con la metodología y paletas de Google Earth Engine"""
-    try:
-        fig, ax = plt.subplots(1, 1, figsize=(14, 10))
-        
-        # Seleccionar paleta según el análisis
-        if analisis_tipo == "FERTILIDAD ACTUAL":
-            cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
-            vmin, vmax = 0, 1
-            columna = 'npk_actual'
-            titulo_sufijo = 'Índice NPK Actual (0-1)'
-        else:
-            if nutriente == "NITRÓGENO":
-                cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
-                vmin, vmax = 140, 240
-            elif nutriente == "FÓSFORO":
-                cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
-                vmin, vmax = 40, 100
-            else:
-                cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
-                vmin, vmax = 80, 150
-            
-            columna = 'valor_recomendado'
-            titulo_sufijo = f'Recomendación {nutriente} (kg/ha)'
-        
-        # Plotear cada polígono
-        for idx, row in gdf.iterrows():
-            valor = row[columna]
-            valor_norm = (valor - vmin) / (vmax - vmin)
-            valor_norm = max(0, min(1, valor_norm))
-            color = cmap(valor_norm)
-            
-            gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=1.5)
-            
-            # Etiqueta con valor
-            centroid = row.geometry.centroid
-            ax.annotate(f"Z{row['id_zona']}\n{valor:.1f}", (centroid.x, centroid.y), 
-                       xytext=(5, 5), textcoords="offset points", 
-                       fontsize=8, color='black', weight='bold',
-                       bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.9))
-        
-        # Configuración del mapa
-        ax.set_title(f'🌴 ANÁLISIS GEE - {analisis_tipo}\n'
-                    f'{titulo_sufijo} - Mes: {mes_analisis}\n'
-                    f'Metodología Google Earth Engine', 
-                    fontsize=16, fontweight='bold', pad=20)
-        
-        ax.set_xlabel('Longitud')
-        ax.set_ylabel('Latitud')
-        ax.grid(True, alpha=0.3)
-        
-        # Barra de colores
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
-        sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
-        cbar.set_label(titulo_sufijo, fontsize=12, fontweight='bold')
-        
-        plt.tight_layout()
-        
-        # Convertir a imagen
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-        buf.seek(0)
-        plt.close()
-        
-        return buf
-        
-    except Exception as e:
-        st.error(f"❌ Error creando mapa GEE: {str(e)}")
-        return None
 
 # FUNCIÓN PRINCIPAL DE ANÁLISIS GEE
 def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis, cultivo):
@@ -734,10 +797,10 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             coef_var = (gdf_analizado[columna_valor].std() / gdf_analizado[columna_valor].mean() * 100)
             st.metric("Coef. Variación", f"{coef_var:.1f}%")
         
-        # MAPA INTERACTIVO SIMPLIFICADO
-        st.subheader("🗺️ MAPA INTERACTIVO - RESULTADOS")
+        # MAPA INTERACTIVO CON ESRI SATELITE
+        st.subheader("🗺️ MAPA INTERACTIVO - RESULTADOS (ESRI SATÉLITE)")
         
-        mapa_interactivo = crear_mapa_interactivo_simple(
+        mapa_interactivo = crear_mapa_interactivo_esri(
             gdf_analizado, 
             f"Análisis GEE - {analisis_tipo} - {cultivo}",
             columna_valor,
@@ -745,8 +808,8 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             nutriente
         )
         
-        if mapa_interactivo:
-            st.image(mapa_interactivo, use_container_width=True)
+        # Mostrar mapa interactivo
+        st_folium(mapa_interactivo, width=1200, height=600)
         
         # BOTONES DE EXPORTACIÓN
         st.subheader("📥 DESCARGAR RESULTADOS")
@@ -774,13 +837,23 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             )
         
         with col_export3:
-            # Exportar Mapa PNG
-            if mapa_interactivo:
+            # Exportar Shapefile
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                shp_path = os.path.join(tmp_dir, "resultados_gee.shp")
+                gdf_analizado.to_file(shp_path)
+                
+                # Crear ZIP con shapefile
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                    for file in os.listdir(tmp_dir):
+                        zip_file.write(os.path.join(tmp_dir, file), file)
+                zip_buffer.seek(0)
+                
                 st.download_button(
-                    "🖼️ Descargar Mapa PNG",
-                    mapa_interactivo.getvalue(),
-                    f"mapa_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
-                    "image/png"
+                    "📁 Descargar Shapefile (ZIP)",
+                    zip_buffer,
+                    f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+                    "application/zip"
                 )
         
         # RECOMENDACIONES AGROECOLÓGICAS POR CATEGORÍA
@@ -863,11 +936,10 @@ if uploaded_zip:
                         st.write(f"- Mes: {mes_analisis}")
                         st.write(f"- Zonas: {n_divisiones}")
                     
-                    # VISUALIZAR PARCELA ORIGINAL
-                    st.subheader("🗺️ VISUALIZACIÓN DE LA PARCELA")
-                    mapa_parcela = crear_mapa_interactivo_simple(gdf, "Parcela Original - Base ESRI Satélite")
-                    if mapa_parcela:
-                        st.image(mapa_parcela, use_container_width=True)
+                    # VISUALIZAR PARCELA ORIGINAL EN MAPA INTERACTIVO CON ESRI SATELITE
+                    st.subheader("🗺️ VISUALIZACIÓN DE LA PARCELA (ESRI SATÉLITE)")
+                    mapa_parcela = crear_mapa_visualizador_parcela(gdf)
+                    st_folium(mapa_parcela, width=1200, height=500)
                     
                     # EJECUTAR ANÁLISIS GEE
                     if st.button("🚀 EJECUTAR ANÁLISIS GEE COMPLETO", type="primary"):
@@ -884,9 +956,16 @@ else:
         st.markdown("""
         ## 🌱 SISTEMA DE ANÁLISIS MULTICULTIVO CON ENFOQUE AGROECOLÓGICO
 
-        **🆕 NUEVAS FUNCIONALIDADES AGROECOLÓGICAS:**
+        **🆕 NUEVAS FUNCIONALIDADES IMPLEMENTADAS:**
 
-        ### 🌿 PRINCIPIOS AGROECOLÓGICOS IMPLEMENTADOS:
+        ### 🗺️ MAPAS INTERACTIVOS CON ESRI SATÉLITE:
+        - **Base ESRI World Imagery**: Imágenes satelitales de alta resolución
+        - **Base ESRI Street Map**: Capa de calles y referencias
+        - **OpenStreetMap**: Alternativa de mapas abiertos
+        - **Controles interactivos**: Zoom, pan, medición, pantalla completa
+        - **Mini mapa**: Vista de contexto regional
+
+        ### 🌿 PRINCIPIOS AGROECOLÓGICOS:
         - **Coberturas vivas y abonos verdes**
         - **Biofertilizantes y compostajes**
         - **Manejo ecológico de plagas**
@@ -898,32 +977,16 @@ else:
         - **🍫 CACAO**: Sistemas agroforestales multiestrato
         - **🍌 BANANO**: Manejo ecológico intensivo
 
-        ### 📊 METODOLOGÍA GEE MEJORADA:
-        - **Análisis de fertilidad actual** con índices satelitales
-        - **Recomendaciones NPK** precisas por zona
-        - **Factores estacionales** mensuales
-        - **Mapas interactivos** con visualización profesional
-
-        ### 🌍 BENEFICIOS AGROECOLÓGICOS:
-        - ✅ **Aumenta** la biodiversidad funcional
-        - ✅ **Mejora** la salud del suelo
-        - ✅ **Reduce** el uso de insumos externos
-        - ✅ **Incrementa** la resiliencia climática
-        - ✅ **Optimiza** los recursos naturales
-
-        **🚀 INSTRUCCIONES DE USO:**
-        1. **Sube** tu shapefile en formato ZIP
-        2. **Selecciona** el cultivo a analizar
-        3. **Elige** el tipo de análisis (Fertilidad o NPK)
-        4. **Configura** los parámetros de análisis
-        5. **Ejecuta** el análisis GEE completo
-        6. **Revisa** recomendaciones agroecológicas
-        7. **Exporta** resultados en múltiples formatos
-
-        **🔬 BASE CIENTÍFICA:**
+        **🚀 CARACTERÍSTICAS TÉCNICAS:**
         - Metodología Google Earth Engine
-        - Sensores remotos Sentinel-2
-        - Parámetros edafoclimáticos específicos
-        - Principios de agroecología aplicada
-        - Agricultura de precisión espacial
+        - Análisis con imágenes Sentinel-2
+        - 16-32 zonas de manejo de precisión
+        - Factores estacionales mensuales
+        - Exportación en múltiples formatos
+
+        **📥 FORMATOS DE EXPORTACIÓN:**
+        - CSV para análisis de datos
+        - GeoJSON para aplicaciones web
+        - Shapefile para sistemas GIS
+        - Mapas interactivos con ESRI Satélite
         """)
