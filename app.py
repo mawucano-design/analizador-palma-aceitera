@@ -12,21 +12,43 @@ from matplotlib.colors import LinearSegmentedColormap
 import io
 from shapely.geometry import Polygon
 import math
+import folium
+from folium import plugins
+from streamlit_folium import st_folium
+import rasterio
+from rasterio.transform import from_bounds
+import json
 
 st.set_page_config(page_title="🌴 Analizador Palma", layout="wide")
-st.title("🌴 ANALIZADOR PALMA ACEITERA - METODOLOGÍA GEE COMPLETA")
+st.title("🌴 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA")
 st.markdown("---")
 
 # Configurar para restaurar .shx automáticamente
 os.environ['SHAPE_RESTORE_SHX'] = 'YES'
 
-# PARÁMETROS GEE PARA PALMA ACEITERA
-PARAMETROS_PALMA = {
-    'NITROGENO': {'min': 150, 'max': 220},
-    'FOSFORO': {'min': 60, 'max': 80},
-    'POTASIO': {'min': 100, 'max': 120},
-    'MATERIA_ORGANICA_OPTIMA': 4.0,
-    'HUMEDAD_OPTIMA': 0.3
+# PARÁMETROS PARA DIFERENTES CULTIVOS
+PARAMETROS_CULTIVOS = {
+    'PALMA_ACEITERA': {
+        'NITROGENO': {'min': 150, 'max': 220},
+        'FOSFORO': {'min': 60, 'max': 80},
+        'POTASIO': {'min': 100, 'max': 120},
+        'MATERIA_ORGANICA_OPTIMA': 4.0,
+        'HUMEDAD_OPTIMA': 0.3
+    },
+    'CACAO': {
+        'NITROGENO': {'min': 120, 'max': 180},
+        'FOSFORO': {'min': 40, 'max': 60},
+        'POTASIO': {'min': 80, 'max': 110},
+        'MATERIA_ORGANICA_OPTIMA': 3.5,
+        'HUMEDAD_OPTIMA': 0.35
+    },
+    'BANANO': {
+        'NITROGENO': {'min': 180, 'max': 250},
+        'FOSFORO': {'min': 50, 'max': 70},
+        'POTASIO': {'min': 120, 'max': 160},
+        'MATERIA_ORGANICA_OPTIMA': 4.5,
+        'HUMEDAD_OPTIMA': 0.4
+    }
 }
 
 # FACTORES ESTACIONALES (DEFINIDOS A NIVEL GLOBAL)
@@ -65,18 +87,21 @@ PALETAS_GEE = {
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Configuración")
+    
+    # AGREGADO: Selector de cultivo
+    cultivo = st.selectbox("Cultivo:", 
+                          ["PALMA_ACEITERA", "CACAO", "BANANO"])
+    
     analisis_tipo = st.selectbox("Tipo de Análisis:", 
                                ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK"])
     
     nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
     
-    # AGREGADO: Selector de mes
     mes_analisis = st.selectbox("Mes de Análisis:", 
                                ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
                                 "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"])
     
     st.subheader("🎯 División de Parcela")
-    # MODIFICADO: Cambiado de 4-16 a 16-32
     n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
     
     st.subheader("📤 Subir Parcela")
@@ -92,6 +117,144 @@ def calcular_superficie(gdf):
         return area_m2 / 10000
     except:
         return gdf.geometry.area / 10000
+
+# FUNCIÓN PARA CREAR MAPA INTERACTIVO CON BASE ESRI
+def crear_mapa_interactivo(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
+    """Crea mapa interactivo con base ESRI Satélite"""
+    
+    # Obtener centro y bounds del GeoDataFrame
+    centroid = gdf.geometry.centroid.iloc[0]
+    bounds = gdf.total_bounds
+    
+    # Crear mapa centrado
+    m = folium.Map(
+        location=[centroid.y, centroid.x],
+        zoom_start=14,
+        tiles=None  # Desactivar tiles por defecto
+    )
+    
+    # Añadir base ESRI Satélite
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri',
+        name='Esri Satélite',
+        overlay=False
+    ).add_to(m)
+    
+    # Añadir base OpenStreetMap como alternativa
+    folium.TileLayer(
+        tiles='OpenStreetMap',
+        name='OpenStreetMap',
+        overlay=False
+    ).add_to(m)
+    
+    # Configurar colores según el tipo de análisis
+    if columna_valor and analisis_tipo:
+        if analisis_tipo == "FERTILIDAD ACTUAL":
+            # Escala de colores para fertilidad
+            cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
+            vmin, vmax = 0, 1
+        else:
+            if nutriente == "NITRÓGENO":
+                cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
+                vmin, vmax = 140, 240
+            elif nutriente == "FÓSFORO":
+                cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
+                vmin, vmax = 40, 100
+            else:
+                cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
+                vmin, vmax = 80, 150
+        
+        # Añadir cada polígono con color según valor
+        for idx, row in gdf.iterrows():
+            valor = row[columna_valor]
+            valor_norm = (valor - vmin) / (vmax - vmin)
+            valor_norm = max(0, min(1, valor_norm))
+            color_rgb = cmap(valor_norm)
+            color_hex = '#%02x%02x%02x' % (
+                int(color_rgb[0] * 255), 
+                int(color_rgb[1] * 255), 
+                int(color_rgb[2] * 255)
+            )
+            
+            # Crear popup informativo
+            popup_text = f"""
+            <b>Zona {row['id_zona']}</b><br>
+            <b>Valor:</b> {valor:.2f}<br>
+            <b>Área:</b> {row.get('area_ha', 0):.2f} ha<br>
+            <b>Categoría:</b> {row.get('categoria', 'N/A')}
+            """
+            
+            # Añadir polígono al mapa
+            folium.GeoJson(
+                row.geometry.__geo_interface__,
+                style_function=lambda x, color=color_hex: {
+                    'fillColor': color,
+                    'color': 'black',
+                    'weight': 2,
+                    'fillOpacity': 0.7
+                },
+                popup=folium.Popup(popup_text, max_width=300)
+            ).add_to(m)
+    else:
+        # Mapa simple del polígono original
+        for idx, row in gdf.iterrows():
+            folium.GeoJson(
+                row.geometry.__geo_interface__,
+                style_function=lambda x: {
+                    'fillColor': 'blue',
+                    'color': 'black',
+                    'weight': 3,
+                    'fillOpacity': 0.3
+                },
+                popup=folium.Popup(f"Polígono {idx + 1}", max_width=300)
+            ).add_to(m)
+    
+    # Ajustar bounds del mapa
+    m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+    
+    # Añadir control de capas
+    folium.LayerControl().add_to(m)
+    
+    # Añadir medida de escala
+    plugins.MeasureControl(position='bottomleft').add_to(m)
+    
+    return m
+
+# FUNCIÓN PARA EXPORTAR A GEOTIFF
+def exportar_geotiff(gdf, columna_valor, filename):
+    """Exporta el GeoDataFrame a GeoTIFF"""
+    try:
+        from rasterio.features import rasterize
+        
+        # Obtener bounds y transform
+        bounds = gdf.total_bounds
+        transform = from_bounds(*bounds, 100, 100)  # 100x100 píxeles
+        
+        # Crear shapes para rasterizar
+        shapes = [(geom, value) for geom, value in zip(gdf.geometry, gdf[columna_valor])]
+        
+        # Rasterizar
+        raster = rasterize(shapes, out_shape=(100, 100), transform=transform, fill=0)
+        
+        # Guardar como GeoTIFF
+        with rasterio.open(
+            filename,
+            'w',
+            driver='GTiff',
+            height=raster.shape[0],
+            width=raster.shape[1],
+            count=1,
+            dtype=raster.dtype,
+            crs=gdf.crs,
+            transform=transform,
+        ) as dst:
+            dst.write(raster, 1)
+        
+        return True
+    except Exception as e:
+        st.error(f"Error exportando GeoTIFF: {str(e)}")
+        return False
 
 # FUNCIÓN PARA DIVIDIR PARCELA (MANTENIDA)
 def dividir_parcela_en_zonas(gdf, n_zonas):
@@ -141,10 +304,10 @@ def dividir_parcela_en_zonas(gdf, n_zonas):
     else:
         return gdf
 
-# METODOLOGÍA GEE - CÁLCULO DE ÍNDICES SATELITALES (MODIFICADO CON MES)
-def calcular_indices_satelitales_gee(gdf, mes_analisis):
+# METODOLOGÍA GEE - CÁLCULO DE ÍNDICES SATELITALES (MODIFICADO CON CULTIVO)
+def calcular_indices_satelitales_gee(gdf, mes_analisis, cultivo):
     """
-    Implementa la metodología completa de Google Earth Engine con ajuste por mes
+    Implementa la metodología completa de Google Earth Engine con ajuste por mes y cultivo
     """
     
     n_poligonos = len(gdf)
@@ -174,28 +337,51 @@ def calcular_indices_satelitales_gee(gdf, mes_analisis):
         # Aplicar factor del mes a los cálculos base
         base_mes = 0.5 * factor_mes
         
-        # 1. MATERIA ORGÁNICA - Ajustada por mes
+        # 1. MATERIA ORGÁNICA - Ajustada por mes y cultivo
         relacion_swir_red = (0.3 + (patron_espacial * 0.4)) * factor_mes
-        materia_organica = (relacion_swir_red * 2.5 + 0.5) * 1.5 + np.random.normal(0, 0.3)
+        materia_organica_base = (relacion_swir_red * 2.5 + 0.5) * 1.5
+        # Ajuste según cultivo
+        if cultivo == "CACAO":
+            materia_organica_base *= 0.9
+        elif cultivo == "BANANO":
+            materia_organica_base *= 1.1
+        materia_organica = materia_organica_base + np.random.normal(0, 0.3)
         materia_organica = max(0.5, min(8.0, materia_organica))
         
-        # 2. HUMEDAD SUELO - Ajustada por estacionalidad
+        # 2. HUMEDAD SUELO - Ajustada por estacionalidad y cultivo
         relacion_nir_swir = (-0.2 + (patron_espacial * 0.6)) * factor_mes
-        humedad_suelo = relacion_nir_swir + np.random.normal(0, 0.1)
+        humedad_base = relacion_nir_swir
+        if cultivo == "CACAO":
+            humedad_base *= 1.1
+        elif cultivo == "BANANO":
+            humedad_base *= 1.2
+        humedad_suelo = humedad_base + np.random.normal(0, 0.1)
         humedad_suelo = max(-0.5, min(0.8, humedad_suelo))
         
-        # 3. NDVI - Ajustado por época del año
+        # 3. NDVI - Ajustado por época del año y cultivo
         ndvi_base = (0.4 + (patron_espacial * 0.4)) * factor_mes
+        if cultivo == "CACAO":
+            ndvi_base *= 0.9
+        elif cultivo == "BANANO":
+            ndvi_base *= 1.1
         ndvi = ndvi_base + np.random.normal(0, 0.08)
         ndvi = max(-0.2, min(1.0, ndvi))
         
-        # 4. NDRE - Ajustado por época del año
+        # 4. NDRE - Ajustado por época del año y cultivo
         ndre_base = (0.3 + (patron_espacial * 0.3)) * factor_mes
+        if cultivo == "CACAO":
+            ndre_base *= 0.85
+        elif cultivo == "BANANO":
+            ndre_base *= 1.15
         ndre = ndre_base + np.random.normal(0, 0.06)
         ndre = max(0.1, min(0.7, ndre))
         
-        # 5. ÍNDICE NPK ACTUAL - Con ajuste estacional
+        # 5. ÍNDICE NPK ACTUAL - Con ajuste estacional y de cultivo
         npk_actual = (ndvi * 0.5) + (ndre * 0.3) + ((materia_organica / 8) * 0.2)
+        if cultivo == "CACAO":
+            npk_actual *= 0.95
+        elif cultivo == "BANANO":
+            npk_actual *= 1.05
         npk_actual = max(0, min(1, npk_actual))
         
         resultados.append({
@@ -204,21 +390,25 @@ def calcular_indices_satelitales_gee(gdf, mes_analisis):
             'ndvi': round(ndvi, 3),
             'ndre': round(ndre, 3),
             'npk_actual': round(npk_actual, 3),
-            'mes_analisis': mes_analisis
+            'mes_analisis': mes_analisis,
+            'cultivo': cultivo
         })
     
     return resultados
 
-# FUNCIÓN GEE PARA RECOMENDACIONES NPK (MODIFICADO CON MES)
-def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis):
+# FUNCIÓN GEE PARA RECOMENDACIONES NPK (MODIFICADO CON CULTIVO)
+def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis, cultivo):
     """
-    Calcula recomendaciones NPK basadas en la metodología GEE con ajuste mensual
+    Calcula recomendaciones NPK basadas en la metodología GEE con ajuste mensual y por cultivo
     """
     recomendaciones = []
     
     factor_mes_n = FACTORES_N_MES.get(mes_analisis, 1.0)
     factor_mes_p = FACTORES_P_MES.get(mes_analisis, 1.0)
     factor_mes_k = FACTORES_K_MES.get(mes_analisis, 1.0)
+    
+    # Obtener parámetros del cultivo seleccionado
+    parametros_cultivo = PARAMETROS_CULTIVOS.get(cultivo, PARAMETROS_CULTIVOS['PALMA_ACEITERA'])
     
     for idx in indices:
         ndre = idx['ndre']
@@ -227,29 +417,32 @@ def calcular_recomendaciones_npk_gee(indices, nutriente, mes_analisis):
         
         if nutriente == "NITRÓGENO":
             n_recomendado = ((1 - ndre) * 
-                           (PARAMETROS_PALMA['NITROGENO']['max'] - PARAMETROS_PALMA['NITROGENO']['min']) + 
-                           PARAMETROS_PALMA['NITROGENO']['min']) * factor_mes_n
-            n_recomendado = max(140, min(240, n_recomendado))
+                           (parametros_cultivo['NITROGENO']['max'] - parametros_cultivo['NITROGENO']['min']) + 
+                           parametros_cultivo['NITROGENO']['min']) * factor_mes_n
+            n_recomendado = max(parametros_cultivo['NITROGENO']['min'] - 20, 
+                              min(parametros_cultivo['NITROGENO']['max'] + 20, n_recomendado))
             recomendaciones.append(round(n_recomendado, 1))
             
         elif nutriente == "FÓSFORO":
             p_recomendado = ((1 - (materia_organica / 8)) * 
-                           (PARAMETROS_PALMA['FOSFORO']['max'] - PARAMETROS_PALMA['FOSFORO']['min']) + 
-                           PARAMETROS_PALMA['FOSFORO']['min']) * factor_mes_p
-            p_recomendado = max(40, min(100, p_recomendado))
+                           (parametros_cultivo['FOSFORO']['max'] - parametros_cultivo['FOSFORO']['min']) + 
+                           parametros_cultivo['FOSFORO']['min']) * factor_mes_p
+            p_recomendado = max(parametros_cultivo['FOSFORO']['min'] - 10, 
+                              min(parametros_cultivo['FOSFORO']['max'] + 10, p_recomendado))
             recomendaciones.append(round(p_recomendado, 1))
             
         else:  # POTASIO
             humedad_norm = (humedad_suelo + 1) / 2
             k_recomendado = ((1 - humedad_norm) * 
-                           (PARAMETROS_PALMA['POTASIO']['max'] - PARAMETROS_PALMA['POTASIO']['min']) + 
-                           PARAMETROS_PALMA['POTASIO']['min']) * factor_mes_k
-            k_recomendado = max(80, min(150, k_recomendado))
+                           (parametros_cultivo['POTASIO']['max'] - parametros_cultivo['POTASIO']['min']) + 
+                           parametros_cultivo['POTASIO']['min']) * factor_mes_k
+            k_recomendado = max(parametros_cultivo['POTASIO']['min'] - 15, 
+                              min(parametros_cultivo['POTASIO']['max'] + 15, k_recomendado))
             recomendaciones.append(round(k_recomendado, 1))
     
     return recomendaciones
 
-# FUNCIÓN PARA CREAR MAPA GEE
+# FUNCIÓN PARA CREAR MAPA GEE (MANTENIDA PARA COMPATIBILIDAD)
 def crear_mapa_gee(gdf, nutriente, analisis_tipo, mes_analisis):
     """Crea mapa con la metodología y paletas de Google Earth Engine"""
     try:
@@ -321,10 +514,10 @@ def crear_mapa_gee(gdf, nutriente, analisis_tipo, mes_analisis):
         st.error(f"❌ Error creando mapa GEE: {str(e)}")
         return None
 
-# FUNCIÓN PRINCIPAL DE ANÁLISIS GEE (MODIFICADA)
-def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis):
+# FUNCIÓN PRINCIPAL DE ANÁLISIS GEE (MODIFICADA CON CULTIVO)
+def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis, cultivo):
     try:
-        st.header("🌴 ANÁLISIS CON METODOLOGÍA GOOGLE EARTH ENGINE")
+        st.header(f"🌴 ANÁLISIS CON METODOLOGÍA GOOGLE EARTH ENGINE - {cultivo}")
         
         # PASO 1: DIVIDIR PARCELA
         st.subheader("📐 DIVIDIENDO PARCELA EN ZONAS DE MANEJO")
@@ -337,10 +530,10 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
         areas_ha = calcular_superficie(gdf_dividido)
         area_total = areas_ha.sum()
         
-        # PASO 2: CALCULAR ÍNDICES GEE (MODIFICADO)
+        # PASO 2: CALCULAR ÍNDICES GEE (MODIFICADO CON CULTIVO)
         st.subheader("🛰️ CALCULANDO ÍNDICES SATELITALES GEE")
         with st.spinner("Ejecutando algoritmos GEE..."):
-            indices_gee = calcular_indices_satelitales_gee(gdf_dividido, mes_analisis)
+            indices_gee = calcular_indices_satelitales_gee(gdf_dividido, mes_analisis, cultivo)
         
         # Crear dataframe con resultados
         gdf_analizado = gdf_dividido.copy()
@@ -351,17 +544,19 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             for key, value in indice.items():
                 gdf_analizado.loc[gdf_analizado.index[idx], key] = value
         
-        # PASO 3: CALCULAR RECOMENDACIONES SI ES NECESARIO (MODIFICADO)
+        # PASO 3: CALCULAR RECOMENDACIONES SI ES NECESARIO (MODIFICADO CON CULTIVO)
         if analisis_tipo == "RECOMENDACIONES NPK":
             with st.spinner("Calculando recomendaciones NPK..."):
-                recomendaciones = calcular_recomendaciones_npk_gee(indices_gee, nutriente, mes_analisis)
+                recomendaciones = calcular_recomendaciones_npk_gee(indices_gee, nutriente, mes_analisis, cultivo)
                 gdf_analizado['valor_recomendado'] = recomendaciones
                 columna_valor = 'valor_recomendado'
         else:
             columna_valor = 'npk_actual'
         
-        # PASO 4: CATEGORIZAR PARA RECOMENDACIONES
-        def categorizar_gee(valor, nutriente, analisis_tipo):
+        # PASO 4: CATEGORIZAR PARA RECOMENDACIONES (MODIFICADO CON CULTIVO)
+        def categorizar_gee(valor, nutriente, analisis_tipo, cultivo):
+            parametros = PARAMETROS_CULTIVOS.get(cultivo, PARAMETROS_CULTIVOS['PALMA_ACEITERA'])
+            
             if analisis_tipo == "FERTILIDAD ACTUAL":
                 if valor < 0.3: return "MUY BAJA"
                 elif valor < 0.5: return "BAJA"
@@ -370,26 +565,29 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
                 else: return "ÓPTIMA"
             else:
                 if nutriente == "NITRÓGENO":
-                    if valor < 160: return "MUY BAJO"
-                    elif valor < 180: return "BAJO"
-                    elif valor < 200: return "MEDIO"
-                    elif valor < 210: return "ALTO"
+                    rango = parametros['NITROGENO']['max'] - parametros['NITROGENO']['min']
+                    if valor < parametros['NITROGENO']['min'] - 0.2 * rango: return "MUY BAJO"
+                    elif valor < parametros['NITROGENO']['min']: return "BAJO"
+                    elif valor < parametros['NITROGENO']['max']: return "MEDIO"
+                    elif valor < parametros['NITROGENO']['max'] + 0.2 * rango: return "ALTO"
                     else: return "MUY ALTO"
                 elif nutriente == "FÓSFORO":
-                    if valor < 50: return "MUY BAJO"
-                    elif valor < 60: return "BAJO"
-                    elif valor < 70: return "MEDIO"
-                    elif valor < 80: return "ALTO"
+                    rango = parametros['FOSFORO']['max'] - parametros['FOSFORO']['min']
+                    if valor < parametros['FOSFORO']['min'] - 0.2 * rango: return "MUY BAJO"
+                    elif valor < parametros['FOSFORO']['min']: return "BAJO"
+                    elif valor < parametros['FOSFORO']['max']: return "MEDIO"
+                    elif valor < parametros['FOSFORO']['max'] + 0.2 * rango: return "ALTO"
                     else: return "MUY ALTO"
                 else:
-                    if valor < 90: return "MUY BAJO"
-                    elif valor < 105: return "BAJO"
-                    elif valor < 120: return "MEDIO"
-                    elif valor < 135: return "ALTO"
+                    rango = parametros['POTASIO']['max'] - parametros['POTASIO']['min']
+                    if valor < parametros['POTASIO']['min'] - 0.2 * rango: return "MUY BAJO"
+                    elif valor < parametros['POTASIO']['min']: return "BAJO"
+                    elif valor < parametros['POTASIO']['max']: return "MEDIO"
+                    elif valor < parametros['POTASIO']['max'] + 0.2 * rango: return "ALTO"
                     else: return "MUY ALTO"
         
         gdf_analizado['categoria'] = [
-            categorizar_gee(row[columna_valor], nutriente, analisis_tipo) 
+            categorizar_gee(row[columna_valor], nutriente, analisis_tipo, cultivo) 
             for idx, row in gdf_analizado.iterrows()
         ]
         
@@ -413,16 +611,78 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             coef_var = (gdf_analizado[columna_valor].std() / gdf_analizado[columna_valor].mean() * 100)
             st.metric("Coef. Variación", f"{coef_var:.1f}%")
         
-        # MAPA GEE (MODIFICADO)
-        st.subheader("🗺️ MAPA GEE - RESULTADOS")
+        # MAPA INTERACTIVO GEE (NUEVO)
+        st.subheader("🗺️ MAPA INTERACTIVO GEE - RESULTADOS")
+        
+        # Crear mapa interactivo
+        mapa_interactivo = crear_mapa_interactivo(
+            gdf_analizado, 
+            f"Análisis GEE - {analisis_tipo} - {cultivo}",
+            columna_valor,
+            analisis_tipo,
+            nutriente
+        )
+        
+        # Mostrar mapa interactivo
+        st_folium(mapa_interactivo, width=1200, height=600)
+        
+        # BOTONES DE EXPORTACIÓN (NUEVO)
+        col_export1, col_export2, col_export3 = st.columns(3)
+        
+        with col_export1:
+            # Exportar GeoJSON
+            geojson_str = gdf_analizado.to_json()
+            st.download_button(
+                "📥 Descargar GeoJSON",
+                geojson_str,
+                f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.geojson",
+                "application/geo+json"
+            )
+        
+        with col_export2:
+            # Exportar Shapefile
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                shp_path = os.path.join(tmp_dir, "resultados_gee.shp")
+                gdf_analizado.to_file(shp_path)
+                
+                # Crear ZIP con shapefile
+                zip_buffer = io.BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+                    for file in os.listdir(tmp_dir):
+                        zip_file.write(os.path.join(tmp_dir, file), file)
+                zip_buffer.seek(0)
+                
+                st.download_button(
+                    "📁 Descargar Shapefile (ZIP)",
+                    zip_buffer,
+                    f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+                    "application/zip"
+                )
+        
+        with col_export3:
+            # Exportar GeoTIFF
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp_tif:
+                if exportar_geotiff(gdf_analizado, columna_valor, tmp_tif.name):
+                    with open(tmp_tif.name, 'rb') as f:
+                        geotiff_data = f.read()
+                    st.download_button(
+                        "🖼️ Descargar GeoTIFF",
+                        geotiff_data,
+                        f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.tif",
+                        "image/tiff"
+                    )
+                os.unlink(tmp_tif.name)
+        
+        # MAPA GEE ESTÁTICO (MANTENIDO)
+        st.subheader("🖼️ MAPA ESTÁTICO GEE - RESULTADOS")
         mapa_buffer = crear_mapa_gee(gdf_analizado, nutriente, analisis_tipo, mes_analisis)
         if mapa_buffer:
             st.image(mapa_buffer, use_container_width=True)
             
             st.download_button(
-                "📥 Descargar Mapa GEE",
+                "📸 Descargar Mapa Estático",
                 mapa_buffer,
-                f"mapa_gee_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
+                f"mapa_estatico_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.png",
                 "image/png"
             )
         
@@ -440,7 +700,7 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
         
         st.dataframe(tabla_indices, use_container_width=True)
         
-        # RECOMENDACIONES ESPECÍFICAS
+        # RECOMENDACIONES ESPECÍFICAS (MODIFICADO CON CULTIVO)
         st.subheader("💡 RECOMENDACIONES ESPECÍFICAS GEE")
         
         categorias = gdf_analizado['categoria'].unique()
@@ -466,7 +726,7 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
                         st.markdown("- Enfoque en sostenibilidad")
                 
                 else:
-                    # Recomendaciones NPK específicas
+                    # Recomendaciones NPK específicas por cultivo
                     if cat in ["MUY BAJO", "BAJO"]:
                         st.markdown("**🚨 APLICACIÓN ALTA** - Dosis correctiva urgente")
                         if nutriente == "NITRÓGENO":
@@ -508,14 +768,19 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
         st.download_button(
             "📋 Descargar CSV con Análisis GEE",
             csv,
-            f"analisis_gee_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            f"analisis_gee_{cultivo}_{analisis_tipo.replace(' ', '_')}_{mes_analisis}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             "text/csv"
         )
         
         # INFORMACIÓN TÉCNICA GEE
         with st.expander("🔍 VER METODOLOGÍA GEE DETALLADA"):
             st.markdown(f"""
-            **🌐 METODOLOGÍA GOOGLE EARTH ENGINE IMPLEMENTADA - {mes_analisis}**
+            **🌐 METODOLOGÍA GOOGLE EARTH ENGINE IMPLEMENTADA - {cultivo} - {mes_analisis}**
+            
+            **🎯 CULTIVO SELECCIONADO: {cultivo}**
+            - **Nitrógeno:** {PARAMETROS_CULTIVOS[cultivo]['NITROGENO']['min']}-{PARAMETROS_CULTIVOS[cultivo]['NITROGENO']['max']} kg/ha
+            - **Fósforo:** {PARAMETROS_CULTIVOS[cultivo]['FOSFORO']['min']}-{PARAMETROS_CULTIVOS[cultivo]['FOSFORO']['max']} kg/ha
+            - **Potasio:** {PARAMETROS_CULTIVOS[cultivo]['POTASIO']['min']}-{PARAMETROS_CULTIVOS[cultivo]['POTASIO']['max']} kg/ha
             
             **🎯 FACTORES ESTACIONALES APLICADOS:**
             - **Mes Actual:** {mes_analisis}
@@ -545,13 +810,13 @@ def analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_anali
             - Potasio: Morado (bajo) → Lila (alto)
             """)
         
-        return True
+        return gdf_analizado
         
     except Exception as e:
         st.error(f"❌ Error en análisis GEE: {str(e)}")
         import traceback
         st.error(f"Detalle: {traceback.format_exc()}")
-        return False
+        return None
 
 # INTERFAZ PRINCIPAL (MODIFICADA)
 if uploaded_zip:
@@ -580,50 +845,63 @@ if uploaded_zip:
                     
                     with col2:
                         st.write("**🎯 CONFIGURACIÓN GEE:**")
+                        st.write(f"- Cultivo: {cultivo}")
                         st.write(f"- Análisis: {analisis_tipo}")
                         st.write(f"- Nutriente: {nutriente}")
-                        st.write(f"- Mes: {mes_analisis}")  # AGREGADO
+                        st.write(f"- Mes: {mes_analisis}")
                         st.write(f"- Zonas: {n_divisiones}")
+                    
+                    # VISUALIZAR PARCELA ORIGINAL EN MAPA INTERACTIVO (NUEVO)
+                    st.subheader("🗺️ VISUALIZACIÓN DE LA PARCELA")
+                    mapa_parcela = crear_mapa_interactivo(gdf, "Parcela Original")
+                    st_folium(mapa_parcela, width=1200, height=400)
                     
                     # EJECUTAR ANÁLISIS GEE (MODIFICADO)
                     if st.button("🚀 EJECUTAR ANÁLISIS GEE", type="primary"):
-                        analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis)
+                        gdf_resultados = analisis_gee_completo(gdf, nutriente, analisis_tipo, n_divisiones, mes_analisis, cultivo)
                         
         except Exception as e:
             st.error(f"Error cargando shapefile: {str(e)}")
 
 else:
-    st.info("📁 Sube el ZIP de tu parcela de palma aceitera para comenzar")
+    st.info("📁 Sube el ZIP de tu parcela para comenzar")
     
     # INFORMACIÓN INICIAL
     with st.expander("ℹ️ INFORMACIÓN SOBRE LA METODOLOGÍA GEE"):
         st.markdown("""
-        **🌴 SISTEMA DE ANÁLISIS - PALMA ACEITERA (GEE) - VERSIÓN MEJORADA**
+        **🌴 SISTEMA DE ANÁLISIS - MULTICULTIVO (GEE) - VERSIÓN MEJORADA**
         
         **🆕 NUEVAS FUNCIONALIDADES:**
+        - **🌱 Múltiples cultivos:** Palma aceitera, Cacao y Banano
+        - **🗺️ Mapas interactivos:** Visualización con base ESRI Satélite
         - **📈 Más zonas de manejo:** 16 a 32 subdivisiones para mayor precisión
         - **📅 Análisis mensual:** Recomendaciones ajustadas por época del año
         - **🌦️ Factores estacionales:** Considera variaciones climáticas mensuales
+        - **💾 Exportación múltiple:** GeoJSON, Shapefile y GeoTIFF
         
         **📊 FUNCIONALIDADES IMPLEMENTADAS:**
         - **🌱 Fertilidad Actual:** Estado NPK del suelo usando índices satelitales
         - **💊 Recomendaciones NPK:** Dosis específicas basadas en análisis GEE
         - **🛰️ Metodología GEE:** Algoritmos científicos de Google Earth Engine
         - **🎯 Agricultura Precisión:** Mapas de prescripción por zonas
+        - **🗺️ Visualización interactiva:** Mapas con base ESRI Satélite
         
         **🚀 INSTRUCCIONES:**
-        1. **Sube** tu shapefile de parcela de palma aceitera
-        2. **Selecciona** el tipo de análisis (Fertilidad o Recomendaciones NPK)
-        3. **Elige** el nutriente a analizar
-        4. **Selecciona** el mes de análisis
-        5. **Configura** el número de zonas de manejo (16-32)
-        6. **Ejecuta** el análisis GEE
-        7. **Revisa** resultados y recomendaciones
+        1. **Sube** tu shapefile de parcela
+        2. **Selecciona** el cultivo a analizar
+        3. **Elige** el tipo de análisis (Fertilidad o Recomendaciones NPK)
+        4. **Selecciona** el nutriente a analizar
+        5. **Configura** el mes de análisis
+        6. **Ajusta** el número de zonas de manejo (16-32)
+        7. **Ejecuta** el análisis GEE
+        8. **Revisa** resultados y recomendaciones
+        9. **Exporta** resultados en múltiples formatos
         
         **🔬 METODOLOGÍA CIENTÍFICA:**
         - Análisis basado en imágenes Sentinel-2
         - Cálculo de índices de vegetación y suelo
-        - Algoritmos probados para palma aceitera
+        - Algoritmos probados para cada cultivo
         - Recomendaciones validadas científicamente
         - Ajustes estacionales por mes
+        - Parámetros específicos por cultivo
         """)
