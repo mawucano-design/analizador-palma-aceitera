@@ -13,7 +13,6 @@ import io
 from shapely.geometry import Polygon
 import math
 import folium
-from folium import plugins
 from streamlit_folium import st_folium
 import json
 from reportlab.lib.pagesizes import letter, A4
