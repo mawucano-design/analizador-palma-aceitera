@@ -1,8 +1,9 @@
+reportlab==4.0.4
 streamlit
 geopandas
 pandas
 numpy
 matplotlib
-shapely
 folium
 streamlit-folium
+shapely
