@@ -798,44 +798,52 @@ def crear_mapa_visualizador_parcela(gdf):
     
     return m
 
-# FUNCIÓN PARA CREAR MAPA ESTÁTICO
+# FUNCIÓN CORREGIDA PARA CREAR MAPA ESTÁTICO
 def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
-    """Crea mapa estático con matplotlib"""
+    """Crea mapa estático con matplotlib - CORREGIDO PARA COINCIDIR CON INTERACTIVO"""
     try:
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
         
-        # Configurar colores según el tipo de análisis
+        # CONFIGURACIÓN UNIFICADA CON EL MAPA INTERACTIVO
         if columna_valor and analisis_tipo:
             if analisis_tipo == "FERTILIDAD ACTUAL":
                 cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
                 vmin, vmax = 0, 1
             else:
-                # 🔧 CORRECCIÓN: MISMOS RANGOS QUE EL MAPA INTERACTIVO
+                # USAR EXACTAMENTE LOS MISMOS RANGOS QUE EL MAPA INTERACTIVO
                 if nutriente == "NITRÓGENO":
                     cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
                     vmin, vmax = 10, 140
                 elif nutriente == "FÓSFORO":
                     cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
                     vmin, vmax = 5, 80
-                else:
+                else:  # POTASIO
                     cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
                     vmin, vmax = 8, 120
             
-            # Plotear cada polígono con color según valor
+            # Plotear cada polígono con color según valor - MÉTODO UNIFICADO
             for idx, row in gdf.iterrows():
                 valor = row[columna_valor]
                 valor_norm = (valor - vmin) / (vmax - vmin)
                 valor_norm = max(0, min(1, valor_norm))
                 color = cmap(valor_norm)
                 
+                # Plot del polígono
                 gdf.iloc[[idx]].plot(ax=ax, color=color, edgecolor='black', linewidth=1)
                 
-                # Etiqueta con valor
+                # Etiqueta con valor - FORMATO MEJORADO
                 centroid = row.geometry.centroid
-                ax.annotate(f"Z{row['id_zona']}\n{valor:.1f}", (centroid.x, centroid.y), 
+                if analisis_tipo == "FERTILIDAD ACTUAL":
+                    texto_valor = f"{valor:.3f}"
+                else:
+                    texto_valor = f"{valor:.0f} kg"
+                
+                ax.annotate(f"Z{row['id_zona']}\n{texto_valor}", 
+                           (centroid.x, centroid.y), 
                            xytext=(3, 3), textcoords="offset points", 
                            fontsize=6, color='black', weight='bold',
-                           bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8))
+                           bbox=dict(boxstyle="round,pad=0.2", facecolor='white', alpha=0.8),
+                           ha='center', va='center')
         else:
             # Mapa simple del polígono original
             gdf.plot(ax=ax, color='lightblue', edgecolor='black', linewidth=2, alpha=0.7)
@@ -846,15 +854,30 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
         ax.set_ylabel('Latitud')
         ax.grid(True, alpha=0.3)
         
-        # Añadir barra de colores si hay valores
+        # BARRA DE COLORES UNIFICADA
         if columna_valor and analisis_tipo:
             sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=vmin, vmax=vmax))
             sm.set_array([])
             cbar = plt.colorbar(sm, ax=ax, shrink=0.8)
+            
+            # Etiquetas de barra unificadas
             if analisis_tipo == "FERTILIDAD ACTUAL":
                 cbar.set_label('Índice NPK Actual (0-1)', fontsize=10)
+                # Marcas específicas para fertilidad
+                cbar.set_ticks([0, 0.2, 0.4, 0.6, 0.8, 1.0])
+                cbar.set_ticklabels(['0.0 (Muy Baja)', '0.2', '0.4 (Media)', '0.6', '0.8', '1.0 (Muy Alta)'])
             else:
                 cbar.set_label(f'Recomendación {nutriente} (kg/ha)', fontsize=10)
+                # Marcas específicas para recomendaciones
+                if nutriente == "NITRÓGENO":
+                    cbar.set_ticks([10, 40, 70, 100, 130, 140])
+                    cbar.set_ticklabels(['10', '40', '70', '100', '130', '140 kg/ha'])
+                elif nutriente == "FÓSFORO":
+                    cbar.set_ticks([5, 20, 35, 50, 65, 80])
+                    cbar.set_ticklabels(['5', '20', '35', '50', '65', '80 kg/ha'])
+                else:  # POTASIO
+                    cbar.set_ticks([8, 30, 52, 74, 96, 120])
+                    cbar.set_ticklabels(['8', '30', '52', '74', '96', '120 kg/ha'])
         
         plt.tight_layout()
         
@@ -867,7 +890,7 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
         return buf
         
     except Exception as e:
-        st.error(f"Error creando mapa: {str(e)}")
+        st.error(f"Error creando mapa estático: {str(e)}")
         return None
 # FUNCIÓN PARA MOSTRAR RECOMENDACIONES AGROECOLÓGICAS
 def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis_tipo, nutriente=None):
