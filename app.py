@@ -525,9 +525,9 @@ def calcular_superficie(gdf):
         except:
             return 1.0  # Valor por defecto
 
-# FUNCIÓN PARA CREAR MAPA INTERACTIVO CON ESRI SATELITE
+# FUNCIÓN MEJORADA PARA CREAR MAPA INTERACTIVO CON ESRI SATELITE
 def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
-    """Crea mapa interactivo con base ESRI Satélite"""
+    """Crea mapa interactivo con base ESRI Satélite - AJUSTADO PARA CONSISTENCIA"""
     
     # Obtener centro y bounds del GeoDataFrame
     centroid = gdf.geometry.centroid.iloc[0]
@@ -566,22 +566,21 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
         control=True
     ).add_to(m)
     
-    # Configurar colores según el tipo de análisis
+    # CONFIGURAR RANGOS UNIFICADOS (igual que en el mapa estático)
     if columna_valor and analisis_tipo:
-        # 🔧 CORRECCIÓN: DEFINIR RANGOS MÁS SENSIBLES PARA RECOMENDACIONES
         if analisis_tipo == "FERTILIDAD ACTUAL":
             vmin, vmax = 0, 1
             colores = PALETAS_GEE['FERTILIDAD']
         else:
-            # RANGOS AJUSTADOS PARA RECOMENDACIONES NPK
+            # RANGOS IDÉNTICOS AL MAPA ESTÁTICO
             if nutriente == "NITRÓGENO":
-                vmin, vmax = 10, 140  # 🔧 De 10 a 140 kg/ha
+                vmin, vmax = 10, 140
                 colores = PALETAS_GEE['NITROGENO']
             elif nutriente == "FÓSFORO":
-                vmin, vmax = 5, 80    # 🔧 De 5 a 80 kg/ha
+                vmin, vmax = 5, 80
                 colores = PALETAS_GEE['FOSFORO']
             else:  # POTASIO
-                vmin, vmax = 8, 120   # 🔧 De 8 a 120 kg/ha
+                vmin, vmax = 8, 120
                 colores = PALETAS_GEE['POTASIO']
         
         # Función para obtener color basado en valor
@@ -705,8 +704,8 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
                 colors = PALETAS_GEE['POTASIO']
                 vmin, vmax = 8, 120
             
-            # 🔧 CORRECCIÓN: MEJOR DISTRIBUCIÓN EN LA LEYENDA
-            steps = 5  # Mostrar 5 pasos en la leyenda
+            # LEYENDA UNIFICADA CON EL MAPA ESTÁTICO
+            steps = 6  # Mismo número de pasos que el mapa estático
             for i in range(steps):
                 value = vmin + (i / (steps - 1)) * (vmax - vmin)
                 color_idx = int((i / (steps - 1)) * (len(colors) - 1))
@@ -717,7 +716,6 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
         m.get_root().html.add_child(folium.Element(legend_html))
     
     return m
-
 # FUNCIÓN PARA CREAR MAPA VISUALIZADOR DE PARCELA
 def crear_mapa_visualizador_parcela(gdf):
     """Crea mapa interactivo para visualizar la parcela original con ESRI Satélite"""
