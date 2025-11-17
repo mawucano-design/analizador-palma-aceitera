@@ -810,15 +810,16 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
                 cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
                 vmin, vmax = 0, 1
             else:
+                # 🔧 CORRECCIÓN: MISMOS RANGOS QUE EL MAPA INTERACTIVO
                 if nutriente == "NITRÓGENO":
                     cmap = LinearSegmentedColormap.from_list('nitrogeno_gee', PALETAS_GEE['NITROGENO'])
-                    vmin, vmax = 140, 240
+                    vmin, vmax = 10, 140
                 elif nutriente == "FÓSFORO":
                     cmap = LinearSegmentedColormap.from_list('fosforo_gee', PALETAS_GEE['FOSFORO'])
-                    vmin, vmax = 40, 100
+                    vmin, vmax = 5, 80
                 else:
                     cmap = LinearSegmentedColormap.from_list('potasio_gee', PALETAS_GEE['POTASIO'])
-                    vmin, vmax = 80, 150
+                    vmin, vmax = 8, 120
             
             # Plotear cada polígono con color según valor
             for idx, row in gdf.iterrows():
@@ -868,7 +869,6 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
     except Exception as e:
         st.error(f"Error creando mapa: {str(e)}")
         return None
-
 # FUNCIÓN PARA MOSTRAR RECOMENDACIONES AGROECOLÓGICAS
 def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis_tipo, nutriente=None):
     """Muestra recomendaciones agroecológicas específicas"""
