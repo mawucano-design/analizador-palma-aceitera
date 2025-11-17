@@ -1395,7 +1395,7 @@ def mostrar_resultados():
         st.session_state.analisis_completado = False
         st.rerun()
     
-    # Estadísticas resumen
+        # Estadísticas resumen
     st.subheader("📊 Estadísticas del Análisis")
     
     if analisis_tipo == "FERTILIDAD ACTUAL":
@@ -1412,22 +1412,28 @@ def mostrar_resultados():
         with col4:
             avg_k = gdf_analisis['potasio'].mean()
             st.metric("⚡ Potasio Promedio", f"{avg_k:.1f} kg/ha")
-        
-        # Distribución de categorías
         st.subheader("📋 Distribución de Categorías de Fertilidad")
         cat_dist = gdf_analisis['categoria'].value_counts()
         st.bar_chart(cat_dist)
-    
     else:
         col1, col2 = st.columns(2)
         with col1:
             avg_rec = gdf_analisis['recomendacion_npk'].mean()
-            st.metric(f"💡 Recomendación {nutriente} Promedio", 
-                     f"{avg_rec:.1f} kg/ha")
+            st.metric(f"💡 Recomendación {nutriente} Promedio", f"{avg_rec:.1f} kg/ha")
         with col2:
             total_rec = (gdf_analisis['recomendacion_npk'] * gdf_analisis['area_ha']).sum()
-            st.metric(f"📦 Total {nutriente} Requerido", 
-                     f"{total_rec:.1f} kg")
+            st.metric(f"📦 Total {nutriente} Requerido", f"{total_rec:.1f} kg")
+        st.subheader("🌿 Estado Actual de Nutrientes")
+        col_n, col_p, col_k = st.columns(3)
+        with col_n:
+            avg_n = gdf_analisis['nitrogeno'].mean()
+            st.metric("Nitrógeno", f"{avg_n:.1f} kg/ha")
+        with col_p:
+            avg_p = gdf_analisis['fosforo'].mean()
+            st.metric("Fósforo", f"{avg_p:.1f} kg/ha")
+        with col_k:
+            avg_k = gdf_analisis['potasio'].mean()
+            st.metric("Potasio", f"{avg_k:.1f} kg/ha")
     
     # MAPAS INTERACTIVOS
     st.markdown("### 🗺️ Mapas de Análisis")
