@@ -568,19 +568,20 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
     
     # Configurar colores según el tipo de análisis
     if columna_valor and analisis_tipo:
-        # Definir rangos y colores según el análisis
+        # 🔧 CORRECCIÓN: DEFINIR RANGOS MÁS SENSIBLES PARA RECOMENDACIONES
         if analisis_tipo == "FERTILIDAD ACTUAL":
             vmin, vmax = 0, 1
             colores = PALETAS_GEE['FERTILIDAD']
         else:
+            # RANGOS AJUSTADOS PARA RECOMENDACIONES NPK
             if nutriente == "NITRÓGENO":
-                vmin, vmax = 140, 240
+                vmin, vmax = 10, 140  # 🔧 De 10 a 140 kg/ha
                 colores = PALETAS_GEE['NITROGENO']
             elif nutriente == "FÓSFORO":
-                vmin, vmax = 40, 100
+                vmin, vmax = 5, 80    # 🔧 De 5 a 80 kg/ha
                 colores = PALETAS_GEE['FOSFORO']
-            else:
-                vmin, vmax = 80, 150
+            else:  # POTASIO
+                vmin, vmax = 8, 120   # 🔧 De 8 a 120 kg/ha
                 colores = PALETAS_GEE['POTASIO']
         
         # Función para obtener color basado en valor
@@ -677,33 +678,40 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
         # Crear leyenda personalizada
         legend_html = f'''
         <div style="position: fixed; 
-                    top: 10px; right: 10px; width: 200px; height: auto; 
+                    top: 10px; right: 10px; width: 220px; height: auto; 
                     background-color: white; border:2px solid grey; z-index:9999; 
-                    font-size:14px; padding: 10px">
-        <p><b>{titulo}</b></p>
-        <p><b>Escala de Valores:</b></p>
+                    font-size:12px; padding: 10px; border-radius: 5px;">
+        <p style="margin:0; font-weight:bold; font-size:14px; text-align:center;">{titulo}</p>
+        <p style="margin:5px 0; font-weight:bold;">Escala de Valores:</p>
         '''
         
         # Añadir elementos de leyenda según el tipo de análisis
         if analisis_tipo == "FERTILIDAD ACTUAL":
-            legend_html += '<p>🎯 Índice NPK (0-1)</p>'
+            legend_html += '<p style="margin:2px 0;">🎯 Índice NPK (0-1)</p>'
             for i, color in enumerate(PALETAS_GEE['FERTILIDAD']):
                 value = i / (len(PALETAS_GEE['FERTILIDAD']) - 1)
-                legend_html += f'<p><i style="background:{color}; width:20px; height:20px; display:inline-block; margin-right:5px;"></i> {value:.1f}</p>'
+                legend_html += f'<p style="margin:1px 0;"><i style="background:{color}; width:20px; height:15px; display:inline-block; margin-right:5px; border:1px solid #000;"></i> {value:.1f}</p>'
         else:
             if nutriente == "NITRÓGENO":
-                legend_html += '<p>🌿 Nitrógeno (kg/ha)</p>'
+                legend_html += '<p style="margin:2px 0;">🌿 Nitrógeno (kg/ha)</p>'
                 colors = PALETAS_GEE['NITROGENO']
+                vmin, vmax = 10, 140
             elif nutriente == "FÓSFORO":
-                legend_html += '<p>🧪 Fósforo (kg/ha)</p>'
+                legend_html += '<p style="margin:2px 0;">🧪 Fósforo (kg/ha)</p>'
                 colors = PALETAS_GEE['FOSFORO']
+                vmin, vmax = 5, 80
             else:
-                legend_html += '<p>⚡ Potasio (kg/ha)</p>'
+                legend_html += '<p style="margin:2px 0;">⚡ Potasio (kg/ha)</p>'
                 colors = PALETAS_GEE['POTASIO']
+                vmin, vmax = 8, 120
             
-            for i, color in enumerate(colors):
-                value = vmin + (i / (len(colors) - 1)) * (vmax - vmin)
-                legend_html += f'<p><i style="background:{color}; width:20px; height:20px; display:inline-block; margin-right:5px;"></i> {value:.0f}</p>'
+            # 🔧 CORRECCIÓN: MEJOR DISTRIBUCIÓN EN LA LEYENDA
+            steps = 5  # Mostrar 5 pasos en la leyenda
+            for i in range(steps):
+                value = vmin + (i / (steps - 1)) * (vmax - vmin)
+                color_idx = int((i / (steps - 1)) * (len(colors) - 1))
+                color = colors[color_idx]
+                legend_html += f'<p style="margin:1px 0;"><i style="background:{color}; width:20px; height:15px; display:inline-block; margin-right:5px; border:1px solid #000;"></i> {value:.0f} kg/ha</p>'
         
         legend_html += '</div>'
         m.get_root().html.add_child(folium.Element(legend_html))
