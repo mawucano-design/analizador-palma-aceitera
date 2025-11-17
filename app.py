@@ -1111,9 +1111,15 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
                 # Si no tiene centroide, usar el primer punto
                 centroid = row.geometry.representative_point()
             
-            # Usar una semilla estable para reproducibilidad
-            seed_value = abs(hash(f"{centroid.x:.6f}_{centroid.y:.6f}_{cultivo}")) % (2**32)
-            rng = np.random.RandomState(seed_value)
+            # 🔧 CORRECCIÓN: SEMILLAS DIFERENTES PARA CADA NUTRIENTE
+            seed_base = abs(hash(f"{centroid.x:.6f}_{centroid.y:.6f}_{cultivo}")) % (2**32)
+            
+            # Crear generadores aleatorios independientes para cada nutriente
+            rng_n = np.random.RandomState(seed_base + 1000)  # +1000 para N
+            rng_p = np.random.RandomState(seed_base + 2000)  # +2000 para P  
+            rng_k = np.random.RandomState(seed_base + 3000)  # +3000 para K
+            rng_mo = np.random.RandomState(seed_base + 4000) # +4000 para MO
+            rng_ndvi = np.random.RandomState(seed_base + 5000) # +5000 para NDVI
             
             # Normalizar coordenadas para variabilidad espacial
             lat_norm = (centroid.y + 90) / 180 if centroid.y else 0.5
@@ -1124,31 +1130,36 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             p_min, p_max = params['FOSFORO']['min'], params['FOSFORO']['max']
             k_min, k_max = params['POTASIO']['min'], params['POTASIO']['max']
             
-            # Simular valores con variabilidad espacial controlada
-            nitrogeno_base = n_min + (n_max - n_min) * (0.3 + 0.4 * lat_norm)
-            fosforo_base = p_min + (p_max - p_min) * (0.3 + 0.4 * lon_norm)
-            potasio_base = k_min + (k_max - k_min) * (0.3 + 0.4 * (1 - lat_norm))
+            # 🔧 CORRECCIÓN: VARIABILIDAD INDEPENDIENTE PARA CADA NUTRIENTE
+            # Nitrógeno - más influenciado por latitud
+            nitrogeno_base = n_min + (n_max - n_min) * (0.3 + 0.5 * lat_norm)
+            nitrogeno = nitrogeno_base * factor_n_mes * (0.8 + 0.4 * rng_n.random())
             
-            # Aplicar factores estacionales con variabilidad aleatoria controlada
-            nitrogeno = nitrogeno_base * factor_n_mes * (0.85 + 0.3 * rng.random())
-            fosforo = fosforo_base * factor_p_mes * (0.85 + 0.3 * rng.random())
-            potasio = potasio_base * factor_k_mes * (0.85 + 0.3 * rng.random())
+            # Fósforo - más influenciado por longitud
+            fosforo_base = p_min + (p_max - p_min) * (0.2 + 0.6 * lon_norm)  
+            fosforo = fosforo_base * factor_p_mes * (0.7 + 0.5 * rng_p.random())
+            
+            # Potasio - influenciado por ambos pero con diferente patrón
+            potasio_base = k_min + (k_max - k_min) * (0.4 + 0.4 * (1 - abs(lat_norm - lon_norm)))
+            potasio = potasio_base * factor_k_mes * (0.75 + 0.45 * rng_k.random())
             
             # Asegurar que estén dentro de rangos razonables
-            nitrogeno = max(n_min * 0.5, min(n_max * 1.5, nitrogeno))
+            nitrogeno = max(n_min * 0.6, min(n_max * 1.4, nitrogeno))
             fosforo = max(p_min * 0.5, min(p_max * 1.5, fosforo))
-            potasio = max(k_min * 0.5, min(k_max * 1.5, potasio))
+            potasio = max(k_min * 0.7, min(k_max * 1.3, potasio))
             
-            # Materia orgánica y humedad simuladas
+            # Materia orgánica y humedad simuladas con variabilidad independiente
             materia_organica_optima = params['MATERIA_ORGANICA_OPTIMA']
             humedad_optima = params['HUMEDAD_OPTIMA']
             
-            materia_organica = materia_organica_optima * (0.7 + 0.6 * rng.random())
-            humedad = humedad_optima * (0.6 + 0.8 * rng.random())
+            # Materia orgánica correlacionada con nitrógeno pero no idéntica
+            materia_organica = materia_organica_optima * (0.6 + 0.5 * rng_mo.random())
+            humedad = humedad_optima * (0.5 + 0.6 * rng_n.random())  # Usar rng_n para correlación con N
             
-            # NDVI simulado con correlación espacial
-            ndvi = 0.5 + 0.3 * lat_norm + 0.1 * rng.random()
-            ndvi = max(0.1, min(0.9, ndvi))
+            # NDVI simulado con correlación espacial pero variabilidad independiente
+            ndvi_base = 0.5 + 0.3 * lat_norm + 0.2 * lon_norm
+            ndvi = ndvi_base * (0.8 + 0.3 * rng_ndvi.random())
+            ndvi = max(0.2, min(0.9, ndvi))
             
             # CÁLCULO DE ÍNDICE DE FERTILIDAD NPK
             n_norm = (nitrogeno - n_min) / (n_max - n_min) if n_max > n_min else 0.5
@@ -1160,8 +1171,17 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             p_norm = max(0, min(1, p_norm))
             k_norm = max(0, min(1, k_norm))
             
-            # Índice compuesto (ponderado)
-            indice_fertilidad = (n_norm * 0.4 + p_norm * 0.3 + k_norm * 0.3) * factor_mes
+            # Índice compuesto (ponderado) - 🔧 CORREGIR PESOS SEGÚN CULTIVO
+            if cultivo == "PALMA_ACEITERA":
+                # Palma requiere más N y K
+                indice_fertilidad = (n_norm * 0.4 + p_norm * 0.2 + k_norm * 0.4) * factor_mes
+            elif cultivo == "CACAO":
+                # Cacao balanceado
+                indice_fertilidad = (n_norm * 0.35 + p_norm * 0.3 + k_norm * 0.35) * factor_mes
+            else:  # BANANO
+                # Banano requiere más K
+                indice_fertilidad = (n_norm * 0.3 + p_norm * 0.25 + k_norm * 0.45) * factor_mes
+                
             indice_fertilidad = max(0, min(1, indice_fertilidad))
             
             # CATEGORIZACIÓN
@@ -1176,7 +1196,7 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             else:
                 categoria = "MUY BAJA"
             
-            # 🔧 **CORRECCIÓN ESPECÍFICA - CÁLCULO DE RECOMENDACIONES NPK**
+            # CÁLCULO DE RECOMENDACIONES NPK
             if analisis_tipo == "RECOMENDACIONES NPK":
                 if nutriente == "NITRÓGENO":
                     # Cálculo corregido: considerar déficit y nivel actual
@@ -1221,12 +1241,12 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             st.warning(f"Advertencia en zona {idx}: {str(e)}")
             # Valores por defecto en caso de error
             zonas_gdf.loc[idx, 'area_ha'] = calcular_superficie(zonas_gdf.iloc[[idx]]).iloc[0]
-            zonas_gdf.loc[idx, 'nitrogeno'] = params['NITROGENO']['min']
-            zonas_gdf.loc[idx, 'fosforo'] = params['FOSFORO']['min']
-            zonas_gdf.loc[idx, 'potasio'] = params['POTASIO']['min']
-            zonas_gdf.loc[idx, 'materia_organica'] = params['MATERIA_ORGANICA_OPTIMA']
-            zonas_gdf.loc[idx, 'humedad'] = params['HUMEDAD_OPTIMA']
-            zonas_gdf.loc[idx, 'ndvi'] = 0.6
+            zonas_gdf.loc[idx, 'nitrogeno'] = params['NITROGENO']['min'] * (0.8 + 0.4 * np.random.random())
+            zonas_gdf.loc[idx, 'fosforo'] = params['FOSFORO']['min'] * (0.7 + 0.5 * np.random.random())
+            zonas_gdf.loc[idx, 'potasio'] = params['POTASIO']['min'] * (0.75 + 0.45 * np.random.random())
+            zonas_gdf.loc[idx, 'materia_organica'] = params['MATERIA_ORGANICA_OPTIMA'] * (0.6 + 0.5 * np.random.random())
+            zonas_gdf.loc[idx, 'humedad'] = params['HUMEDAD_OPTIMA'] * (0.5 + 0.6 * np.random.random())
+            zonas_gdf.loc[idx, 'ndvi'] = 0.5 + 0.2 * np.random.random()
             zonas_gdf.loc[idx, 'indice_fertilidad'] = 0.5
             zonas_gdf.loc[idx, 'categoria'] = "MEDIA"
             zonas_gdf.loc[idx, 'recomendacion_npk'] = 0
