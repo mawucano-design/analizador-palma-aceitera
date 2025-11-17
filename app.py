@@ -1168,20 +1168,32 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             else:
                 categoria = "MUY BAJA"
             
-            # RECOMENDACIONES NPK
+            # 🔧 **CORRECCIÓN ESPECÍFICA - CÁLCULO DE RECOMENDACIONES NPK**
             if analisis_tipo == "RECOMENDACIONES NPK":
                 if nutriente == "NITRÓGENO":
+                    # Cálculo corregido: considerar déficit y nivel actual
                     deficit_n = max(0, n_max - nitrogeno)
-                    recomendacion_npk = deficit_n * (1.1 + (1 - n_norm) * 0.3)
+                    # Ajustar según la deficiencia y nivel de fertilidad
+                    factor_ajuste = 1.2 + (1 - n_norm) * 0.5  # Más agresivo en deficiencias severas
+                    recomendacion_npk = deficit_n * factor_ajuste
+                    # Asegurar recomendaciones realistas
+                    recomendacion_npk = min(recomendacion_npk, n_max * 0.8)  # No más del 80% del máximo
+                    
                 elif nutriente == "FÓSFORO":
                     deficit_p = max(0, p_max - fosforo)
-                    recomendacion_npk = deficit_p * (1.1 + (1 - p_norm) * 0.3)
+                    factor_ajuste = 1.1 + (1 - p_norm) * 0.4
+                    recomendacion_npk = deficit_p * factor_ajuste
+                    recomendacion_npk = min(recomendacion_npk, p_max * 0.7)
+                    
                 else:  # POTASIO
                     deficit_k = max(0, k_max - potasio)
-                    recomendacion_npk = deficit_k * (1.1 + (1 - k_norm) * 0.3)
+                    factor_ajuste = 1.15 + (1 - k_norm) * 0.45
+                    recomendacion_npk = deficit_k * factor_ajuste
+                    recomendacion_npk = min(recomendacion_npk, k_max * 0.75)
                 
-                # Ajustar según área (kg/ha)
-                recomendacion_npk = max(0, recomendacion_npk)
+                # Asegurar valor mínimo y aplicar factor de seguridad
+                recomendacion_npk = max(10, recomendacion_npk)  # Mínimo 10 kg/ha
+                
             else:
                 recomendacion_npk = 0
             
@@ -1212,7 +1224,6 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             zonas_gdf.loc[idx, 'recomendacion_npk'] = 0
     
     return zonas_gdf
-
 # FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO
 def procesar_archivo(uploaded_zip):
     """Procesa el archivo ZIP con shapefile"""
