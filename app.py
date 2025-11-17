@@ -1438,7 +1438,7 @@ def mostrar_resultados():
         cat_dist = gdf_analisis['categoria'].value_counts()
         st.bar_chart(cat_dist)
     
-    else:
+       else:
         col1, col2 = st.columns(2)
         with col1:
             avg_rec = gdf_analisis['recomendacion_npk'].mean()
