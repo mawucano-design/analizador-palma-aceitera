@@ -1395,7 +1395,7 @@ def mostrar_resultados():
         st.session_state.analisis_completado = False
         st.rerun()
     
-    # Estadísticas resumen
+       # Estadísticas resumen
     st.subheader("📊 Estadísticas del Análisis")
     
     if analisis_tipo == "FERTILIDAD ACTUAL":
@@ -1419,33 +1419,28 @@ def mostrar_resultados():
         st.bar_chart(cat_dist)
     
     else:
+        # 🔧 CORRECCIÓN: Mostrar recomendación y valores actuales
         col1, col2 = st.columns(2)
         with col1:
             avg_rec = gdf_analisis['recomendacion_npk'].mean()
-            st.metric(f"💡 Recomendación {nutriente} Promedio", 
-                     f"{avg_rec:.1f} kg/ha")
+            st.metric(f"💡 Recomendación {nutriente} Promedio", f"{avg_rec:.1f} kg/ha")
         with col2:
             total_rec = (gdf_analisis['recomendacion_npk'] * gdf_analisis['area_ha']).sum()
-            st.metric(f"📦 Total {nutriente} Requerido", 
-                     f"{total_rec:.1f} kg")
-    
-    # MAPAS INTERACTIVOS
-    st.markdown("### 🗺️ Mapas de Análisis")
-    
-    # Seleccionar columna para visualizar
-    if analisis_tipo == "FERTILIDAD ACTUAL":
-        columna_visualizar = 'indice_fertilidad'
-        titulo_mapa = f"Fertilidad Actual - {cultivo.replace('_', ' ').title()}"
-    else:
-        columna_visualizar = 'recomendacion_npk'
-        titulo_mapa = f"Recomendación {nutriente} - {cultivo.replace('_', ' ').title()}"
-    
-    # Crear y mostrar mapa interactivo
-    mapa_analisis = crear_mapa_interactivo_esri(
-        gdf_analisis, titulo_mapa, columna_visualizar, analisis_tipo, nutriente
-    )
-    st_folium(mapa_analisis, width=800, height=500)
-    
+            st.metric(f"📦 Total {nutriente} Requerido", f"{total_rec:.1f} kg")
+        
+        # Mostrar valores actuales de todos los nutrientes
+        st.subheader("🌿 Estado Actual de Nutrientes")
+        col_n, col_p, col_k = st.columns(3)
+        with col_n:
+            avg_n = gdf_analisis['nitrogeno'].mean()
+            st.metric("Nitrógeno Actual", f"{avg_n:.1f} kg/ha")
+        with col_p:
+            avg_p = gdf_analisis['fosforo'].mean()
+            st.metric("Fósforo Actual", f"{avg_p:.1f} kg/ha")
+        with col_k:
+            avg_k = gdf_analisis['potasio'].mean()
+            st.metric("Potasio Actual", f"{avg_k:.1f} kg/ha")
+  
     # MAPA ESTÁTICO PARA DESCARGA
     st.markdown("### 📄 Mapa para Reporte")
     mapa_estatico = crear_mapa_estatico(
