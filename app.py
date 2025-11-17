@@ -1438,7 +1438,8 @@ def mostrar_resultados():
         with col_k:
             avg_k = gdf_analisis['potasio'].mean()
             st.metric("Potasio", f"{avg_k:.1f} kg/ha")
-    # MAPAS INTERACTIVOS
+   
+# MAPAS INTERACTIVOS
     st.markdown("### 🗺️ Mapas de Análisis")
     
     # Seleccionar columna para visualizar
