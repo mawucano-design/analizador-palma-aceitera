@@ -188,38 +188,6 @@ if 'area_total' not in st.session_state:
 if 'datos_demo' not in st.session_state:
     st.session_state.datos_demo = False
 
-# Sidebar
-with st.sidebar:
-    st.header("⚙️ Configuración")
-    
-    cultivo = st.selectbox("Cultivo:", 
-                          ["PALMA_ACEITERA", "CACAO", "BANANO"])
-    
-    analisis_tipo = st.selectbox("Tipo de Análisis:", 
-                               ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK"])
-    
-    nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
-    
-    mes_analisis = st.selectbox("Mes de Análisis:", 
-                               ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
-                                "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"])
-    
-    st.subheader("🎯 División de Parcela")
-    n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
-    
-    st.subheader("📤 Subir Parcela")
-    uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
-    
-    # Botón para resetear la aplicación
-    if st.button("🔄 Reiniciar Análisis"):
-        st.session_state.analisis_completado = False
-        st.session_state.gdf_analisis = None
-        st.session_state.gdf_original = None
-        st.session_state.gdf_zonas = None
-        st.session_state.area_total = 0
-        st.session_state.datos_demo = False
-        st.rerun()
-
 # FUNCIÓN PARA GENERAR PDF
 def generar_informe_pdf(gdf_analisis, cultivo, analisis_tipo, nutriente, mes_analisis, area_total):
     """Genera un informe PDF completo con los resultados del análisis"""
@@ -490,11 +458,6 @@ def generar_informe_pdf(gdf_analisis, cultivo, analisis_tipo, nutriente, mes_ana
     
     return buffer
 
-# [TODAS LAS FUNCIONES ANTERIORES SE MANTIENEN IGUALES]
-# (calcular_superficie, crear_mapa_interactivo_esri, crear_mapa_visualizador_parcela, 
-# crear_mapa_estatico, mostrar_recomendaciones_agroecologicas, dividir_parcela_en_zonas,
-# calcular_indices_gee, procesar_archivo)
-
 # FUNCIÓN MEJORADA PARA CALCULAR SUPERFICIE
 def calcular_superficie(gdf):
     """Calcula superficie en hectáreas con manejo robusto de CRS"""
@@ -716,6 +679,7 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
         m.get_root().html.add_child(folium.Element(legend_html))
     
     return m
+
 # FUNCIÓN PARA CREAR MAPA VISUALIZADOR DE PARCELA
 def crear_mapa_visualizador_parcela(gdf):
     """Crea mapa interactivo para visualizar la parcela original con ESRI Satélite"""
@@ -890,6 +854,7 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
     except Exception as e:
         st.error(f"Error creando mapa estático: {str(e)}")
         return None
+
 # FUNCIÓN PARA MOSTRAR RECOMENDACIONES AGROECOLÓGICAS
 def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis_tipo, nutriente=None):
     """Muestra recomendaciones agroecológicas específicas"""
@@ -1095,8 +1060,16 @@ def dividir_parcela_en_zonas(gdf, n_zonas):
         st.error(f"Error dividiendo parcela: {str(e)}")
         return gdf
 
+# FUNCIÓN COMPLETAMENTE CORREGIDA PARA CALCULAR ÍNDICES GEE
 def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
     """Calcula índices GEE y recomendaciones basadas en parámetros del cultivo - VERSIÓN COMPLETAMENTE CORREGIDA"""
+    
+    # DEBUG: Verificar parámetros recibidos
+    st.write(f"🔍 DEBUG - Parámetros recibidos en calcular_indices_gee:")
+    st.write(f"Cultivo: {cultivo}")
+    st.write(f"Análisis tipo: {analisis_tipo}")
+    st.write(f"Nutriente: {nutriente}")
+    st.write(f"Mes: {mes_analisis}")
     
     params = PARAMETROS_CULTIVOS[cultivo]
     zonas_gdf = gdf.copy()
@@ -1284,6 +1257,7 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             zonas_gdf.loc[idx, 'recomendacion_npk'] = 0.0
     
     return zonas_gdf
+
 # FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO
 def procesar_archivo(uploaded_zip):
     """Procesa el archivo ZIP con shapefile"""
@@ -1321,16 +1295,47 @@ def procesar_archivo(uploaded_zip):
 
 # INTERFAZ PRINCIPAL
 def main():
-    # Mostrar información de la aplicación
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### 📊 Métodología GEE")
-    st.sidebar.info("""
-    Esta aplicación utiliza:
-    - **Google Earth Engine** para análisis satelital
-    - **Índices espectrales** (NDVI, NDBI, etc.)
-    - **Modelos predictivos** de nutrientes
-    - **Enfoque agroecológico** integrado
-    """)
+    # OBTENER PARÁMETROS DEL SIDEBAR (esto es clave para la corrección)
+    with st.sidebar:
+        st.header("⚙️ Configuración")
+        
+        cultivo = st.selectbox("Cultivo:", 
+                              ["PALMA_ACEITERA", "CACAO", "BANANO"])
+        
+        analisis_tipo = st.selectbox("Tipo de Análisis:", 
+                                   ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK"])
+        
+        nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
+        
+        mes_analisis = st.selectbox("Mes de Análisis:", 
+                                   ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+                                    "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"])
+        
+        st.subheader("🎯 División de Parcela")
+        n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
+        
+        st.subheader("📤 Subir Parcela")
+        uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
+        
+        # Botón para resetear la aplicación
+        if st.button("🔄 Reiniciar Análisis"):
+            st.session_state.analisis_completado = False
+            st.session_state.gdf_analisis = None
+            st.session_state.gdf_original = None
+            st.session_state.gdf_zonas = None
+            st.session_state.area_total = 0
+            st.session_state.datos_demo = False
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("### 📊 Métodología GEE")
+        st.info("""
+        Esta aplicación utiliza:
+        - **Google Earth Engine** para análisis satelital
+        - **Índices espectrales** (NDVI, NDBI, etc.)
+        - **Modelos predictivos** de nutrientes
+        - **Enfoque agroecológico** integrado
+        """)
 
     # Procesar archivo subido si existe
     if uploaded_zip is not None and not st.session_state.analisis_completado:
@@ -1356,9 +1361,9 @@ def main():
 
     # Mostrar interfaz según el estado
     if st.session_state.analisis_completado and st.session_state.gdf_analisis is not None:
-        mostrar_resultados()
+        mostrar_resultados(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones)
     elif st.session_state.gdf_original is not None:
-        mostrar_configuracion_parcela()
+        mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones)
     else:
         mostrar_modo_demo()
 
@@ -1384,7 +1389,7 @@ def mostrar_modo_demo():
         st.session_state.datos_demo = True
         st.rerun()
 
-def mostrar_configuracion_parcela():
+def mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones):
     """Muestra la configuración de la parcela antes del análisis"""
     gdf_original = st.session_state.gdf_original
     
@@ -1424,7 +1429,7 @@ def mostrar_configuracion_parcela():
             st.session_state.gdf_zonas = gdf_zonas
         
         with st.spinner("🔬 Realizando análisis GEE..."):
-            # Calcular índices GEE
+            # Calcular índices GEE - PASANDO TODOS LOS PARÁMETROS CORRECTAMENTE
             gdf_analisis = calcular_indices_gee(
                 gdf_zonas, cultivo, mes_analisis, analisis_tipo, nutriente
             )
@@ -1434,7 +1439,7 @@ def mostrar_configuracion_parcela():
         
         st.rerun()
 
-def mostrar_resultados():
+def mostrar_resultados(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones):
     """Muestra los resultados del análisis completado"""
     gdf_analisis = st.session_state.gdf_analisis
     area_total = st.session_state.area_total
@@ -1447,7 +1452,7 @@ def mostrar_resultados():
         st.session_state.analisis_completado = False
         st.rerun()
     
-        # Estadísticas resumen
+    # Estadísticas resumen
     st.subheader("📊 Estadísticas del Análisis")
     
     if analisis_tipo == "FERTILIDAD ACTUAL":
