@@ -23,6 +23,16 @@ from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import base64
+import ee
+import geemap
+import requests
+import json
+
+# Inicializar Google Earth Engine
+try:
+    ee.Initialize()
+except:
+    st.warning("Google Earth Engine no está inicializado. Algunas funciones satelitales pueden no estar disponibles.")
 
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
@@ -187,6 +197,16 @@ if 'area_total' not in st.session_state:
     st.session_state.area_total = 0
 if 'datos_demo' not in st.session_state:
     st.session_state.datos_demo = False
+
+# NUEVAS VARIABLES DE SESSION_STATE PARA ANÁLISIS SENTINEL-2
+if 'analisis_satelital_completado' not in st.session_state:
+    st.session_state.analisis_satelital_completado = False
+if 'gdf_satelital' not in st.session_state:
+    st.session_state.gdf_satelital = None
+if 'imagen_sentinel' not in st.session_state:
+    st.session_state.imagen_sentinel = None
+if 'fecha_imagen' not in st.session_state:
+    st.session_state.fecha_imagen = None
 
 # FUNCIÓN PARA GENERAR PDF
 def generar_informe_pdf(gdf_analisis, cultivo, analisis_tipo, nutriente, mes_analisis, area_total):
@@ -1293,19 +1313,525 @@ def procesar_archivo(uploaded_zip):
         st.error(f"❌ Error procesando archivo: {str(e)}")
         return None
 
-# INTERFAZ PRINCIPAL
+# =============================================================================
+# NUEVAS FUNCIONES PARA ANÁLISIS SENTINEL-2 HARMONIZADO
+# =============================================================================
+
+def obtener_imagen_sentinel2(geometry, fecha_inicio, fecha_fin, nubes_max=20):
+    """
+    Obtiene imagen Sentinel-2 harmonizada con filtros de calidad
+    """
+    try:
+        # Colección Sentinel-2 MSI harmonizada
+        coleccion = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+                    .filterBounds(geometry)
+                    .filterDate(fecha_inicio, fecha_fin)
+                    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', nubes_max))
+                    .sort('CLOUDY_PIXEL_PERCENTAGE'))
+        
+        # Obtener la imagen con menos nubes
+        imagen = coleccion.first()
+        
+        if imagen is None:
+            st.warning("No se encontraron imágenes Sentinel-2 para los criterios especificados")
+            return None
+        
+        # Aplicar escala y offset para reflectancia
+        def aplicar_escala_offset(img):
+            optical_bands = img.select('B.*').multiply(0.0001)
+            return img.addBands(optical_bands, None, True)
+        
+        imagen = aplicar_escala_offset(imagen)
+        
+        # Obtener fecha de la imagen
+        fecha = ee.Date(imagen.get('system:time_start')).format('YYYY-MM-dd').getInfo()
+        st.session_state.fecha_imagen = fecha
+        
+        st.success(f"✅ Imagen Sentinel-2 obtenida: {fecha}")
+        return imagen
+        
+    except Exception as e:
+        st.error(f"Error obteniendo imagen Sentinel-2: {str(e)}")
+        return None
+
+def calcular_indices_espectrales(imagen):
+    """
+    Calcula índices espectrales a partir de imagen Sentinel-2
+    """
+    try:
+        # NDVI - Índice de Vegetación de Diferencia Normalizada
+        ndvi = imagen.normalizedDifference(['B8', 'B4']).rename('NDVI')
+        
+        # NDWI - Índice de Agua de Diferencia Normalizada
+        ndwi = imagen.normalizedDifference(['B3', 'B8']).rename('NDWI')
+        
+        # MSAVI2 - Índice de Vegetación Ajustado al Suelo Modificado
+        msavi2 = imagen.expression(
+            '(2 * NIR + 1 - sqrt(pow((2 * NIR + 1), 2) - 8 * (NIR - RED))) / 2',
+            {
+                'NIR': imagen.select('B8'),
+                'RED': imagen.select('B4')
+            }
+        ).rename('MSAVI2')
+        
+        # EVI - Índice de Vegetación Mejorado
+        evi = imagen.expression(
+            '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
+            {
+                'NIR': imagen.select('B8'),
+                'RED': imagen.select('B4'),
+                'BLUE': imagen.select('B2')
+            }
+        ).rename('EVI')
+        
+        # BSI - Índice de Suelo Desnudo
+        bsi = imagen.expression(
+            '((RED + SWIR1) - (NIR + BLUE)) / ((RED + SWIR1) + (NIR + BLUE))',
+            {
+                'BLUE': imagen.select('B2'),
+                'RED': imagen.select('B4'),
+                'NIR': imagen.select('B8'),
+                'SWIR1': imagen.select('B11')
+            }
+        ).rename('BSI')
+        
+        # Añadir índices a la imagen
+        imagen_con_indices = imagen.addBands([ndvi, ndwi, msavi2, evi, bsi])
+        
+        return imagen_con_indices
+        
+    except Exception as e:
+        st.error(f"Error calculando índices espectrales: {str(e)}")
+        return imagen
+
+def extraer_valores_por_zona(imagen, gdf_zonas, indices):
+    """
+    Extrae valores de píxeles por zona de manejo
+    """
+    try:
+        resultados = []
+        
+        for idx, zona in gdf_zonas.iterrows():
+            try:
+                # Convertir geometría a formato Earth Engine
+                geometria_ee = ee.Geometry.Polygon(
+                    list(zona.geometry.exterior.coords)
+                )
+                
+                # Reducir región para obtener estadísticas
+                stats = imagen.select(indices).reduceRegion(
+                    reducer=ee.Reducer.mean().combine(
+                        reducer2=ee.Reducer.stdDev(),
+                        sharedInputs=True
+                    ),
+                    geometry=geometria_ee,
+                    scale=10,  # Resolución 10m
+                    bestEffort=True,
+                    maxPixels=1e9
+                )
+                
+                # Obtener valores
+                valores = stats.getInfo()
+                
+                if valores:
+                    resultado_zona = {
+                        'id_zona': zona['id_zona'],
+                        'geometry': zona.geometry
+                    }
+                    
+                    for indice in indices:
+                        mean_key = f'{indice}_mean'
+                        std_key = f'{indice}_stdDev'
+                        
+                        if mean_key in valores and valores[mean_key] is not None:
+                            resultado_zona[f'{indice}_mean'] = valores[mean_key]
+                            resultado_zona[f'{indice}_std'] = valores[std_key] if std_key in valores and valores[std_key] is not None else 0
+                        else:
+                            resultado_zona[f'{indice}_mean'] = 0
+                            resultado_zona[f'{indice}_std'] = 0
+                    
+                    resultados.append(resultado_zona)
+                else:
+                    st.warning(f"No se pudieron obtener datos para la zona {zona['id_zona']}")
+                    
+            except Exception as e:
+                st.warning(f"Error procesando zona {zona['id_zona']}: {str(e)}")
+                continue
+        
+        if not resultados:
+            st.error("No se pudieron extraer valores para ninguna zona")
+            return gpd.GeoDataFrame()
+            
+        return gpd.GeoDataFrame(resultados, crs=gdf_zonas.crs)
+        
+    except Exception as e:
+        st.error(f"Error extrayendo valores por zona: {str(e)}")
+        return gpd.GeoDataFrame()
+
+def crear_mapa_sentinel2(imagen, gdf_zonas, indice_visualizar='NDVI'):
+    """
+    Crea mapa interactivo con imagen Sentinel-2 y zonas de manejo
+    """
+    try:
+        # Obtener centro del área de estudio
+        centroid = gdf_zonas.geometry.centroid.iloc[0]
+        
+        # Crear mapa base
+        m = folium.Map(
+            location=[centroid.y, centroid.x],
+            zoom_start=13,
+            tiles=None
+        )
+        
+        # Añadir base ESRI Satélite
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri',
+            name='Esri Satélite',
+            overlay=False,
+            control=True
+        ).add_to(m)
+        
+        # Configurar visualización del índice
+        if indice_visualizar == 'NDVI':
+            vis_params = {
+                'min': -0.2,
+                'max': 0.8,
+                'palette': ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837']
+            }
+            titulo_capa = 'Sentinel-2 NDVI'
+        elif indice_visualizar == 'NDWI':
+            vis_params = {
+                'min': -0.5,
+                'max': 0.5,
+                'palette': ['#0000ff', '#4040ff', '#8080ff', '#c0c0ff', '#ffffff', '#ffc0c0', '#ff8080', '#ff4040', '#ff0000']
+            }
+            titulo_capa = 'Sentinel-2 NDWI'
+        elif indice_visualizar == 'MSAVI2':
+            vis_params = {
+                'min': -0.2,
+                'max': 0.8,
+                'palette': ['#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e', '#003c30']
+            }
+            titulo_capa = 'Sentinel-2 MSAVI2'
+        else:
+            # Visualización RGB natural
+            vis_params = {
+                'bands': ['B4', 'B3', 'B2'],
+                'min': 0,
+                'max': 0.3
+            }
+            titulo_capa = 'Sentinel-2 RGB'
+        
+        # Añadir imagen Sentinel-2
+        map_id_dict = imagen.getMapId(vis_params)
+        
+        folium.TileLayer(
+            tiles=map_id_dict['tile_fetcher'].url_format,
+            attr='Google Earth Engine',
+            name=titulo_capa,
+            overlay=True,
+            control=True
+        ).add_to(m)
+        
+        # Añadir polígonos de zonas
+        for idx, row in gdf_zonas.iterrows():
+            folium.GeoJson(
+                row.geometry.__geo_interface__,
+                style_function=lambda x: {
+                    'fillColor': 'none',
+                    'color': 'yellow',
+                    'weight': 3,
+                    'fillOpacity': 0.1,
+                    'opacity': 0.8
+                },
+                popup=folium.Popup(
+                    f"<b>Zona {row['id_zona']}</b><br>"
+                    f"<b>Área:</b> {calcular_superficie(gdf_zonas.iloc[[idx]]).iloc[0]:.2f} ha",
+                    max_width=300
+                ),
+                tooltip=f"Zona {row['id_zona']}"
+            ).add_to(m)
+        
+        # Añadir controles
+        folium.LayerControl().add_to(m)
+        plugins.MeasureControl(position='bottomleft').add_to(m)
+        plugins.MiniMap(toggle_display=True).add_to(m)
+        plugins.Fullscreen(position='topright').add_to(m)
+        
+        # Añadir leyenda
+        legend_html = f'''
+        <div style="position: fixed; 
+                    top: 10px; right: 10px; width: 250px; height: auto; 
+                    background-color: white; border:2px solid grey; z-index:9999; 
+                    font-size:12px; padding: 10px; border-radius: 5px;">
+        <p style="margin:0; font-weight:bold; font-size:14px; text-align:center;">🌍 {titulo_capa}</p>
+        <p style="margin:5px 0; font-weight:bold;">Escala de Valores:</p>
+        '''
+        
+        if indice_visualizar in ['NDVI', 'MSAVI2']:
+            legend_html += '<p style="margin:2px 0;">🌿 Índice de Vegetación</p>'
+            valores = [-0.2, 0, 0.2, 0.4, 0.6, 0.8]
+            colores = ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837']
+            for i, valor in enumerate(valores):
+                color_idx = int((i / (len(valores)-1)) * (len(colores)-1))
+                color = colores[color_idx]
+                legend_html += f'<p style="margin:1px 0;"><i style="background:{color}; width:20px; height:15px; display:inline-block; margin-right:5px; border:1px solid #000;"></i> {valor}</p>'
+        
+        elif indice_visualizar == 'NDWI':
+            legend_html += '<p style="margin:2px 0;">💧 Índice de Agua</p>'
+            valores = [-0.5, -0.3, -0.1, 0.1, 0.3, 0.5]
+            colores = ['#0000ff', '#4040ff', '#8080ff', '#c0c0ff', '#ffffff', '#ffc0c0', '#ff8080', '#ff4040', '#ff0000']
+            for i, valor in enumerate(valores):
+                color_idx = int((i / (len(valores)-1)) * (len(colores)-1))
+                color = colores[color_idx]
+                legend_html += f'<p style="margin:1px 0;"><i style="background:{color}; width:20px; height:15px; display:inline-block; margin-right:5px; border:1px solid #000;"></i> {valor}</p>'
+        
+        legend_html += '</div>'
+        m.get_root().html.add_child(folium.Element(legend_html))
+        
+        return m
+        
+    except Exception as e:
+        st.error(f"Error creando mapa Sentinel-2: {str(e)}")
+        return None
+
+def analizar_salud_vegetacion(gdf_satelital):
+    """
+    Analiza salud de la vegetación basado en índices satelitales
+    """
+    try:
+        gdf_analisis = gdf_satelital.copy()
+        
+        # Clasificar salud basada en NDVI
+        def clasificar_salud_ndvi(ndvi):
+            if ndvi is None or np.isnan(ndvi):
+                return "SIN DATOS"
+            elif ndvi >= 0.6:
+                return "MUY SALUDABLE"
+            elif ndvi >= 0.4:
+                return "SALUDABLE"
+            elif ndvi >= 0.2:
+                return "MODERADA"
+            else:
+                return "ESTRÉS"
+        
+        # Clasificar humedad basada en NDWI
+        def clasificar_humedad_ndwi(ndwi):
+            if ndwi is None or np.isnan(ndwi):
+                return "SIN DATOS"
+            elif ndwi >= 0.2:
+                return "ALTA HUMEDAD"
+            elif ndwi >= 0.0:
+                return "HUMEDAD ADECUADA"
+            elif ndwi >= -0.2:
+                return "SEQUÍA MODERADA"
+            else:
+                return "SEQUÍA SEVERA"
+        
+        # Aplicar clasificaciones
+        gdf_analisis['salud_vegetacion'] = gdf_analisis['NDVI_mean'].apply(clasificar_salud_ndvi)
+        gdf_analisis['estado_humedad'] = gdf_analisis['NDWI_mean'].apply(clasificar_humedad_ndwi)
+        
+        # Calcular índice de salud compuesto
+        gdf_analisis['indice_salud_compuesto'] = (
+            gdf_analisis['NDVI_mean'].fillna(0) * 0.5 +
+            gdf_analisis['MSAVI2_mean'].fillna(0) * 0.3 +
+            (gdf_analisis['NDWI_mean'].fillna(0) + 0.5) * 0.2  # Normalizar NDWI
+        )
+        
+        return gdf_analisis
+        
+    except Exception as e:
+        st.error(f"Error analizando salud vegetación: {str(e)}")
+        return gdf_satelital
+
+def ejecutar_analisis_sentinel2(gdf_zonas, fecha_inicio, fecha_fin, max_nubes=20):
+    """
+    Ejecuta análisis completo con Sentinel-2
+    """
+    try:
+        with st.spinner("🛰️ Obteniendo imagen Sentinel-2 harmonizada..."):
+            # Obtener la geometría total del área de estudio
+            geometry = ee.Geometry.Polygon(
+                list(gdf_zonas.unary_union.exterior.coords)
+            )
+            
+            # Obtener imagen Sentinel-2
+            imagen = obtener_imagen_sentinel2(geometry, fecha_inicio, fecha_fin, max_nubes)
+            
+            if imagen is None:
+                st.error("No se pudo obtener imagen Sentinel-2 para el área y fecha especificadas")
+                return None, None
+            
+            st.session_state.imagen_sentinel = imagen
+            
+        with st.spinner("📊 Calculando índices espectrales..."):
+            # Calcular índices espectrales
+            imagen_indices = calcular_indices_espectrales(imagen)
+            
+        with st.spinner("🗺️ Extrayendo valores por zona..."):
+            # Definir índices a extraer
+            indices = ['NDVI', 'NDWI', 'MSAVI2', 'EVI', 'BSI']
+            
+            # Extraer valores por zona
+            gdf_satelital = extraer_valores_por_zona(imagen_indices, gdf_zonas, indices)
+            
+            if gdf_satelital.empty:
+                st.error("No se pudieron extraer valores satelitales para las zonas")
+                return None, None
+            
+        with st.spinner("🌿 Analizando salud de vegetación..."):
+            # Analizar salud de vegetación
+            gdf_analisis_completo = analizar_salud_vegetacion(gdf_satelital)
+            
+        st.session_state.analisis_satelital_completado = True
+        st.success("✅ Análisis Sentinel-2 completado exitosamente")
+        return gdf_analisis_completo, imagen_indices
+        
+    except Exception as e:
+        st.error(f"Error en análisis Sentinel-2: {str(e)}")
+        return None, None
+
+def mostrar_resultados_satelital(cultivo, indice_visualizar):
+    """Muestra los resultados del análisis satelital"""
+    gdf_satelital = st.session_state.gdf_satelital
+    imagen_sentinel = st.session_state.imagen_sentinel
+    gdf_zonas = st.session_state.gdf_zonas
+    fecha_imagen = st.session_state.fecha_imagen
+    
+    st.markdown("## 🛰️ RESULTADOS ANÁLISIS SENTINEL-2 HARMONIZADO")
+    
+    # Información de la imagen
+    st.info(f"**Imagen utilizada:** Sentinel-2 MSI Harmonized | **Fecha:** {fecha_imagen} | **Resolución:** 10m")
+    
+    # Botón para volver atrás
+    if st.button("⬅️ Volver a Configuración"):
+        st.session_state.analisis_completado = False
+        st.session_state.analisis_satelital_completado = False
+        st.rerun()
+    
+    # Estadísticas resumen
+    st.subheader("📊 Estadísticas Satelitales")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        avg_ndvi = gdf_satelital['NDVI_mean'].mean()
+        st.metric("🌿 NDVI Promedio", f"{avg_ndvi:.3f}")
+    with col2:
+        avg_ndwi = gdf_satelital['NDWI_mean'].mean()
+        st.metric("💧 NDWI Promedio", f"{avg_ndwi:.3f}")
+    with col3:
+        avg_msavi2 = gdf_satelital['MSAVI2_mean'].mean()
+        st.metric("🌱 MSAVI2 Promedio", f"{avg_msavi2:.3f}")
+    with col4:
+        salud_predominante = gdf_satelital['salud_vegetacion'].mode()[0] if len(gdf_satelital) > 0 else "N/A"
+        st.metric("🏥 Salud Predominante", salud_predominante)
+    
+    # Distribución de salud de vegetación
+    st.subheader("📋 Distribución de Salud de Vegetación")
+    salud_dist = gdf_satelital['salud_vegetacion'].value_counts()
+    st.bar_chart(salud_dist)
+    
+    # MAPA INTERACTIVO SENTINEL-2
+    st.markdown("### 🗺️ Mapa Satelital Interactivo")
+    
+    mapa_satelital = crear_mapa_sentinel2(imagen_sentinel, gdf_zonas, indice_visualizar)
+    if mapa_satelital:
+        st_folium(mapa_satelital, width=800, height=500)
+    
+    # TABLA DETALLADA
+    st.markdown("### 📋 Tabla de Resultados Satelitales")
+    
+    columnas_tabla = ['id_zona', 'NDVI_mean', 'NDWI_mean', 'MSAVI2_mean', 
+                     'salud_vegetacion', 'estado_humedad', 'indice_salud_compuesto']
+    
+    df_tabla = gdf_satelital[columnas_tabla].copy()
+    df_tabla['NDVI_mean'] = df_tabla['NDVI_mean'].round(3)
+    df_tabla['NDWI_mean'] = df_tabla['NDWI_mean'].round(3)
+    df_tabla['MSAVI2_mean'] = df_tabla['MSAVI2_mean'].round(3)
+    df_tabla['indice_salud_compuesto'] = df_tabla['indice_salud_compuesto'].round(3)
+    
+    st.dataframe(df_tabla, use_container_width=True)
+    
+    # RECOMENDACIONES BASADAS EN ANÁLISIS SATELITAL
+    st.markdown("### 🌿 RECOMENDACIONES BASADAS EN ANÁLISIS SATELITAL")
+    
+    # Análisis de tendencias
+    zonas_estres = gdf_satelital[gdf_satelital['salud_vegetacion'] == 'ESTRÉS']
+    zonas_sequia = gdf_satelital[gdf_satelital['estado_humedad'].str.contains('SEQUÍA')]
+    
+    col_rec1, col_rec2 = st.columns(2)
+    
+    with col_rec1:
+        st.metric("⚠️ Zonas en Estrés", f"{len(zonas_estres)} zonas")
+        if len(zonas_estres) > 0:
+            st.warning("**Acciones recomendadas para zonas en estrés:**")
+            st.markdown("""
+            - Verificar plagas y enfermedades
+            - Aplicar biofertilizantes foliares
+            - Revisar sistema de riego
+            - Implementar coberturas vivas
+            - Realizar análisis de suelo complementario
+            """)
+    
+    with col_rec2:
+        st.metric("💧 Zonas con Sequía", f"{len(zonas_sequia)} zonas")
+        if len(zonas_sequia) > 0:
+            st.error("**Acciones recomendadas para zonas con sequía:**")
+            st.markdown("""
+            - Implementar riego complementario
+            - Aplicar mulch o coberturas
+            - Usar hidrogeles retenedores
+            - Programar riego eficiente
+            - Considerar siembra de cultivos tolerantes
+            """)
+    
+    # DESCARGAR RESULTADOS SATELITALES
+    st.markdown("### 💾 Descargar Resultados Satelitales")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Descargar CSV
+        csv = df_tabla.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar Datos Satelitales CSV",
+            data=csv,
+            file_name=f"datos_satelitales_{cultivo}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv"
+        )
+    
+    with col2:
+        # Descargar GeoJSON
+        geojson = gdf_satelital.to_json()
+        st.download_button(
+            label="🗺️ Descargar GeoJSON Satelital",
+            data=geojson,
+            file_name=f"zonas_satelitales_{cultivo}_{datetime.now().strftime('%Y%m%d_%H%M')}.geojson",
+            mime="application/json"
+        )
+
+# =============================================================================
+# INTERFAZ PRINCIPAL MODIFICADA
+# =============================================================================
+
 def main():
     # OBTENER PARÁMETROS DEL SIDEBAR (esto es clave para la corrección)
     with st.sidebar:
         st.header("⚙️ Configuración")
         
+        # Añadir opción de análisis satelital
+        analisis_tipo = st.selectbox("Tipo de Análisis:", 
+                                   ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK", "ANÁLISIS SATELITAL"])
+        
         cultivo = st.selectbox("Cultivo:", 
                               ["PALMA_ACEITERA", "CACAO", "BANANO"])
         
-        analisis_tipo = st.selectbox("Tipo de Análisis:", 
-                                   ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK"])
-        
-        nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
+        if analisis_tipo == "RECOMENDACIONES NPK":
+            nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
+        else:
+            nutriente = None
         
         mes_analisis = st.selectbox("Mes de Análisis:", 
                                    ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
@@ -1313,6 +1839,28 @@ def main():
         
         st.subheader("🎯 División de Parcela")
         n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
+        
+        # NUEVA SECCIÓN PARA CONFIGURACIÓN SENTINEL-2
+        if analisis_tipo == "ANÁLISIS SATELITAL":
+            st.subheader("🛰️ Configuración Sentinel-2")
+            
+            col_fecha1, col_fecha2 = st.columns(2)
+            with col_fecha1:
+                fecha_inicio = st.date_input("Fecha inicio", 
+                                           value=datetime.now() - pd.Timedelta(days=30))
+            with col_fecha2:
+                fecha_fin = st.date_input("Fecha fin", 
+                                        value=datetime.now())
+            
+            max_nubes = st.slider("Máximo % de nubes", 0, 50, 20)
+            
+            indice_visualizar = st.selectbox("Índice a visualizar:",
+                                           ["NDVI", "NDWI", "MSAVI2", "RGB Natural"])
+        else:
+            fecha_inicio = None
+            fecha_fin = None
+            max_nubes = 20
+            indice_visualizar = "NDVI"
         
         st.subheader("📤 Subir Parcela")
         uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
@@ -1325,6 +1873,10 @@ def main():
             st.session_state.gdf_zonas = None
             st.session_state.area_total = 0
             st.session_state.datos_demo = False
+            st.session_state.analisis_satelital_completado = False
+            st.session_state.gdf_satelital = None
+            st.session_state.imagen_sentinel = None
+            st.session_state.fecha_imagen = None
             st.rerun()
 
         st.markdown("---")
@@ -1335,6 +1887,7 @@ def main():
         - **Índices espectrales** (NDVI, NDBI, etc.)
         - **Modelos predictivos** de nutrientes
         - **Enfoque agroecológico** integrado
+        - **Sentinel-2 Harmonized** 10m de resolución
         """)
 
     # Procesar archivo subido si existe
@@ -1361,9 +1914,13 @@ def main():
 
     # Mostrar interfaz según el estado
     if st.session_state.analisis_completado and st.session_state.gdf_analisis is not None:
-        mostrar_resultados(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones)
+        if analisis_tipo == "ANÁLISIS SATELITAL" and st.session_state.analisis_satelital_completado:
+            mostrar_resultados_satelital(cultivo, indice_visualizar)
+        else:
+            mostrar_resultados(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones)
     elif st.session_state.gdf_original is not None:
-        mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones)
+        mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones, 
+                                    fecha_inicio, fecha_fin, max_nubes, indice_visualizar)
     else:
         mostrar_modo_demo()
 
@@ -1382,6 +1939,11 @@ def mostrar_modo_demo():
     - .shx (índice)
     - .dbf (atributos)
     - .prj (sistema de coordenadas)
+    
+    **🛰️ Nuevo: Análisis Sentinel-2 Harmonizado**
+    - Imágenes reales de 10m de resolución
+    - Índices espectrales avanzados
+    - Análisis de salud vegetación
     """)
     
     # Ejemplo de datos de demostración
@@ -1389,7 +1951,8 @@ def mostrar_modo_demo():
         st.session_state.datos_demo = True
         st.rerun()
 
-def mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones):
+def mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisis, n_divisiones,
+                                fecha_inicio=None, fecha_fin=None, max_nubes=20, indice_visualizar="NDVI"):
     """Muestra la configuración de la parcela antes del análisis"""
     gdf_original = st.session_state.gdf_original
     
@@ -1423,19 +1986,34 @@ def mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisi
     st.info(f"La parcela se dividirá en **{n_divisiones} zonas** para análisis detallado")
     
     # Botón para ejecutar análisis
-    if st.button("🚀 Ejecutar Análisis GEE Completo", type="primary"):
+    if st.button("🚀 Ejecutar Análisis Completo", type="primary"):
         with st.spinner("🔄 Dividiendo parcela en zonas..."):
             gdf_zonas = dividir_parcela_en_zonas(gdf_original, n_divisiones)
             st.session_state.gdf_zonas = gdf_zonas
         
-        with st.spinner("🔬 Realizando análisis GEE..."):
-            # Calcular índices GEE - PASANDO TODOS LOS PARÁMETROS CORRECTAMENTE
-            gdf_analisis = calcular_indices_gee(
-                gdf_zonas, cultivo, mes_analisis, analisis_tipo, nutriente
-            )
-            st.session_state.gdf_analisis = gdf_analisis
-            st.session_state.area_total = area_total
-            st.session_state.analisis_completado = True
+        with st.spinner("🔬 Realizando análisis..."):
+            if analisis_tipo == "ANÁLISIS SATELITAL":
+                # Ejecutar análisis Sentinel-2
+                gdf_analisis, imagen_sentinel = ejecutar_analisis_sentinel2(
+                    gdf_zonas, 
+                    fecha_inicio.strftime('%Y-%m-%d'), 
+                    fecha_fin.strftime('%Y-%m-%d'),
+                    max_nubes
+                )
+                
+                if gdf_analisis is not None:
+                    st.session_state.gdf_satelital = gdf_analisis
+                    st.session_state.gdf_analisis = gdf_analisis
+                    st.session_state.area_total = area_total
+                    st.session_state.analisis_completado = True
+            else:
+                # Análisis tradicional GEE
+                gdf_analisis = calcular_indices_gee(
+                    gdf_zonas, cultivo, mes_analisis, analisis_tipo, nutriente
+                )
+                st.session_state.gdf_analisis = gdf_analisis
+                st.session_state.area_total = area_total
+                st.session_state.analisis_completado = True
         
         st.rerun()
 
