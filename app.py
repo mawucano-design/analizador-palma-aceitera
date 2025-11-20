@@ -1095,8 +1095,9 @@ def dividir_parcela_en_zonas(gdf, n_zonas):
         st.error(f"Error dividiendo parcela: {str(e)}")
         return gdf
 
+# FUNCIÓN CORREGIDA PARA CALCULAR ÍNDICES GEE
 def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
-    """Calcula índices GEE y recomendaciones basadas en parámetros del cultivo - VERSIÓN CORREGIDA"""
+    """Calcula índices GEE y recomendaciones basadas en parámetros del cultivo"""
     
     params = PARAMETROS_CULTIVOS[cultivo]
     zonas_gdf = gdf.copy()
@@ -1128,6 +1129,7 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             if hasattr(row.geometry, 'centroid'):
                 centroid = row.geometry.centroid
             else:
+                # Si no tiene centroide, usar el primer punto
                 centroid = row.geometry.representative_point()
             
             # Usar una semilla estable para reproducibilidad
@@ -1195,43 +1197,34 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             else:
                 categoria = "MUY BAJA"
             
-            # 🔧 **CÁLCULO CORREGIDO DE RECOMENDACIONES NPK**
+            # 🔧 **CORRECCIÓN ESPECÍFICA - CÁLCULO DE RECOMENDACIONES NPK**
             if analisis_tipo == "RECOMENDACIONES NPK":
-                # Calcular nivel óptimo (punto medio del rango)
-                n_optimo = (n_min + n_max) / 2
-                p_optimo = (p_min + p_max) / 2
-                k_optimo = (k_min + k_max) / 2
-                
                 if nutriente == "NITRÓGENO":
-                    # Déficit basado en el nivel óptimo
-                    deficit = max(0, n_optimo - nitrogeno)
-                    # Factor basado en la severidad del déficit
-                    severidad = max(0, (n_optimo - nitrogeno) / n_optimo)
-                    factor_ajuste = 1.0 + severidad * 0.5  # 1.0 a 1.5
-                    recomendacion_npk = deficit * factor_ajuste
-                    # Límites más realistas
-                    recomendacion_npk = min(recomendacion_npk, n_max * 0.5)
+                    # Cálculo corregido: considerar déficit y nivel actual
+                    deficit_n = max(0, n_max - nitrogeno)
+                    # Ajustar según la deficiencia y nivel de fertilidad
+                    factor_ajuste = 1.2 + (1 - n_norm) * 0.5  # Más agresivo en deficiencias severas
+                    recomendacion_npk = deficit_n * factor_ajuste
+                    # Asegurar recomendaciones realistas
+                    recomendacion_npk = min(recomendacion_npk, n_max * 0.8)  # No más del 80% del máximo
                     
                 elif nutriente == "FÓSFORO":
-                    deficit = max(0, p_optimo - fosforo)
-                    severidad = max(0, (p_optimo - fosforo) / p_optimo)
-                    factor_ajuste = 1.0 + severidad * 0.4  # 1.0 a 1.4
-                    recomendacion_npk = deficit * factor_ajuste
-                    recomendacion_npk = min(recomendacion_npk, p_max * 0.6)
+                    deficit_p = max(0, p_max - fosforo)
+                    factor_ajuste = 1.1 + (1 - p_norm) * 0.4
+                    recomendacion_npk = deficit_p * factor_ajuste
+                    recomendacion_npk = min(recomendacion_npk, p_max * 0.7)
                     
                 else:  # POTASIO
-                    deficit = max(0, k_optimo - potasio)
-                    severidad = max(0, (k_optimo - potasio) / k_optimo)
-                    factor_ajuste = 1.0 + severidad * 0.45  # 1.0 a 1.45
-                    recomendacion_npk = deficit * factor_ajuste
-                    recomendacion_npk = min(recomendacion_npk, k_max * 0.55)
+                    deficit_k = max(0, k_max - potasio)
+                    factor_ajuste = 1.15 + (1 - k_norm) * 0.45
+                    recomendacion_npk = deficit_k * factor_ajuste
+                    recomendacion_npk = min(recomendacion_npk, k_max * 0.75)
                 
-                # Asegurar valor mínimo realista y redondear
-                recomendacion_npk = max(5, recomendacion_npk)  # Mínimo 5 kg/ha
-                recomendacion_npk = round(recomendacion_npk, 1)
+                # Asegurar valor mínimo y aplicar factor de seguridad
+                recomendacion_npk = max(10, recomendacion_npk)  # Mínimo 10 kg/ha
                 
             else:
-                recomendacion_npk = 0.0
+                recomendacion_npk = 0
             
             # Asignar valores al GeoDataFrame
             zonas_gdf.loc[idx, 'area_ha'] = area_ha
@@ -1257,7 +1250,7 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             zonas_gdf.loc[idx, 'ndvi'] = 0.6
             zonas_gdf.loc[idx, 'indice_fertilidad'] = 0.5
             zonas_gdf.loc[idx, 'categoria'] = "MEDIA"
-            zonas_gdf.loc[idx, 'recomendacion_npk'] = 0.0
+            zonas_gdf.loc[idx, 'recomendacion_npk'] = 0
     
     return zonas_gdf
 # FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO
