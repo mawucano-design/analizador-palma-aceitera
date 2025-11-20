@@ -25,6 +25,42 @@ from reportlab.lib.utils import ImageReader
 import base64
 import json
 
+# Agrega esta función al inicio de tu app (después de los imports)
+
+def autenticar_gee_manual():
+    """Función para autenticación manual de GEE"""
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔐 Autenticación Manual GEE")
+    
+    with st.sidebar.expander("Configurar GEE Manualmente", expanded=True):
+        st.markdown("""
+        **Pasos:**
+        1. Ejecuta en tu terminal: `earthengine authenticate`
+        2. Inicia sesión con tu cuenta Google
+        3. Copia el **refresh_token** generado
+        4. Pégarlo abajo
+        """)
+        
+        refresh_token = st.text_input("Refresh Token:", type="password")
+        
+        if st.button("🔗 Conectar GEE") and refresh_token:
+            try:
+                import ee
+                credentials = ee.OAuthCredentials(
+                    refresh_token=refresh_token,
+                    client_id=ee.oauth.CLIENT_ID,
+                    client_secret=ee.oauth.CLIENT_SECRET,
+                    token_uri=ee.oauth.TOKEN_URI
+                )
+                ee.Initialize(credentials)
+                st.sidebar.success("✅ GEE Conectado!")
+                st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"❌ Error: {str(e)}")
+
+# Llama a esta función en tu main()
+autenticar_gee_manual()
+
 # =============================================================================
 # CONFIGURACIÓN GOOGLE EARTH ENGINE PARA ee-mawucano25
 # =============================================================================
