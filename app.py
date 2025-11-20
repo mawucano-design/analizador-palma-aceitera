@@ -23,20 +23,79 @@ from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import base64
-import ee
-import geemap
-import requests
-import json
+import subprocess
+import sys
 
-# Inicializar Google Earth Engine
+# Intentar importar Google Earth Engine con manejo de errores
 try:
-    ee.Initialize()
-except:
-    st.warning("Google Earth Engine no está inicializado. Algunas funciones satelitales pueden no estar disponibles.")
+    import ee
+    EE_AVAILABLE = True
+except ImportError:
+    st.warning("🌐 Google Earth Engine no está instalado. Algunas funciones satelitales no estarán disponibles.")
+    EE_AVAILABLE = False
+    # Crear una clase dummy para evitar errores
+    class EarthEngineDummy:
+        def Initialize(self): pass
+        def Geometry(self, *args, **kwargs): return DummyObject()
+        def ImageCollection(self, *args): return DummyObject()
+        def Image(self, *args): return DummyObject()
+        def Date(self, *args): return DummyObject()
+        def Filter(self, *args): return DummyObject()
+    
+    class DummyObject:
+        def filterBounds(self, *args): return self
+        def filterDate(self, *args): return self
+        def filter(self, *args): return self
+        def sort(self, *args): return self
+        def first(self): return self
+        def select(self, *args): return self
+        def multiply(self, *args): return self
+        def addBands(self, *args, **kwargs): return self
+        def normalizedDifference(self, *args): return self
+        def expression(self, *args, **kwargs): return self
+        def rename(self, *args): return self
+        def reduceRegion(self, *args, **kwargs): return self
+        def getInfo(self): return {}
+        def get(self, *args): return self
+        def format(self, *args): return "2000-01-01"
+        def getMapId(self, *args): 
+            return {'tile_fetcher': DummyTileFetcher()}
+    
+    class DummyTileFetcher:
+        @property
+        def url_format(self):
+            return ""
+
+    ee = EarthEngineDummy()
+
+# Intentar importar geemap
+try:
+    import geemap
+    GEEMAP_AVAILABLE = True
+except ImportError:
+    GEEMAP_AVAILABLE = False
 
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
 st.markdown("---")
+
+# Mostrar estado de las dependencias
+if not EE_AVAILABLE:
+    st.error("""
+    ⚠️ **Google Earth Engine no está disponible**
+    
+    Para habilitar el análisis satelital completo:
+    ```bash
+    pip install earthengine-api
+    ```
+    
+    Luego autenticar con:
+    ```python
+    import ee
+    ee.Authenticate()
+    ee.Initialize()
+    ```
+    """)
 
 # Configurar para restaurar .shx automáticamente
 os.environ['SHAPE_RESTORE_SHX'] = 'YES'
@@ -1314,7 +1373,7 @@ def procesar_archivo(uploaded_zip):
         return None
 
 # =============================================================================
-# NUEVAS FUNCIONES PARA ANÁLISIS SENTINEL-2 HARMONIZADO
+# NUEVAS FUNCIONES PARA ANÁLISIS SENTINEL-2 HARMONIZADO CON MANEJO DE ERRORES
 # =============================================================================
 
 def obtener_imagen_sentinel2(geometry, fecha_inicio, fecha_fin, nubes_max=20):
@@ -1322,6 +1381,10 @@ def obtener_imagen_sentinel2(geometry, fecha_inicio, fecha_fin, nubes_max=20):
     Obtiene imagen Sentinel-2 harmonizada con filtros de calidad
     """
     try:
+        if not EE_AVAILABLE:
+            st.warning("🌐 Google Earth Engine no está disponible. Usando datos simulados.")
+            return None
+            
         # Colección Sentinel-2 MSI harmonizada
         coleccion = (ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
                     .filterBounds(geometry)
@@ -1359,6 +1422,10 @@ def calcular_indices_espectrales(imagen):
     Calcula índices espectrales a partir de imagen Sentinel-2
     """
     try:
+        if imagen is None:
+            st.warning("No hay imagen disponible para calcular índices")
+            return None
+            
         # NDVI - Índice de Vegetación de Diferencia Normalizada
         ndvi = imagen.normalizedDifference(['B8', 'B4']).rename('NDVI')
         
@@ -1409,6 +1476,10 @@ def extraer_valores_por_zona(imagen, gdf_zonas, indices):
     Extrae valores de píxeles por zona de manejo
     """
     try:
+        if imagen is None:
+            st.warning("No hay imagen disponible para extraer valores")
+            return gpd.GeoDataFrame()
+            
         resultados = []
         
         for idx, zona in gdf_zonas.iterrows():
@@ -1523,16 +1594,19 @@ def crear_mapa_sentinel2(imagen, gdf_zonas, indice_visualizar='NDVI'):
             }
             titulo_capa = 'Sentinel-2 RGB'
         
-        # Añadir imagen Sentinel-2
-        map_id_dict = imagen.getMapId(vis_params)
-        
-        folium.TileLayer(
-            tiles=map_id_dict['tile_fetcher'].url_format,
-            attr='Google Earth Engine',
-            name=titulo_capa,
-            overlay=True,
-            control=True
-        ).add_to(m)
+        # Añadir imagen Sentinel-2 si está disponible
+        if imagen is not None:
+            try:
+                map_id_dict = imagen.getMapId(vis_params)
+                folium.TileLayer(
+                    tiles=map_id_dict['tile_fetcher'].url_format,
+                    attr='Google Earth Engine',
+                    name=titulo_capa,
+                    overlay=True,
+                    control=True
+                ).add_to(m)
+            except Exception as e:
+                st.warning(f"No se pudo cargar la imagen Sentinel-2: {str(e)}")
         
         # Añadir polígonos de zonas
         for idx, row in gdf_zonas.iterrows():
@@ -1601,6 +1675,9 @@ def analizar_salud_vegetacion(gdf_satelital):
     Analiza salud de la vegetación basado en índices satelitales
     """
     try:
+        if gdf_satelital.empty:
+            return gdf_satelital
+            
         gdf_analisis = gdf_satelital.copy()
         
         # Clasificar salud basada en NDVI
@@ -1651,6 +1728,10 @@ def ejecutar_analisis_sentinel2(gdf_zonas, fecha_inicio, fecha_fin, max_nubes=20
     Ejecuta análisis completo con Sentinel-2
     """
     try:
+        if not EE_AVAILABLE:
+            st.error("Google Earth Engine no está disponible. No se puede ejecutar análisis satelital.")
+            return None, None
+            
         with st.spinner("🛰️ Obteniendo imagen Sentinel-2 harmonizada..."):
             # Obtener la geometría total del área de estudio
             geometry = ee.Geometry.Polygon(
@@ -1703,13 +1784,21 @@ def mostrar_resultados_satelital(cultivo, indice_visualizar):
     st.markdown("## 🛰️ RESULTADOS ANÁLISIS SENTINEL-2 HARMONIZADO")
     
     # Información de la imagen
-    st.info(f"**Imagen utilizada:** Sentinel-2 MSI Harmonized | **Fecha:** {fecha_imagen} | **Resolución:** 10m")
+    if fecha_imagen:
+        st.info(f"**Imagen utilizada:** Sentinel-2 MSI Harmonized | **Fecha:** {fecha_imagen} | **Resolución:** 10m")
+    else:
+        st.warning("**Nota:** No se pudo obtener información de la imagen satelital")
     
     # Botón para volver atrás
     if st.button("⬅️ Volver a Configuración"):
         st.session_state.analisis_completado = False
         st.session_state.analisis_satelital_completado = False
         st.rerun()
+    
+    # Verificar si hay datos disponibles
+    if gdf_satelital is None or gdf_satelital.empty:
+        st.error("No hay datos satelitales disponibles para mostrar")
+        return
     
     # Estadísticas resumen
     st.subheader("📊 Estadísticas Satelitales")
@@ -1817,7 +1906,7 @@ def mostrar_resultados_satelital(cultivo, indice_visualizar):
 # =============================================================================
 
 def main():
-    # OBTENER PARÁMETROS DEL SIDEBAR (esto es clave para la corrección)
+    # OBTENER PARÁMETROS DEL SIDEBAR
     with st.sidebar:
         st.header("⚙️ Configuración")
         
@@ -1881,14 +1970,25 @@ def main():
 
         st.markdown("---")
         st.markdown("### 📊 Métodología GEE")
-        st.info("""
-        Esta aplicación utiliza:
-        - **Google Earth Engine** para análisis satelital
-        - **Índices espectrales** (NDVI, NDBI, etc.)
-        - **Modelos predictivos** de nutrientes
-        - **Enfoque agroecológico** integrado
-        - **Sentinel-2 Harmonized** 10m de resolución
-        """)
+        
+        if not EE_AVAILABLE:
+            st.warning("""
+            **⚠️ Google Earth Engine no disponible**
+            
+            Para análisis satelital completo:
+            ```bash
+            pip install earthengine-api
+            ```
+            """)
+        else:
+            st.info("""
+            Esta aplicación utiliza:
+            - **Google Earth Engine** para análisis satelital
+            - **Índices espectrales** (NDVI, NDBI, etc.)
+            - **Modelos predictivos** de nutrientes
+            - **Enfoque agroecológico** integrado
+            - **Sentinel-2 Harmonized** 10m de resolución
+            """)
 
     # Procesar archivo subido si existe
     if uploaded_zip is not None and not st.session_state.analisis_completado:
@@ -1944,6 +2044,8 @@ def mostrar_modo_demo():
     - Imágenes reales de 10m de resolución
     - Índices espectrales avanzados
     - Análisis de salud vegetación
+    
+    **⚠️ Nota:** Para análisis satelital completo, instale Google Earth Engine
     """)
     
     # Ejemplo de datos de demostración
@@ -1985,6 +2087,24 @@ def mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisi
     st.markdown("### 📊 División en Zonas de Manejo")
     st.info(f"La parcela se dividirá en **{n_divisiones} zonas** para análisis detallado")
     
+    # Advertencia para análisis satelital sin GEE
+    if analisis_tipo == "ANÁLISIS SATELITAL" and not EE_AVAILABLE:
+        st.error("""
+        **⚠️ Google Earth Engine no está disponible**
+        
+        El análisis satelital requiere la instalación de:
+        ```bash
+        pip install earthengine-api
+        ```
+        
+        Luego autenticar con:
+        ```python
+        import ee
+        ee.Authenticate()
+        ee.Initialize()
+        ```
+        """)
+    
     # Botón para ejecutar análisis
     if st.button("🚀 Ejecutar Análisis Completo", type="primary"):
         with st.spinner("🔄 Dividiendo parcela en zonas..."):
@@ -1993,6 +2113,11 @@ def mostrar_configuracion_parcela(cultivo, analisis_tipo, nutriente, mes_analisi
         
         with st.spinner("🔬 Realizando análisis..."):
             if analisis_tipo == "ANÁLISIS SATELITAL":
+                # Verificar si GEE está disponible
+                if not EE_AVAILABLE:
+                    st.error("No se puede ejecutar análisis satelital sin Google Earth Engine")
+                    return
+                    
                 # Ejecutar análisis Sentinel-2
                 gdf_analisis, imagen_sentinel = ejecutar_analisis_sentinel2(
                     gdf_zonas, 
