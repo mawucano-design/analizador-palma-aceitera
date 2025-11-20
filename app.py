@@ -1095,9 +1095,8 @@ def dividir_parcela_en_zonas(gdf, n_zonas):
         st.error(f"Error dividiendo parcela: {str(e)}")
         return gdf
 
-# FUNCIÓN CORREGIDA PARA CALCULAR ÍNDICES GEE
 def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
-    """Calcula índices GEE y recomendaciones basadas en parámetros del cultivo"""
+    """Calcula índices GEE y recomendaciones basadas en parámetros del cultivo - VERSIÓN COMPLETAMENTE CORREGIDA"""
     
     params = PARAMETROS_CULTIVOS[cultivo]
     zonas_gdf = gdf.copy()
@@ -1129,7 +1128,6 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             if hasattr(row.geometry, 'centroid'):
                 centroid = row.geometry.centroid
             else:
-                # Si no tiene centroide, usar el primer punto
                 centroid = row.geometry.representative_point()
             
             # Usar una semilla estable para reproducibilidad
@@ -1144,6 +1142,11 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             n_min, n_max = params['NITROGENO']['min'], params['NITROGENO']['max']
             p_min, p_max = params['FOSFORO']['min'], params['FOSFORO']['max']
             k_min, k_max = params['POTASIO']['min'], params['POTASIO']['max']
+            
+            # Calcular niveles óptimos (punto medio del rango)
+            n_optimo = (n_min + n_max) / 2
+            p_optimo = (p_min + p_max) / 2
+            k_optimo = (k_min + k_max) / 2
             
             # Simular valores con variabilidad espacial controlada
             nitrogeno_base = n_min + (n_max - n_min) * (0.3 + 0.4 * lat_norm)
@@ -1197,51 +1200,79 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             else:
                 categoria = "MUY BAJA"
             
-            # 🔧 **CORRECCIÓN ESPECÍFICA - CÁLCULO DE RECOMENDACIONES NPK**
+            # 🔧 **CÁLCULO COMPLETAMENTE CORREGIDO DE RECOMENDACIONES NPK**
             if analisis_tipo == "RECOMENDACIONES NPK":
                 if nutriente == "NITRÓGENO":
-                    # Cálculo corregido: considerar déficit y nivel actual
-                    deficit_n = max(0, n_max - nitrogeno)
-                    # Ajustar según la deficiencia y nivel de fertilidad
-                    factor_ajuste = 1.2 + (1 - n_norm) * 0.5  # Más agresivo en deficiencias severas
-                    recomendacion_npk = deficit_n * factor_ajuste
-                    # Asegurar recomendaciones realistas
-                    recomendacion_npk = min(recomendacion_npk, n_max * 0.8)  # No más del 80% del máximo
-                    
+                    nivel_actual = nitrogeno
+                    nivel_optimo = n_optimo
+                    rango_min, rango_max = n_min, n_max
                 elif nutriente == "FÓSFORO":
-                    deficit_p = max(0, p_max - fosforo)
-                    factor_ajuste = 1.1 + (1 - p_norm) * 0.4
-                    recomendacion_npk = deficit_p * factor_ajuste
-                    recomendacion_npk = min(recomendacion_npk, p_max * 0.7)
-                    
+                    nivel_actual = fosforo
+                    nivel_optimo = p_optimo
+                    rango_min, rango_max = p_min, p_max
                 else:  # POTASIO
-                    deficit_k = max(0, k_max - potasio)
-                    factor_ajuste = 1.15 + (1 - k_norm) * 0.45
-                    recomendacion_npk = deficit_k * factor_ajuste
-                    recomendacion_npk = min(recomendacion_npk, k_max * 0.75)
+                    nivel_actual = potasio
+                    nivel_optimo = k_optimo
+                    rango_min, rango_max = k_min, k_max
                 
-                # Asegurar valor mínimo y aplicar factor de seguridad
-                recomendacion_npk = max(10, recomendacion_npk)  # Mínimo 10 kg/ha
+                # CALCULAR RECOMENDACIÓN BASADA EN DÉFICIT O EXCESO
+                if nivel_actual < nivel_optimo:
+                    # HAY DÉFICIT - RECOMENDAR APLICACIÓN
+                    deficit = nivel_optimo - nivel_actual
+                    
+                    # Calcular severidad del déficit (0 a 1)
+                    severidad = deficit / nivel_optimo
+                    severidad = min(1.0, severidad)  # Limitar a 100%
+                    
+                    # Factor de ajuste basado en severidad (más conservador)
+                    factor_ajuste = 0.8 + (severidad * 0.4)  # 0.8 a 1.2
+                    
+                    # Recomendación base + ajuste por severidad
+                    recomendacion_base = deficit * 0.7  # Solo 70% del déficit inicial
+                    recomendacion_npk = recomendacion_base * factor_ajuste
+                    
+                    # Límites máximos realistas
+                    max_recomendacion = (rango_max - rango_min) * 0.3  # Máximo 30% del rango total
+                    recomendacion_npk = min(recomendacion_npk, max_recomendacion)
+                    
+                elif nivel_actual > nivel_optimo * 1.2:
+                    # EXCESO SEVERO - RECOMENDAR REDUCCIÓN
+                    exceso = nivel_actual - nivel_optimo
+                    recomendacion_npk = -exceso * 0.3  # Recomendación negativa (reducir)
+                    
+                else:
+                    # NIVEL ADECUADO - MANTENIMIENTO
+                    recomendacion_npk = nivel_optimo * 0.1  # Pequeña dosis de mantenimiento
+                
+                # Asegurar valores mínimos/máximos realistas
+                if recomendacion_npk > 0:
+                    recomendacion_npk = max(5, recomendacion_npk)  # Mínimo 5 kg/ha
+                    recomendacion_npk = min(recomendacion_npk, 100)  # Máximo 100 kg/ha
+                else:
+                    recomendacion_npk = max(-50, recomendacion_npk)  # Mínimo -50 kg/ha para reducciones
+                
+                # Redondear a 1 decimal
+                recomendacion_npk = round(recomendacion_npk, 1)
                 
             else:
-                recomendacion_npk = 0
+                recomendacion_npk = 0.0
             
             # Asignar valores al GeoDataFrame
-            zonas_gdf.loc[idx, 'area_ha'] = area_ha
-            zonas_gdf.loc[idx, 'nitrogeno'] = nitrogeno
-            zonas_gdf.loc[idx, 'fosforo'] = fosforo
-            zonas_gdf.loc[idx, 'potasio'] = potasio
-            zonas_gdf.loc[idx, 'materia_organica'] = materia_organica
-            zonas_gdf.loc[idx, 'humedad'] = humedad
-            zonas_gdf.loc[idx, 'ndvi'] = ndvi
-            zonas_gdf.loc[idx, 'indice_fertilidad'] = indice_fertilidad
+            zonas_gdf.loc[idx, 'area_ha'] = round(area_ha, 3)
+            zonas_gdf.loc[idx, 'nitrogeno'] = round(nitrogeno, 1)
+            zonas_gdf.loc[idx, 'fosforo'] = round(fosforo, 1)
+            zonas_gdf.loc[idx, 'potasio'] = round(potasio, 1)
+            zonas_gdf.loc[idx, 'materia_organica'] = round(materia_organica, 2)
+            zonas_gdf.loc[idx, 'humedad'] = round(humedad, 3)
+            zonas_gdf.loc[idx, 'ndvi'] = round(ndvi, 3)
+            zonas_gdf.loc[idx, 'indice_fertilidad'] = round(indice_fertilidad, 3)
             zonas_gdf.loc[idx, 'categoria'] = categoria
             zonas_gdf.loc[idx, 'recomendacion_npk'] = recomendacion_npk
             
         except Exception as e:
             st.warning(f"Advertencia en zona {idx}: {str(e)}")
             # Valores por defecto en caso de error
-            zonas_gdf.loc[idx, 'area_ha'] = calcular_superficie(zonas_gdf.iloc[[idx]]).iloc[0]
+            zonas_gdf.loc[idx, 'area_ha'] = round(calcular_superficie(zonas_gdf.iloc[[idx]]).iloc[0], 3)
             zonas_gdf.loc[idx, 'nitrogeno'] = params['NITROGENO']['min']
             zonas_gdf.loc[idx, 'fosforo'] = params['FOSFORO']['min']
             zonas_gdf.loc[idx, 'potasio'] = params['POTASIO']['min']
@@ -1250,7 +1281,7 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
             zonas_gdf.loc[idx, 'ndvi'] = 0.6
             zonas_gdf.loc[idx, 'indice_fertilidad'] = 0.5
             zonas_gdf.loc[idx, 'categoria'] = "MEDIA"
-            zonas_gdf.loc[idx, 'recomendacion_npk'] = 0
+            zonas_gdf.loc[idx, 'recomendacion_npk'] = 0.0
     
     return zonas_gdf
 # FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO
