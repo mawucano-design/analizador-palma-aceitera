@@ -15,14 +15,6 @@ import math
 import folium
 from folium import plugins
 from streamlit_folium import st_folium
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
-import base64
 
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
@@ -62,7 +54,7 @@ PARAMETROS_CULTIVOS = {
     }
 }
 
-# NUEVO: PARÁMETROS DE TEXTURA DEL SUELO POR CULTIVO
+# PARÁMETROS DE TEXTURA DEL SUELO POR CULTIVO
 TEXTURA_SUELO_OPTIMA = {
     'PALMA_ACEITERA': {
         'textura_optima': 'FRANCO_ARCILLOSO',
@@ -90,7 +82,7 @@ TEXTURA_SUELO_OPTIMA = {
     }
 }
 
-# NUEVO: CLASIFICACIÓN DE TEXTURAS DEL SUELO
+# CLASIFICACIÓN DE TEXTURAS DEL SUELO
 CLASIFICACION_TEXTURAS = {
     'ARENOSO': {'arena_min': 85, 'arena_max': 100, 'limo_max': 15, 'arcilla_max': 15},
     'FRANCO_ARENOSO': {'arena_min': 70, 'arena_max': 85, 'limo_max': 30, 'arcilla_max': 20},
@@ -108,7 +100,7 @@ FACTORES_SUELO = {
     'ARENOSO': {'retention': 0.6, 'drainage': 1.4, 'aeration': 1.5, 'workability': 1.4}
 }
 
-# NUEVO: RECOMENDACIONES POR TIPO DE TEXTURA
+# RECOMENDACIONES POR TIPO DE TEXTURA
 RECOMENDACIONES_TEXTURA = {
     'ARCILLOSO': [
         "Añadir materia orgánica para mejorar estructura",
@@ -264,7 +256,7 @@ with st.sidebar:
     cultivo = st.selectbox("Cultivo:", 
                           ["PALMA_ACEITERA", "CACAO", "BANANO"])
     
-    # NUEVO: Opción para análisis de textura
+    # Opción para análisis de textura
     analisis_tipo = st.selectbox("Tipo de Análisis:", 
                                ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK", "ANÁLISIS DE TEXTURA"])
     
@@ -290,7 +282,7 @@ with st.sidebar:
         st.session_state.datos_demo = False
         st.rerun()
 
-# NUEVA FUNCIÓN: CLASIFICAR TEXTURA DEL SUELO
+# FUNCIÓN: CLASIFICAR TEXTURA DEL SUELO
 def clasificar_textura_suelo(arena, limo, arcilla):
     """Clasifica la textura del suelo según el triángulo de texturas USDA"""
     try:
@@ -320,7 +312,7 @@ def clasificar_textura_suelo(arena, limo, arcilla):
     except Exception as e:
         return "NO_DETERMINADA"
 
-# NUEVA FUNCIÓN: CALCULAR PROPIEDADES FÍSICAS DEL SUELO
+# FUNCIÓN: CALCULAR PROPIEDADES FÍSICAS DEL SUELO
 def calcular_propiedades_fisicas_suelo(textura, materia_organica):
     """Calcula propiedades físicas del suelo basadas en textura y MO"""
     propiedades = {
@@ -356,7 +348,7 @@ def calcular_propiedades_fisicas_suelo(textura, materia_organica):
     
     return propiedades
 
-# NUEVA FUNCIÓN: EVALUAR ADECUACIÓN DE TEXTURA
+# FUNCIÓN: EVALUAR ADECUACIÓN DE TEXTURA
 def evaluar_adecuacion_textura(textura_actual, cultivo):
     """Evalúa qué tan adecuada es la textura para el cultivo específico"""
     textura_optima = TEXTURA_SUELO_OPTIMA[cultivo]['textura_optima']
@@ -770,7 +762,7 @@ def dividir_parcela_en_zonas(gdf, n_zonas):
         st.error(f"Error dividiendo parcela: {str(e)}")
         return gdf
 
-# NUEVA FUNCIÓN: ANÁLISIS DE TEXTURA DEL SUELO
+# FUNCIÓN: ANÁLISIS DE TEXTURA DEL SUELO
 def analizar_textura_suelo(gdf, cultivo, mes_analisis):
     """Realiza análisis completo de textura del suelo"""
     
