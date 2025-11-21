@@ -1,0 +1,121 @@
+# Streamlit
+.streamlit/secrets.toml
+
+# Datos temporales y archivos geoespaciales
+data/temp/
+*.geojson# Streamlit
+.streamlit/secrets.toml
+
+# Datos temporales y archivos geoespaciales
+data/temp/
+*.geojson
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.zip
+*.csv
+*.xlsx
+*.pdf
+
+# Earth Engine cache
+.earthengine/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Distribución
+build/
+dist/
+*.egg-info/
+
+# Cache de Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Archivos temporales
+temp/
+tmp/
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.zip
+*.csv
+*.xlsx
+*.pdf
+
+# Earth Engine cache
+.earthengine/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Distribución
+build/
+dist/
+*.egg-info/
+
+# Cache de Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Archivos temporales
+temp/
+tmp/
