@@ -1491,41 +1491,170 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
     
     return zonas_gdf
 
-# FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO
-def procesar_archivo(uploaded_zip):
-    """Procesa el archivo ZIP con shapefile"""
+# FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO (ACTUALIZADA PARA KML/KMZ)
+def procesar_archivo(uploaded_file):
+    """Procesa el archivo subido (ZIP con shapefile o KML/KMZ)"""
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Guardar archivo ZIP
-            zip_path = os.path.join(tmp_dir, "uploaded.zip")
-            with open(zip_path, "wb") as f:
-                f.write(uploaded_zip.getvalue())
+            # Guardar archivo
+            file_path = os.path.join(tmp_dir, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
             
-            # Extraer ZIP
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(tmp_dir)
+            # DETERMINAR TIPO DE ARCHIVO
+            file_extension = uploaded_file.name.lower()
             
-            # Buscar archivos shapefile
-            shp_files = [f for f in os.listdir(tmp_dir) if f.endswith('.shp')]
+            if file_extension.endswith('.zip'):
+                # PROCESAR ZIP CON SHAPEFILE
+                return procesar_shapefile_zip(file_path, tmp_dir)
             
-            if not shp_files:
-                st.error("❌ No se encontró archivo .shp en el ZIP")
+            elif file_extension.endswith('.kml') or file_extension.endswith('.kmz'):
+                # PROCESAR KML/KMZ
+                return procesar_kml_kmz(file_path, tmp_dir)
+            
+            else:
+                st.error("❌ Formato de archivo no soportado. Use ZIP, KML o KMZ.")
                 return None
-            
-            # Cargar shapefile
-            shp_path = os.path.join(tmp_dir, shp_files[0])
-            gdf = gpd.read_file(shp_path)
-            
-            # Verificar y reparar geometrías
-            if not gdf.is_valid.all():
-                gdf = gdf.make_valid()
-            
-            return gdf
             
     except Exception as e:
         st.error(f"❌ Error procesando archivo: {str(e)}")
         return None
 
+# FUNCIÓN PARA PROCESAR SHAPEFILE ZIP (EXISTENTE)
+def procesar_shapefile_zip(zip_path, tmp_dir):
+    """Procesa archivo ZIP con shapefile"""
+    try:
+        # Extraer ZIP
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(tmp_dir)
+        
+        # Buscar archivos shapefile
+        shp_files = [f for f in os.listdir(tmp_dir) if f.endswith('.shp')]
+        
+        if not shp_files:
+            st.error("❌ No se encontró archivo .shp en el ZIP")
+            return None
+        
+        # Cargar shapefile
+        shp_path = os.path.join(tmp_dir, shp_files[0])
+        gdf = gpd.read_file(shp_path)
+        
+        # Verificar y reparar geometrías
+        if not gdf.is_valid.all():
+            gdf = gdf.make_valid()
+        
+        st.success(f"✅ Shapefile cargado: {len(gdf)} polígonos")
+        return gdf
+        
+    except Exception as e:
+        st.error(f"❌ Error procesando shapefile: {str(e)}")
+        return None
+
+# NUEVA FUNCIÓN PARA PROCESAR KML/KMZ
+def procesar_kml_kmz(file_path, tmp_dir):
+    """Procesa archivos KML y KMZ"""
+    try:
+        # Cargar KML/KMZ directamente con geopandas
+        gdf = gpd.read_file(file_path)
+        
+        # Verificar y reparar geometrías
+        if not gdf.is_valid.all():
+            gdf = gdf.make_valid()
+        
+        # Información sobre el archivo cargado
+        st.success(f"✅ {'KML' if file_path.endswith('.kml') else 'KMZ'} cargado: {len(gdf)} geometrías")
+        
+        # Mostrar información básica
+        if len(gdf) > 0:
+            st.info(f"📊 Tipos de geometría: {gdf.geometry.type.unique()}")
+        
+        return gdf
+        
+    except Exception as e:
+        st.error(f"❌ Error procesando KML/KMZ: {str(e)}")
+        return None
+
+# ACTUALIZAR EL UPLOADER EN LA INTERFAZ
+# En la sección sidebar, cambiar el file_uploader para aceptar más formatos:
+
+# En la función main() o donde está el sidebar, actualizar:
+with st.sidebar:
+    st.header("⚙️ Configuración")
+    
+    cultivo = st.selectbox("Cultivo:", 
+                          ["PALMA_ACEITERA", "CACAO", "BANANO"])
+    
+    # Opción para análisis de textura
+    analisis_tipo = st.selectbox("Tipo de Análisis:", 
+                               ["FERTILIDAD ACTUAL", "RECOMENDACIONES NPK", "ANÁLISIS DE TEXTURA"])
+    
+    nutriente = st.selectbox("Nutriente:", ["NITRÓGENO", "FÓSFORO", "POTASIO"])
+    
+    mes_analisis = st.selectbox("Mes de Análisis:", 
+                               ["ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO",
+                                "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"])
+    
+    st.subheader("🎯 División de Parcela")
+    n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
+    
+    st.subheader("📤 Subir Parcela")
+    # ACTUALIZADO: Ahora acepta ZIP, KML y KMZ
+    uploaded_file = st.file_uploader("Subir archivo de parcela", 
+                                   type=['zip', 'kml', 'kmz'],
+                                   help="Formatos soportados: ZIP (shapefile), KML, KMZ")
+    
+    # Botón para resetear la aplicación
+    if st.button("🔄 Reiniciar Análisis"):
+        st.session_state.analisis_completado = False
+        st.session_state.gdf_analisis = None
+        st.session_state.gdf_original = None
+        st.session_state.gdf_zonas = None
+        st.session_state.area_total = 0
+        st.session_state.datos_demo = False
+        st.session_state.analisis_textura = None
+        st.rerun()
+
+# ACTUALIZAR LA LÓGICA PRINCIPAL PARA USAR EL NUEVO UPLOADER
+# En la función main(), cambiar:
+def main():
+    # ... código existente ...
+    
+    # Procesar archivo subido si existe (ACTUALIZADO)
+    if uploaded_file is not None and not st.session_state.analisis_completado:
+        with st.spinner("🔄 Procesando archivo..."):
+            gdf_original = procesar_archivo(uploaded_file)  # Cambiado de uploaded_zip a uploaded_file
+            if gdf_original is not None:
+                st.session_state.gdf_original = gdf_original
+                st.session_state.datos_demo = False
+
+    # ... resto del código existente ...
+
+# ACTUALIZAR EL TEXTO DE AYUDA EN mostrar_modo_demo()
+def mostrar_modo_demo():
+    """Muestra la interfaz de demostración"""
+    st.markdown("### 🚀 Modo Demostración")
+    st.info("""
+    **Para usar la aplicación:**
+    1. Sube un archivo con la geometría de tu parcela
+    2. Selecciona el cultivo y tipo de análisis
+    3. Configura los parámetros en el sidebar
+    4. Ejecuta el análisis GEE
+    
+    **📁 Formatos soportados:**
+    - **ZIP** con shapefile (.shp, .shx, .dbf, .prj)
+    - **KML** (Google Earth)
+    - **KMZ** (Google Earth comprimido)
+    
+    **NUEVO: Análisis de Textura del Suelo**
+    - Clasificación USDA de texturas
+    - Propiedades físicas del suelo
+    - Recomendaciones específicas por textura
+    """)
+    
+    # Ejemplo de datos de demostración
+    if st.button("🎯 Cargar Datos de Demostración", type="primary"):
+        st.session_state.datos_demo = True
+        st.rerun()
 # FUNCIÓN PARA GENERAR PDF
 def generar_informe_pdf(gdf_analisis, cultivo, analisis_tipo, nutriente, mes_analisis, area_total, gdf_textura=None):
     """Genera un informe PDF completo con los resultados del análisis"""
