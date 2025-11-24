@@ -63,10 +63,10 @@ PARAMETROS_CULTIVOS = {
     }
 }
 
-# PARÁMETROS DE TEXTURA DEL SUELO POR CULTIVO
+# PARÁMETROS DE TEXTURA DEL SUELO POR CULTIVO - NOMBRES ACTUALIZADOS
 TEXTURA_SUELO_OPTIMA = {
     'PALMA_ACEITERA': {
-        'textura_optima': 'FRANCO_ARCILLOSO',
+        'textura_optima': 'Franco Arcilloso',
         'arena_optima': 40,
         'limo_optima': 30,
         'arcilla_optima': 30,
@@ -74,7 +74,7 @@ TEXTURA_SUELO_OPTIMA = {
         'porosidad_optima': 0.5
     },
     'CACAO': {
-        'textura_optima': 'FRANCO',
+        'textura_optima': 'Franco',
         'arena_optima': 45,
         'limo_optima': 35,
         'arcilla_optima': 20,
@@ -82,7 +82,7 @@ TEXTURA_SUELO_OPTIMA = {
         'porosidad_optima': 0.55
     },
     'BANANO': {
-        'textura_optima': 'FRANCO_ARENOSO',
+        'textura_optima': 'Franco Arcilloso-Arenoso',
         'arena_optima': 50,
         'limo_optima': 30,
         'arcilla_optima': 20,
@@ -91,51 +91,51 @@ TEXTURA_SUELO_OPTIMA = {
     }
 }
 
-# CLASIFICACIÓN DE TEXTURAS DEL SUELO
+# CLASIFICACIÓN DE TEXTURAS DEL SUELO - NOMBRES ACTUALIZADOS
 CLASIFICACION_TEXTURAS = {
-    'ARENOSO': {'arena_min': 85, 'arena_max': 100, 'limo_max': 15, 'arcilla_max': 15},
-    'FRANCO_ARENOSO': {'arena_min': 70, 'arena_max': 85, 'limo_max': 30, 'arcilla_max': 20},
-    'FRANCO': {'arena_min': 43, 'arena_max': 52, 'limo_min': 28, 'limo_max': 50, 'arcilla_min': 7, 'arcilla_max': 27},
-    'FRANCO_ARCILLOSO': {'arena_min': 20, 'arena_max': 45, 'limo_min': 15, 'limo_max': 53, 'arcilla_min': 27, 'arcilla_max': 40},
-    'ARCILLOSO': {'arena_max': 45, 'limo_max': 40, 'arcilla_min': 40}
+    'Arenoso': {'arena_min': 85, 'arena_max': 100, 'limo_max': 15, 'arcilla_max': 15},
+    'Franco Arcilloso-Arenoso': {'arena_min': 70, 'arena_max': 85, 'limo_max': 30, 'arcilla_max': 20},
+    'Franco': {'arena_min': 43, 'arena_max': 52, 'limo_min': 28, 'limo_max': 50, 'arcilla_min': 7, 'arcilla_max': 27},
+    'Franco Arcilloso': {'arena_min': 20, 'arena_max': 45, 'limo_min': 15, 'limo_max': 53, 'arcilla_min': 27, 'arcilla_max': 40},
+    'Arcilloso': {'arena_max': 45, 'limo_max': 40, 'arcilla_min': 40}
 }
 
-# FACTORES EDÁFICOS MÁS REALISTAS
+# FACTORES EDÁFICOS MÁS REALISTAS - NOMBRES ACTUALIZADOS
 FACTORES_SUELO = {
-    'ARCILLOSO': {'retention': 1.3, 'drainage': 0.7, 'aeration': 0.6, 'workability': 0.5},
-    'FRANCO_ARCILLOSO': {'retention': 1.2, 'drainage': 0.8, 'aeration': 0.7, 'workability': 0.7},
-    'FRANCO': {'retention': 1.0, 'drainage': 1.0, 'aeration': 1.0, 'workability': 1.0},
-    'FRANCO_ARENOSO': {'retention': 0.8, 'drainage': 1.2, 'aeration': 1.3, 'workability': 1.2},
-    'ARENOSO': {'retention': 0.6, 'drainage': 1.4, 'aeration': 1.5, 'workability': 1.4}
+    'Arcilloso': {'retention': 1.3, 'drainage': 0.7, 'aeration': 0.6, 'workability': 0.5},
+    'Franco Arcilloso': {'retention': 1.2, 'drainage': 0.8, 'aeration': 0.7, 'workability': 0.7},
+    'Franco': {'retention': 1.0, 'drainage': 1.0, 'aeration': 1.0, 'workability': 1.0},
+    'Franco Arcilloso-Arenoso': {'retention': 0.8, 'drainage': 1.2, 'aeration': 1.3, 'workability': 1.2},
+    'Arenoso': {'retention': 0.6, 'drainage': 1.4, 'aeration': 1.5, 'workability': 1.4}
 }
 
-# RECOMENDACIONES POR TIPO DE TEXTURA
+# RECOMENDACIONES POR TIPO DE TEXTURA - NOMBRES ACTUALIZADOS
 RECOMENDACIONES_TEXTURA = {
-    'ARCILLOSO': [
+    'Arcilloso': [
         "Añadir materia orgánica para mejorar estructura",
         "Evitar laboreo en condiciones húmedas",
         "Implementar drenajes superficiales",
         "Usar cultivos de cobertura para romper compactación"
     ],
-    'FRANCO_ARCILLOSO': [
+    'Franco Arcilloso': [
         "Mantener niveles adecuados de materia orgánica",
         "Rotación de cultivos para mantener estructura",
         "Laboreo mínimo conservacionista",
         "Aplicación moderada de enmiendas"
     ],
-    'FRANCO': [
+    'Franco': [
         "Textura ideal - mantener prácticas conservacionistas",
         "Rotación balanceada de cultivos",
         "Manejo integrado de nutrientes",
         "Conservar estructura con coberturas"
     ],
-    'FRANCO_ARENOSO': [
+    'Franco Arcilloso-Arenoso': [
         "Aplicación frecuente de materia orgánica",
         "Riego por goteo para eficiencia hídrica",
         "Fertilización fraccionada para reducir pérdidas",
         "Cultivos de cobertura para retener humedad"
     ],
-    'ARENOSO': [
+    'Arenoso': [
         "Altas dosis de materia orgánica y compost",
         "Sistema de riego por goteo con alta frecuencia",
         "Fertilización en múltiples aplicaciones",
@@ -312,7 +312,7 @@ with st.sidebar:
         st.session_state.analisis_textura = None
         st.rerun()
 
-# FUNCIÓN: CLASIFICAR TEXTURA DEL SUELO
+# FUNCIÓN: CLASIFICAR TEXTURA DEL SUELO - ACTUALIZADA
 def clasificar_textura_suelo(arena, limo, arcilla):
     """Clasifica la textura del suelo según el triángulo de texturas USDA"""
     try:
@@ -325,24 +325,24 @@ def clasificar_textura_suelo(arena, limo, arcilla):
         limo_norm = (limo / total) * 100
         arcilla_norm = (arcilla / total) * 100
         
-        # Clasificación según USDA
+        # Clasificación según USDA - NOMBRES ACTUALIZADOS
         if arcilla_norm >= 40:
-            return "ARCILLOSO"
+            return "Arcilloso"
         elif arcilla_norm >= 27 and limo_norm >= 15 and limo_norm <= 53 and arena_norm >= 20 and arena_norm <= 45:
-            return "FRANCO_ARCILLOSO"
+            return "Franco Arcilloso"
         elif arcilla_norm >= 7 and arcilla_norm <= 27 and limo_norm >= 28 and limo_norm <= 50 and arena_norm >= 43 and arena_norm <= 52:
-            return "FRANCO"
+            return "Franco"
         elif arena_norm >= 70 and arena_norm <= 85 and arcilla_norm <= 20:
-            return "FRANCO_ARENOSO"
+            return "Franco Arcilloso-Arenoso"
         elif arena_norm >= 85:
-            return "ARENOSO"
+            return "Arenoso"
         else:
-            return "FRANCO"  # Por defecto
+            return "Franco"  # Por defecto
         
     except Exception as e:
         return "NO_DETERMINADA"
 
-# FUNCIÓN: CALCULAR PROPIEDADES FÍSICAS DEL SUELO
+# FUNCIÓN: CALCULAR PROPIEDADES FÍSICAS DEL SUELO - ACTUALIZADA
 def calcular_propiedades_fisicas_suelo(textura, materia_organica):
     """Calcula propiedades físicas del suelo basadas en textura y MO"""
     propiedades = {
@@ -354,13 +354,13 @@ def calcular_propiedades_fisicas_suelo(textura, materia_organica):
         'conductividad_hidraulica': 0.0
     }
     
-    # Valores base según textura (mm/m)
+    # Valores base según textura (mm/m) - NOMBRES ACTUALIZADOS
     base_propiedades = {
-        'ARCILLOSO': {'cc': 350, 'pm': 200, 'da': 1.3, 'porosidad': 0.5, 'kh': 0.1},
-        'FRANCO_ARCILLOSO': {'cc': 300, 'pm': 150, 'da': 1.25, 'porosidad': 0.53, 'kh': 0.5},
-        'FRANCO': {'cc': 250, 'pm': 100, 'da': 1.2, 'porosidad': 0.55, 'kh': 1.5},
-        'FRANCO_ARENOSO': {'cc': 180, 'pm': 80, 'da': 1.35, 'porosidad': 0.49, 'kh': 5.0},
-        'ARENOSO': {'cc': 120, 'pm': 50, 'da': 1.5, 'porosidad': 0.43, 'kh': 15.0}
+        'Arcilloso': {'cc': 350, 'pm': 200, 'da': 1.3, 'porosidad': 0.5, 'kh': 0.1},
+        'Franco Arcilloso': {'cc': 300, 'pm': 150, 'da': 1.25, 'porosidad': 0.53, 'kh': 0.5},
+        'Franco': {'cc': 250, 'pm': 100, 'da': 1.2, 'porosidad': 0.55, 'kh': 1.5},
+        'Franco Arcilloso-Arenoso': {'cc': 180, 'pm': 80, 'da': 1.35, 'porosidad': 0.49, 'kh': 5.0},
+        'Arenoso': {'cc': 120, 'pm': 50, 'da': 1.5, 'porosidad': 0.43, 'kh': 15.0}
     }
     
     if textura in base_propiedades:
@@ -378,18 +378,18 @@ def calcular_propiedades_fisicas_suelo(textura, materia_organica):
     
     return propiedades
 
-# FUNCIÓN: EVALUAR ADECUACIÓN DE TEXTURA
+# FUNCIÓN: EVALUAR ADECUACIÓN DE TEXTURA - ACTUALIZADA
 def evaluar_adecuacion_textura(textura_actual, cultivo):
     """Evalúa qué tan adecuada es la textura para el cultivo específico"""
     textura_optima = TEXTURA_SUELO_OPTIMA[cultivo]['textura_optima']
     
-    # Jerarquía de adecuación
+    # Jerarquía de adecuación - NOMBRES ACTUALIZADOS
     jerarquia_texturas = {
-        'ARENOSO': 1,
-        'FRANCO_ARENOSO': 2,
-        'FRANCO': 3,
-        'FRANCO_ARCILLOSO': 4,
-        'ARCILLOSO': 5
+        'Arenoso': 1,
+        'Franco Arcilloso-Arenoso': 2,
+        'Franco': 3,
+        'Franco Arcilloso': 4,
+        'Arcilloso': 5
     }
     
     if textura_actual not in jerarquia_texturas:
@@ -441,7 +441,7 @@ def calcular_superficie(gdf):
         except:
             return 1.0  # Valor por defecto
 
-# FUNCIÓN MEJORADA PARA CREAR MAPA INTERACTIVO CON ESRI SATELITE
+# FUNCIÓN MEJORADA PARA CREAR MAPA INTERACTIVO CON ESRI SATELITE - ACTUALIZADA
 def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
     """Crea mapa interactivo con base ESRI Satélite - MEJORADO"""
     
@@ -487,13 +487,13 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
             colores = PALETAS_GEE['FERTILIDAD']
             unidad = "Índice"
         elif analisis_tipo == "ANÁLISIS DE TEXTURA":
-            # Mapa categórico para texturas
+            # Mapa categórico para texturas - NOMBRES ACTUALIZADOS
             colores_textura = {
-                'ARENOSO': '#d8b365',
-                'FRANCO_ARENOSO': '#f6e8c3', 
-                'FRANCO': '#c7eae5',
-                'FRANCO_ARCILLOSO': '#5ab4ac',
-                'ARCILLOSO': '#01665e',
+                'Arenoso': '#d8b365',
+                'Franco Arcilloso-Arenoso': '#f6e8c3', 
+                'Franco': '#c7eae5',
+                'Franco Arcilloso': '#5ab4ac',
+                'Arcilloso': '#01665e',
                 'NO_DETERMINADA': '#999999'
             }
             unidad = "Textura"
@@ -681,13 +681,13 @@ def crear_mapa_interactivo_esri(gdf, titulo, columna_valor=None, analisis_tipo=N
                 categoria = ["Muy Baja", "Baja", "Media-Baja", "Media", "Media-Alta", "Alta", "Muy Alta"][min(i, 6)] if i < 7 else "Óptima"
                 legend_html += f'<div style="margin:2px 0;"><span style="background:{color}; width:20px; height:15px; display:inline-block; margin-right:5px; border:1px solid #000;"></span> {value:.1f} ({categoria})</div>'
         elif analisis_tipo == "ANÁLISIS DE TEXTURA":
-            # Leyenda categórica para texturas
+            # Leyenda categórica para texturas - NOMBRES ACTUALIZADOS
             colores_textura = {
-                'ARENOSO': '#d8b365',
-                'FRANCO_ARENOSO': '#f6e8c3', 
-                'FRANCO': '#c7eae5',
-                'FRANCO_ARCILLOSO': '#5ab4ac',
-                'ARCILLOSO': '#01665e'
+                'Arenoso': '#d8b365',
+                'Franco Arcilloso-Arenoso': '#f6e8c3', 
+                'Franco': '#c7eae5',
+                'Franco Arcilloso': '#5ab4ac',
+                'Arcilloso': '#01665e'
             }
             for textura, color in colores_textura.items():
                 legend_html += f'<div style="margin:2px 0;"><span style="background:{color}; width:20px; height:15px; display:inline-block; margin-right:5px; border:1px solid #000;"></span> {textura}</div>'
@@ -788,7 +788,7 @@ def crear_mapa_visualizador_parcela(gdf):
     
     return m
 
-# FUNCIÓN CORREGIDA PARA CREAR MAPA ESTÁTICO
+# FUNCIÓN CORREGIDA PARA CREAR MAPA ESTÁTICO - ACTUALIZADA
 def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nutriente=None):
     """Crea mapa estático con matplotlib - CORREGIDO PARA COINCIDIR CON INTERACTIVO"""
     try:
@@ -800,13 +800,13 @@ def crear_mapa_estatico(gdf, titulo, columna_valor=None, analisis_tipo=None, nut
                 cmap = LinearSegmentedColormap.from_list('fertilidad_gee', PALETAS_GEE['FERTILIDAD'])
                 vmin, vmax = 0, 1
             elif analisis_tipo == "ANÁLISIS DE TEXTURA":
-                # Mapa categórico para texturas
+                # Mapa categórico para texturas - NOMBRES ACTUALIZADOS
                 colores_textura = {
-                    'ARENOSO': '#d8b365',
-                    'FRANCO_ARENOSO': '#f6e8c3', 
-                    'FRANCO': '#c7eae5',
-                    'FRANCO_ARCILLOSO': '#5ab4ac',
-                    'ARCILLOSO': '#01665e',
+                    'Arenoso': '#d8b365',
+                    'Franco Arcilloso-Arenoso': '#f6e8c3', 
+                    'Franco': '#c7eae5',
+                    'Franco Arcilloso': '#5ab4ac',
+                    'Arcilloso': '#01665e',
                     'NO_DETERMINADA': '#999999'
                 }
             else:
@@ -909,7 +909,7 @@ def mostrar_recomendaciones_agroecologicas(cultivo, categoria, area_ha, analisis
     # Determinar el enfoque según la categoría o textura
     if analisis_tipo == "ANÁLISIS DE TEXTURA" and textura_data:
         adecuacion_promedio = textura_data.get('adecuacion_promedio', 0.5)
-        textura_predominante = textura_data.get('textura_predominante', 'FRANCO')
+        textura_predominante = textura_data.get('textura_predominante', 'Franco')
         
         if adecuacion_promedio >= 0.8:
             enfoque = "✅ **ENFOQUE: MANTENIMIENTO**"
@@ -1776,7 +1776,7 @@ def generar_informe_pdf(gdf_analisis, cultivo, analisis_tipo, nutriente, mes_ana
     story.append(Paragraph("RECOMENDACIONES AGROECOLÓGICAS", heading_style))
     
     if analisis_tipo == "ANÁLISIS DE TEXTURA" and gdf_textura is not None:
-        textura_predominante = gdf_textura['textura_suelo'].mode()[0] if len(gdf_textura) > 0 else "FRANCO"
+        textura_predominante = gdf_textura['textura_suelo'].mode()[0] if len(gdf_textura) > 0 else "Franco"
         adecuacion_promedio = gdf_textura['adecuacion_textura'].mean()
         
         if adecuacion_promedio >= 0.8:
@@ -1996,7 +1996,7 @@ def mostrar_resultados_textura():
     
     # Recomendaciones específicas para textura
     if 'textura_suelo' in gdf_textura.columns:
-        textura_predominante = gdf_textura['textura_suelo'].mode()[0] if len(gdf_textura) > 0 else "FRANCO"
+        textura_predominante = gdf_textura['textura_suelo'].mode()[0] if len(gdf_textura) > 0 else "Franco"
         if 'adecuacion_textura' in gdf_textura.columns:
             adecuacion_promedio = gdf_textura['adecuacion_textura'].mean()
         else:
