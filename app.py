@@ -24,6 +24,7 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import base64
 import fiona
+
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
 st.markdown("---")
@@ -297,8 +298,8 @@ with st.sidebar:
     st.subheader("🎯 División de Parcela")
     n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
     
-   st.subheader("📤 Subir Parcela")
-uploaded_file = st.file_uploader("Subir ZIP con shapefile o archivo KML de tu parcela", type=['zip', 'kml'])
+    st.subheader("📤 Subir Parcela")
+    uploaded_file = st.file_uploader("Subir ZIP con shapefile o archivo KML de tu parcela", type=['zip', 'kml'])
     
     # Botón para resetear la aplicación
     if st.button("🔄 Reiniciar Análisis"):
@@ -2242,13 +2243,13 @@ def main():
     - **Enfoque agroecológico** integrado
     """)
 
-   # Procesar archivo subido si existe
-if uploaded_file is not None and not st.session_state.analisis_completado:
-    with st.spinner("🔄 Procesando archivo..."):
-        gdf_original = procesar_archivo(uploaded_file)
-        if gdf_original is not None:
-            st.session_state.gdf_original = gdf_original
-            st.session_state.datos_demo = False
+    # Procesar archivo subido si existe
+    if uploaded_file is not None and not st.session_state.analisis_completado:
+        with st.spinner("🔄 Procesando archivo..."):
+            gdf_original = procesar_archivo(uploaded_file)
+            if gdf_original is not None:
+                st.session_state.gdf_original = gdf_original
+                st.session_state.datos_demo = False
 
     # Cargar datos de demostración si se solicita
     if st.session_state.datos_demo and st.session_state.gdf_original is None:
