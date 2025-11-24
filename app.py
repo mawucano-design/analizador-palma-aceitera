@@ -23,7 +23,7 @@ from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 import base64
-
+import fiona
 st.set_page_config(page_title="🌴 Analizador Cultivos", layout="wide")
 st.title("🌱 ANALIZADOR CULTIVOS - METODOLOGÍA GEE COMPLETA CON AGROECOLOGÍA")
 st.markdown("---")
@@ -297,8 +297,8 @@ with st.sidebar:
     st.subheader("🎯 División de Parcela")
     n_divisiones = st.slider("Número de zonas de manejo:", min_value=16, max_value=32, value=24)
     
-    st.subheader("📤 Subir Parcela")
-    uploaded_zip = st.file_uploader("Subir ZIP con shapefile de tu parcela", type=['zip'])
+   st.subheader("📤 Subir Parcela")
+uploaded_file = st.file_uploader("Subir ZIP con shapefile o archivo KML de tu parcela", type=['zip', 'kml'])
     
     # Botón para resetear la aplicación
     if st.button("🔄 Reiniciar Análisis"):
@@ -1491,30 +1491,40 @@ def calcular_indices_gee(gdf, cultivo, mes_analisis, analisis_tipo, nutriente):
     
     return zonas_gdf
 
-# FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO
-def procesar_archivo(uploaded_zip):
-    """Procesa el archivo ZIP con shapefile"""
+# FUNCIÓN PARA PROCESAR ARCHIVO SUBIDO (ACTUALIZADA PARA KML)
+def procesar_archivo(uploaded_file):
+    """Procesa el archivo ZIP con shapefile o archivo KML"""
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Guardar archivo ZIP
-            zip_path = os.path.join(tmp_dir, "uploaded.zip")
-            with open(zip_path, "wb") as f:
-                f.write(uploaded_zip.getvalue())
+            # Guardar archivo
+            file_path = os.path.join(tmp_dir, uploaded_file.name)
+            with open(file_path, "wb") as f:
+                f.write(uploaded_file.getvalue())
             
-            # Extraer ZIP
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(tmp_dir)
-            
-            # Buscar archivos shapefile
-            shp_files = [f for f in os.listdir(tmp_dir) if f.endswith('.shp')]
-            
-            if not shp_files:
-                st.error("❌ No se encontró archivo .shp en el ZIP")
-                return None
-            
-            # Cargar shapefile
-            shp_path = os.path.join(tmp_dir, shp_files[0])
-            gdf = gpd.read_file(shp_path)
+            # Verificar tipo de archivo
+            if uploaded_file.name.lower().endswith('.kml'):
+                # Cargar archivo KML
+                gdf = gpd.read_file(file_path, driver='KML')
+            else:
+                # Procesar como ZIP con shapefile (código existente)
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    zip_ref.extractall(tmp_dir)
+                
+                # Buscar archivos shapefile o KML
+                shp_files = [f for f in os.listdir(tmp_dir) if f.endswith('.shp')]
+                kml_files = [f for f in os.listdir(tmp_dir) if f.endswith('.kml')]
+                
+                if shp_files:
+                    # Cargar shapefile
+                    shp_path = os.path.join(tmp_dir, shp_files[0])
+                    gdf = gpd.read_file(shp_path)
+                elif kml_files:
+                    # Cargar KML
+                    kml_path = os.path.join(tmp_dir, kml_files[0])
+                    gdf = gpd.read_file(kml_path, driver='KML')
+                else:
+                    st.error("❌ No se encontró archivo .shp o .kml en el ZIP")
+                    return None
             
             # Verificar y reparar geometrías
             if not gdf.is_valid.all():
@@ -2232,13 +2242,13 @@ def main():
     - **Enfoque agroecológico** integrado
     """)
 
-    # Procesar archivo subido si existe
-    if uploaded_zip is not None and not st.session_state.analisis_completado:
-        with st.spinner("🔄 Procesando archivo..."):
-            gdf_original = procesar_archivo(uploaded_zip)
-            if gdf_original is not None:
-                st.session_state.gdf_original = gdf_original
-                st.session_state.datos_demo = False
+   # Procesar archivo subido si existe
+if uploaded_file is not None and not st.session_state.analisis_completado:
+    with st.spinner("🔄 Procesando archivo..."):
+        gdf_original = procesar_archivo(uploaded_file)
+        if gdf_original is not None:
+            st.session_state.gdf_original = gdf_original
+            st.session_state.datos_demo = False
 
     # Cargar datos de demostración si se solicita
     if st.session_state.datos_demo and st.session_state.gdf_original is None:
