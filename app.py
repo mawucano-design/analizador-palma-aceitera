@@ -25,6 +25,7 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 import geojson
 import requests
 import contextily as ctx
+import re
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
@@ -128,8 +129,6 @@ if 'palmas_detectadas' not in st.session_state:
     st.session_state.palmas_detectadas = []
 if 'patron_plantacion' not in st.session_state:
     st.session_state.patron_plantacion = None
-if 'resultados_deteccion' not in st.session_state:
-    st.session_state.resultados_deteccion = None
 
 # ===== ESTILOS PERSONALIZADOS =====
 st.markdown("""
@@ -595,6 +594,66 @@ def dividir_plantacion_en_bloques(gdf, n_bloques):
     else:
         return gdf
 
+# ===== FUNCIÓN ROBUSTA PARA PROCESAR KML =====
+def procesar_kml_robusto(file_content):
+    """Procesa archivos KML de manera robusta usando expresiones regulares"""
+    try:
+        content = file_content.decode('utf-8', errors='ignore')
+        
+        polygons = []
+        total_coords = 0
+        
+        # Buscar todos los bloques de coordenadas
+        coord_sections = re.findall(r'<coordinates[^>]*>([\s\S]*?)</coordinates>', content, re.IGNORECASE)
+        
+        for i, coord_text in enumerate(coord_sections):
+            coord_text = coord_text.strip()
+            if not coord_text:
+                continue
+            
+            coord_list = []
+            
+            # Dividir por cualquier espacio en blanco
+            coords = re.split(r'\s+', coord_text)
+            
+            for coord in coords:
+                coord = coord.strip()
+                if coord and ',' in coord:
+                    try:
+                        # Manejar formato: -58.123,-27.456,0 o -58.123,-27.456
+                        parts = [p.strip() for p in coord.split(',')]
+                        if len(parts) >= 2:
+                            lon = float(parts[0])
+                            lat = float(parts[1])
+                            coord_list.append((lon, lat))
+                    except ValueError:
+                        continue
+            
+            # Verificar que tenemos un polígono válido (al menos 3 puntos diferentes)
+            if len(coord_list) >= 3:
+                # Cerrar el polígono si no está cerrado
+                if coord_list[0] != coord_list[-1]:
+                    coord_list.append(coord_list[0])
+                
+                # Crear polígono
+                try:
+                    polygon = Polygon(coord_list)
+                    if polygon.is_valid and polygon.area > 0:
+                        polygons.append(polygon)
+                        total_coords += len(coord_list)
+                except:
+                    continue
+        
+        if polygons:
+            gdf = gpd.GeoDataFrame(geometry=polygons, crs='EPSG:4326')
+            return gdf
+        else:
+            return None
+            
+    except Exception as e:
+        st.error(f"Error en procesamiento KML: {str(e)}")
+        return None
+
 def cargar_archivo_plantacion(uploaded_file):
     try:
         # Leer el contenido del archivo
@@ -619,52 +678,25 @@ def cargar_archivo_plantacion(uploaded_file):
         elif uploaded_file.name.endswith('.geojson'):
             gdf = gpd.read_file(io.BytesIO(file_content))
         
-        # Si es un archivo KML
+        # Si es un archivo KML - USANDO LA VERSIÓN ROBUSTA
         elif uploaded_file.name.endswith('.kml'):
-            try:
-                # Intentar con geopandas primero
-                gdf = gpd.read_file(io.BytesIO(file_content), driver='KML')
-            except Exception as e:
-                st.warning(f"Geopandas no pudo leer el KML: {str(e)}. Intentando método alternativo...")
-                # Método alternativo: parsear XML manualmente
-                try:
-                    # Parsear XML
-                    root = ET.fromstring(file_content)
+            with st.spinner("Procesando archivo KML..."):
+                gdf = procesar_kml_robusto(file_content)
+                
+                if gdf is not None and len(gdf) > 0:
+                    st.success(f"✅ KML procesado: {len(gdf)} polígonos encontrados")
                     
-                    # Definir namespace KML
-                    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
+                    # Mostrar información básica
+                    area_total = calcular_superficie(gdf)
+                    st.info(f"Área total estimada: {area_total:.2f} ha")
                     
-                    polygons = []
-                    
-                    # Buscar todos los polígonos
-                    for polygon in root.findall('.//kml:Polygon', ns):
-                        coords_elem = polygon.find('.//kml:coordinates', ns)
-                        if coords_elem is not None and coords_elem.text:
-                            coord_text = coords_elem.text.strip()
-                            coord_list = []
-                            
-                            for coord in coord_text.split():
-                                try:
-                                    parts = coord.split(',')
-                                    if len(parts) >= 2:
-                                        lon = float(parts[0])
-                                        lat = float(parts[1])
-                                        coord_list.append((lon, lat))
-                                except:
-                                    continue
-                            
-                            if len(coord_list) >= 3:
-                                polygons.append(Polygon(coord_list))
-                    
-                    if polygons:
-                        gdf = gpd.GeoDataFrame(geometry=polygons, crs='EPSG:4326')
-                        st.success(f"KML procesado manualmente: {len(polygons)} polígonos encontrados")
-                    else:
-                        st.error("No se encontraron polígonos en el archivo KML")
-                        return None
-                        
-                except Exception as e2:
-                    st.error(f"Error procesando KML: {str(e2)}")
+                    # Si hay muchos polígonos, unirlos
+                    if len(gdf) > 1:
+                        st.info(f"Uniendo {len(gdf)} polígonos en uno solo...")
+                        geometria_unida = gdf.unary_union
+                        gdf = gpd.GeoDataFrame([{'geometry': geometria_unida}], crs='EPSG:4326')
+                else:
+                    st.error("No se pudieron extraer polígonos del archivo KML")
                     return None
         
         # Si es un archivo KMZ (KML comprimido)
@@ -690,8 +722,16 @@ def cargar_archivo_plantacion(uploaded_file):
                         kmz.extract(kml_file_name, tmp_dir)
                         kml_path = os.path.join(tmp_dir, kml_file_name)
                         
-                        # Leer KML con geopandas
-                        gdf = gpd.read_file(kml_path)
+                        # Leer el contenido del KML
+                        with open(kml_path, 'rb') as f:
+                            kml_content = f.read()
+                        
+                        # Procesar el KML
+                        gdf = procesar_kml_robusto(kml_content)
+                        
+                        if gdf is None or len(gdf) == 0:
+                            st.error("No se pudieron extraer polígonos del archivo KMZ")
+                            return None
                         
             except Exception as e:
                 st.error(f"Error procesando KMZ: {str(e)}")
@@ -724,9 +764,9 @@ def cargar_archivo_plantacion(uploaded_file):
             # Si hay múltiples polígonos, unirlos o tomar el primero
             if len(geometria_unida.geoms) > 0:
                 # Tomar el polígono más grande
-                areas = [p.area for p in geometria_unida.geoms]
-                idx_max = areas.index(max(areas))
-                gdf_unido = gpd.GeoDataFrame([{'geometry': geometria_unida.geoms[idx_max]}], crs='EPSG:4326')
+                poligonos = list(geometria_unida.geoms)
+                poligonos.sort(key=lambda p: p.area, reverse=True)
+                gdf_unido = gpd.GeoDataFrame([{'geometry': poligonos[0]}], crs='EPSG:4326')
             else:
                 st.error("No se encontraron polígonos después de la unión")
                 return None
@@ -1576,7 +1616,6 @@ if uploaded_file:
                                     if resultados_deteccion:
                                         st.session_state.palmas_detectadas = resultados_deteccion['detectadas']
                                         st.session_state.imagen_alta_resolucion = imagen_bytes
-                                        st.session_state.resultados_deteccion = resultados_deteccion
                                         
                                         patron_info = analizar_patron_plantacion(resultados_deteccion['detectadas'])
                                         st.session_state.patron_plantacion = patron_info
@@ -2000,7 +2039,6 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                     if resultados_deteccion:
                         st.session_state.palmas_detectadas = resultados_deteccion.get('detectadas', [])
                         st.session_state.imagen_alta_resolucion = imagen_bytes
-                        st.session_state.resultados_deteccion = resultados_deteccion  # <-- Guardar resultados completos
                         patron_info = analizar_patron_plantacion(resultados_deteccion.get('detectadas', []))
                         st.session_state.patron_plantacion = patron_info
                         st.rerun()
@@ -2021,9 +2059,8 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                 img = Image.open(imagen_bytes)
                 
                 # Si tenemos imagen resultado, mostrarla
-                if ('resultados_deteccion' in st.session_state and 
-                    'imagen_resultado' in st.session_state.resultados_deteccion):
-                    img_resultado = Image.fromarray(st.session_state.resultados_deteccion['imagen_resultado'])
+                if DETECCION_DISPONIBLE and 'resultados_deteccion' in locals() and 'imagen_resultado' in resultados_deteccion:
+                    img_resultado = Image.fromarray(resultados_deteccion['imagen_resultado'])
                     st.image(img_resultado, caption="Palmas detectadas (círculos azules)", 
                              use_container_width=True)
                 else:
