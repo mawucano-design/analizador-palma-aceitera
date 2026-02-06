@@ -1811,7 +1811,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                     use_container_width=True
                 )
     
-    with tab7:
+        with tab7:
         st.header("🌴 DETECCIÓN DE PALMAS ACEITERAS INDIVIDUALES")
         
         st.markdown("""
@@ -1854,7 +1854,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                 img = Image.open(imagen_bytes)
                 
                 # Si tenemos imagen resultado, mostrarla
-                if DETECCION_DISPONIBLE and 'imagen_resultado' in resultados_deteccion:
+                if DETECCION_DISPONIBLE and 'imagen_resultado' in locals():
                     img_resultado = Image.fromarray(resultados_deteccion['imagen_resultado'])
                     st.image(img_resultado, caption="Palmas detectadas (círculos azules)", 
                              use_container_width=True)
@@ -1989,14 +1989,14 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                     else:
                         regularidad_texto = 'N/A'
                     
-                informe_deteccion = f"""INFORME DE DETECCIÓN DE PALMAS
-                Fecha: {datetime.now().strftime('%d/%m/%Y')}
-                Total palmas: {total_detectadas}
-                Densidad: {densidad:.1f} plantas/ha
-                Patrón: {st.session_state.patron_plantacion['patron'] if st.session_state.patron_plantacion else 'N/A'}
-                Regularidad: {regularidad_texto}
-                Fallas estimadas: {estadisticas.get('fallas_estimadas', 0)}
-                """
+                    informe_deteccion = f"""INFORME DE DETECCIÓN DE PALMAS
+Fecha: {datetime.now().strftime('%d/%m/%Y')}
+Total palmas: {total_detectadas}
+Densidad: {densidad:.1f} plantas/ha
+Patrón: {st.session_state.patron_plantacion['patron'] if st.session_state.patron_plantacion else 'N/A'}
+Regularidad: {regularidad_texto}
+Fallas estimadas: {estadisticas.get('fallas_estimadas', 0)}
+"""
                     
                     st.download_button(
                         label="📄 Descargar Informe (TXT)",
@@ -2005,7 +2005,6 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                         mime="text/plain",
                         use_container_width=True
                     )
-
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
 col_footer1, col_footer2 = st.columns(2)
