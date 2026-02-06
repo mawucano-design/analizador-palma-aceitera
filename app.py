@@ -1632,8 +1632,9 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
         st.subheader("📊 RENTABILIDAD POR BLOQUE")
         
         if 'rentabilidad' in gdf_completo.columns:
-            bloques = gdf_completo['id_bloque'].astype(str)
-            rentabilidades = gdf_completo['rentabilidad']
+            # Convertir Series a listas para evitar problemas de evaluación booleana
+            rentabilidades = gdf_completo['rentabilidad'].tolist()
+            bloques = gdf_completo['id_bloque'].astype(str).tolist()
         else:
             rentabilidades = []
             bloques = []
@@ -1650,7 +1651,8 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                 rentabilidad = (ingreso_bloque - costo_bloque) / costo_bloque * 100 if costo_bloque > 0 else 0
                 rentabilidades.append(round(rentabilidad, 1))
         
-        if rentabilidades and len(rentabilidades) > 0:
+        # CORRECCIÓN: Usar len() para verificar si la lista tiene elementos
+        if len(rentabilidades) > 0:
             fig, ax = plt.subplots(figsize=(12, 6))
             
             colors = ['red' if r < 0 else 'orange' if r < 20 else 'green' for r in rentabilidades]
@@ -1823,7 +1825,9 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
         3. **Patrones espaciales**: Reconocimiento de patrones de plantación
         """)
         
-        if not st.session_state.palmas_detectadas:
+        # CORRECCIÓN: Verificar si palmas_detectadas existe y no está vacío
+        if ('palmas_detectadas' not in st.session_state or 
+            not st.session_state.palmas_detectadas):
             st.warning("⚠️ La detección de palmas no se ha ejecutado aún.")
             if st.button("🔍 Ejecutar Detección de Palmas", type="primary"):
                 with st.spinner("Ejecutando detección..."):
@@ -1832,9 +1836,9 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                     resultados_deteccion = detectar_palmas_individuales(imagen_bytes, gdf, tamano_minimo)
                     
                     if resultados_deteccion:
-                        st.session_state.palmas_detectadas = resultados_deteccion['detectadas']
+                        st.session_state.palmas_detectadas = resultados_deteccion.get('detectadas', [])
                         st.session_state.imagen_alta_resolucion = imagen_bytes
-                        patron_info = analizar_patron_plantacion(resultados_deteccion['detectadas'])
+                        patron_info = analizar_patron_plantacion(resultados_deteccion.get('detectadas', []))
                         st.session_state.patron_plantacion = patron_info
                         st.rerun()
         else:
@@ -1887,7 +1891,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
             
             gdf_completo.plot(ax=ax, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
             
-            if palmas_detectadas:
+            if palmas_detectadas and len(palmas_detectadas) > 0:
                 coords = np.array([p['centroide'] for p in palmas_detectadas])
                 radios = np.array([p['radio_aprox'] for p in palmas_detectadas])
                 
@@ -1960,7 +1964,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
             # Exportar datos
             st.subheader("📥 EXPORTAR DATOS DE DETECCIÓN")
             
-            if palmas_detectadas:
+            if palmas_detectadas and len(palmas_detectadas) > 0:
                 df_palmas = pd.DataFrame([{
                     'id': i+1,
                     'longitud': p['centroide'][0],
