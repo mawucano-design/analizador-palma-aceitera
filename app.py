@@ -1188,6 +1188,11 @@ def generar_imagen_satelital_simulada(gdf):
     return img_bytes
 
 def detectar_palmas_individuales(imagen_bytes, gdf, tamano_minimo=15.0):
+    # Si las librerías de detección no están disponibles, usar simulación
+    if not DETECCION_DISPONIBLE:
+        st.info("ℹ️ Usando detección simulada (librerías de visión por computadora no disponibles)")
+        return simular_deteccion_palmas(gdf)
+    
     try:
         from PIL import Image
         import cv2
@@ -1240,29 +1245,40 @@ def detectar_palmas_individuales(imagen_bytes, gdf, tamano_minimo=15.0):
                                     'y_pixel': cy
                                 })
             
-            img_resultado = img_array.copy()
-            for palma in palmas_detectadas:
-                cx, cy = int((palma['centroide'][0] - min_lon) / (max_lon - min_lon) * img.width), \
-                        int((max_lat - palma['centroide'][1]) / (max_lat - min_lat) * img.height)
-                radio = int(palma['radio_aprox'])
-                cv2.circle(img_resultado, (cx, cy), radio, (255, 0, 0), 2)
-                cv2.circle(img_resultado, (cx, cy), 2, (0, 255, 255), -1)
-            
-            return {
-                'detectadas': palmas_detectadas,
-                'total': len(palmas_detectadas),
-                'imagen_resultado': img_resultado,
-                'imagen_original': img_array,
-                'mascara_vegetacion': mascara
-            }
-            
+            # Solo intentar crear imagen resultado si se detectaron palmas
+            if palmas_detectadas:
+                img_resultado = img_array.copy()
+                for palma in palmas_detectadas:
+                    cx = int((palma['centroide'][0] - min_lon) / (max_lon - min_lon) * img.width)
+                    cy = int((max_lat - palma['centroide'][1]) / (max_lat - min_lat) * img.height)
+                    radio = int(palma['radio_aprox'])
+                    cv2.circle(img_resultado, (cx, cy), radio, (255, 0, 0), 2)
+                    cv2.circle(img_resultado, (cx, cy), 2, (0, 255, 255), -1)
+                
+                return {
+                    'detectadas': palmas_detectadas,
+                    'total': len(palmas_detectadas),
+                    'imagen_resultado': img_resultado,
+                    'imagen_original': img_array,
+                    'mascara_vegetacion': mascara
+                }
+            else:
+                return {
+                    'detectadas': [],
+                    'total': 0,
+                    'imagen_original': img_array,
+                    'nota': 'No se detectaron palmas con los parámetros actuales'
+                }
         else:
-            return None
+            return {
+                'detectadas': [],
+                'total': 0,
+                'nota': 'Imagen no tiene formato RGB'
+            }
             
     except Exception as e:
         st.error(f"❌ Error en detección de palmas: {str(e)}")
         return simular_deteccion_palmas(gdf)
-
 def simular_deteccion_palmas(gdf, densidad=130):
     bounds = gdf.total_bounds
     min_lon, min_lat, max_lon, max_lat = bounds
