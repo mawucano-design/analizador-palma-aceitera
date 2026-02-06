@@ -1811,185 +1811,185 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                     use_container_width=True
                 )
     
-        with tab7:
-        st.header("🌴 DETECCIÓN DE PALMAS ACEITERAS INDIVIDUALES")
+    with tab7:
+    st.header("🌴 DETECCIÓN DE PALMAS ACEITERAS INDIVIDUALES")
+    
+    st.markdown("""
+    **Esta herramienta detecta plantas individuales de palma aceitera usando imágenes satelitales de alta resolución.**
+    
+    ### 🎯 Métodos utilizados:
+    1. **Análisis espectral**: Identificación de vegetación verde
+    2. **Detección de formas**: Las palmas tienen copas circulares características
+    3. **Patrones espaciales**: Reconocimiento de patrones de plantación
+    """)
+    
+    if not st.session_state.palmas_detectadas:
+        st.warning("⚠️ La detección de palmas no se ha ejecutado aún.")
+        if st.button("🔍 Ejecutar Detección de Palmas", type="primary"):
+            with st.spinner("Ejecutando detección..."):
+                fecha_media = fecha_inicio + (fecha_fin - fecha_inicio) / 2
+                imagen_bytes = descargar_imagen_sentinel2(gdf, fecha_media)
+                resultados_deteccion = detectar_palmas_individuales(imagen_bytes, gdf, tamano_minimo)
+                
+                if resultados_deteccion:
+                    st.session_state.palmas_detectadas = resultados_deteccion['detectadas']
+                    st.session_state.imagen_alta_resolucion = imagen_bytes
+                    patron_info = analizar_patron_plantacion(resultados_deteccion['detectadas'])
+                    st.session_state.patron_plantacion = patron_info
+                    st.rerun()
+    else:
+        palmas_detectadas = st.session_state.palmas_detectadas
+        total_detectadas = len(palmas_detectadas)
+        area_total = resultados.get('area_total', 0)
         
-        st.markdown("""
-        **Esta herramienta detecta plantas individuales de palma aceitera usando imágenes satelitales de alta resolución.**
+        st.success(f"✅ Detección completada: {total_detectadas} palmas detectadas")
         
-        ### 🎯 Métodos utilizados:
-        1. **Análisis espectral**: Identificación de vegetación verde
-        2. **Detección de formas**: Las palmas tienen copas circulares características
-        3. **Patrones espaciales**: Reconocimiento de patrones de plantación
-        """)
-        
-        if not st.session_state.palmas_detectadas:
-            st.warning("⚠️ La detección de palmas no se ha ejecutado aún.")
-            if st.button("🔍 Ejecutar Detección de Palmas", type="primary"):
-                with st.spinner("Ejecutando detección..."):
-                    fecha_media = fecha_inicio + (fecha_fin - fecha_inicio) / 2
-                    imagen_bytes = descargar_imagen_sentinel2(gdf, fecha_media)
-                    resultados_deteccion = detectar_palmas_individuales(imagen_bytes, gdf, tamano_minimo)
-                    
-                    if resultados_deteccion:
-                        st.session_state.palmas_detectadas = resultados_deteccion['detectadas']
-                        st.session_state.imagen_alta_resolucion = imagen_bytes
-                        patron_info = analizar_patron_plantacion(resultados_deteccion['detectadas'])
-                        st.session_state.patron_plantacion = patron_info
-                        st.rerun()
-        else:
-            palmas_detectadas = st.session_state.palmas_detectadas
-            total_detectadas = len(palmas_detectadas)
-            area_total = resultados.get('area_total', 0)
+        # Mostrar imagen con detección
+        if st.session_state.imagen_alta_resolucion:
+            st.subheader("📷 Imagen Satelital con Palmas Detectadas")
             
-            st.success(f"✅ Detección completada: {total_detectadas} palmas detectadas")
+            # Volver a cargar la imagen para mostrar
+            imagen_bytes = st.session_state.imagen_alta_resolucion
+            from PIL import Image
+            img = Image.open(imagen_bytes)
             
-            # Mostrar imagen con detección
-            if st.session_state.imagen_alta_resolucion:
-                st.subheader("📷 Imagen Satelital con Palmas Detectadas")
-                
-                # Volver a cargar la imagen para mostrar
-                imagen_bytes = st.session_state.imagen_alta_resolucion
-                from PIL import Image
-                img = Image.open(imagen_bytes)
-                
-                # Si tenemos imagen resultado, mostrarla
-                if DETECCION_DISPONIBLE and 'imagen_resultado' in locals():
-                    img_resultado = Image.fromarray(resultados_deteccion['imagen_resultado'])
-                    st.image(img_resultado, caption="Palmas detectadas (círculos azules)", 
-                             use_container_width=True)
-                else:
-                    st.image(img, caption="Imagen satelital de la plantación", 
-                             use_container_width=True)
-            
-            # Métricas
-            col_met1, col_met2, col_met3, col_met4 = st.columns(4)
-            
-            with col_met1:
-                st.metric("Palmas detectadas", f"{total_detectadas:,}")
-            
-            with col_met2:
-                densidad = total_detectadas / area_total if area_total > 0 else 0
-                st.metric("Densidad", f"{densidad:.0f} plantas/ha")
-            
-            with col_met3:
-                if st.session_state.patron_plantacion:
-                    st.metric("Patrón", st.session_state.patron_plantacion['patron'])
-            
-            with col_met4:
-                if st.session_state.patron_plantacion:
-                    st.metric("Regularidad", f"{st.session_state.patron_plantacion['regularidad']*100:.1f}%")
-            
-            # Mapa de distribución
-            st.subheader("🗺️ Mapa de Distribución de Palmas")
-            
-            fig, ax = plt.subplots(figsize=(12, 8))
-            
-            gdf_completo.plot(ax=ax, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
-            
-            if palmas_detectadas:
-                coords = np.array([p['centroide'] for p in palmas_detectadas])
-                radios = np.array([p['radio_aprox'] for p in palmas_detectadas])
-                
-                radios_viz = radios * 1000
-                
-                scatter = ax.scatter(coords[:, 0], coords[:, 1], 
-                                   s=radios_viz, 
-                                   c=radios, 
-                                   cmap='viridis',
-                                   alpha=0.7,
-                                   edgecolors='black',
-                                   linewidth=0.5)
-                
-                plt.colorbar(scatter, ax=ax, label='Tamaño relativo de palma')
-            
-            ax.set_title(f'Distribución de {total_detectadas} Palmas Detectadas', 
-                         fontsize=14, fontweight='bold')
-            ax.set_xlabel('Longitud')
-            ax.set_ylabel('Latitud')
-            ax.grid(True, alpha=0.3)
-            
-            st.pyplot(fig)
-            
-            # Análisis detallado
-            st.subheader("📊 ANÁLISIS DETALLADO")
-            
-            estadisticas = calcular_estadisticas_poblacion(palmas_detectadas, area_total)
-            
-            col_est1, col_est2 = st.columns(2)
-            
-            with col_est1:
-                st.markdown("**🌴 Distribución por Tamaño:**")
-                if 'distribucion_tamano' in estadisticas:
-                    distrib = estadisticas['distribucion_tamano']
-                    total = sum(distrib.values())
-                    
-                    fig_dist, ax_dist = plt.subplots(figsize=(8, 6))
-                    sizes = [distrib['pequeñas'], distrib['medianas'], distrib['grandes']]
-                    labels = ['Pequeñas', 'Medianas', 'Grandes']
-                    colors = ['#ff9999', '#66b3ff', '#99ff99']
-                    
-                    ax_dist.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-                    ax_dist.set_title('Distribución de Palmas por Tamaño')
-                    st.pyplot(fig_dist)
-            
-            with col_est2:
-                st.markdown("**📈 Estadísticas:**")
-                st.write(f"- Área promedio por palma: {estadisticas.get('area_promedio', 0):.1f} m²")
-                st.write(f"- Radio promedio: {estadisticas.get('radio_promedio', 0):.1f} m")
-                st.write(f"- Salud promedio: {estadisticas.get('salud_promedio', 0):.3f}")
-                st.write(f"- Cobertura vegetal: {estadisticas.get('cobertura_estimada', 0):.1f}%")
-                st.write(f"- Fallas estimadas: {estadisticas.get('fallas_estimadas', 0)} plantas")
-            
-            # Recomendaciones
-            st.subheader("🎯 RECOMENDACIONES BASADAS EN DETECCIÓN")
-            
-            densidad_actual = estadisticas.get('densidad_ha', 0)
-            if densidad_actual < 100:
-                st.error("**ALTA PRIORIDAD:** Densidad muy baja. Considerar replantar áreas vacías.")
-            elif densidad_actual < 120:
-                st.warning("**MEDIA PRIORIDAD:** Densidad subóptima. Evaluar replantación estratégica.")
-            elif densidad_actual > 160:
-                st.warning("**ATENCIÓN:** Densidad muy alta. Puede haber competencia por recursos.")
+            # Si tenemos imagen resultado, mostrarla
+            if DETECCION_DISPONIBLE and 'imagen_resultado' in locals():
+                img_resultado = Image.fromarray(resultados_deteccion['imagen_resultado'])
+                st.image(img_resultado, caption="Palmas detectadas (círculos azules)", 
+                         use_container_width=True)
             else:
-                st.success("**ÓPTIMO:** Densidad dentro del rango recomendado (120-150 plantas/ha).")
+                st.image(img, caption="Imagen satelital de la plantación", 
+                         use_container_width=True)
+        
+        # Métricas
+        col_met1, col_met2, col_met3, col_met4 = st.columns(4)
+        
+        with col_met1:
+            st.metric("Palmas detectadas", f"{total_detectadas:,}")
+        
+        with col_met2:
+            densidad = total_detectadas / area_total if area_total > 0 else 0
+            st.metric("Densidad", f"{densidad:.0f} plantas/ha")
+        
+        with col_met3:
+            if st.session_state.patron_plantacion:
+                st.metric("Patrón", st.session_state.patron_plantacion['patron'])
+        
+        with col_met4:
+            if st.session_state.patron_plantacion:
+                st.metric("Regularidad", f"{st.session_state.patron_plantacion['regularidad']*100:.1f}%")
+        
+        # Mapa de distribución
+        st.subheader("🗺️ Mapa de Distribución de Palmas")
+        
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        gdf_completo.plot(ax=ax, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
+        
+        if palmas_detectadas:
+            coords = np.array([p['centroide'] for p in palmas_detectadas])
+            radios = np.array([p['radio_aprox'] for p in palmas_detectadas])
             
-            if st.session_state.patron_plantacion and st.session_state.patron_plantacion['regularidad'] < 0.7:
-                st.warning("**IRREGULARIDAD:** El patrón de plantación es irregular. Considerar reordenamiento futuro.")
+            radios_viz = radios * 1000
             
-            # Exportar datos
-            st.subheader("📥 EXPORTAR DATOS DE DETECCIÓN")
+            scatter = ax.scatter(coords[:, 0], coords[:, 1], 
+                               s=radios_viz, 
+                               c=radios, 
+                               cmap='viridis',
+                               alpha=0.7,
+                               edgecolors='black',
+                               linewidth=0.5)
             
-            if palmas_detectadas:
-                df_palmas = pd.DataFrame([{
-                    'id': i+1,
-                    'longitud': p['centroide'][0],
-                    'latitud': p['centroide'][1],
-                    'radio_aproximado_m': p['radio_aprox'],
-                    'area_m2': p['area_pixels'],
-                    'circularidad': p.get('circularidad', 0.8)
-                } for i, p in enumerate(palmas_detectadas)])
+            plt.colorbar(scatter, ax=ax, label='Tamaño relativo de palma')
+        
+        ax.set_title(f'Distribución de {total_detectadas} Palmas Detectadas', 
+                     fontsize=14, fontweight='bold')
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
+        
+        st.pyplot(fig)
+        
+        # Análisis detallado
+        st.subheader("📊 ANÁLISIS DETALLADO")
+        
+        estadisticas = calcular_estadisticas_poblacion(palmas_detectadas, area_total)
+        
+        col_est1, col_est2 = st.columns(2)
+        
+        with col_est1:
+            st.markdown("**🌴 Distribución por Tamaño:**")
+            if 'distribucion_tamano' in estadisticas:
+                distrib = estadisticas['distribucion_tamano']
+                total = sum(distrib.values())
                 
-                csv_data = df_palmas.to_csv(index=False)
+                fig_dist, ax_dist = plt.subplots(figsize=(8, 6))
+                sizes = [distrib['pequeñas'], distrib['medianas'], distrib['grandes']]
+                labels = ['Pequeñas', 'Medianas', 'Grandes']
+                colors = ['#ff9999', '#66b3ff', '#99ff99']
                 
-                col_exp1, col_exp2 = st.columns(2)
+                ax_dist.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+                ax_dist.set_title('Distribución de Palmas por Tamaño')
+                st.pyplot(fig_dist)
+        
+        with col_est2:
+            st.markdown("**📈 Estadísticas:**")
+            st.write(f"- Área promedio por palma: {estadisticas.get('area_promedio', 0):.1f} m²")
+            st.write(f"- Radio promedio: {estadisticas.get('radio_promedio', 0):.1f} m")
+            st.write(f"- Salud promedio: {estadisticas.get('salud_promedio', 0):.3f}")
+            st.write(f"- Cobertura vegetal: {estadisticas.get('cobertura_estimada', 0):.1f}%")
+            st.write(f"- Fallas estimadas: {estadisticas.get('fallas_estimadas', 0)} plantas")
+        
+        # Recomendaciones
+        st.subheader("🎯 RECOMENDACIONES BASADAS EN DETECCIÓN")
+        
+        densidad_actual = estadisticas.get('densidad_ha', 0)
+        if densidad_actual < 100:
+            st.error("**ALTA PRIORIDAD:** Densidad muy baja. Considerar replantar áreas vacías.")
+        elif densidad_actual < 120:
+            st.warning("**MEDIA PRIORIDAD:** Densidad subóptima. Evaluar replantación estratégica.")
+        elif densidad_actual > 160:
+            st.warning("**ATENCIÓN:** Densidad muy alta. Puede haber competencia por recursos.")
+        else:
+            st.success("**ÓPTIMO:** Densidad dentro del rango recomendado (120-150 plantas/ha).")
+        
+        if st.session_state.patron_plantacion and st.session_state.patron_plantacion['regularidad'] < 0.7:
+            st.warning("**IRREGULARIDAD:** El patrón de plantación es irregular. Considerar reordenamiento futuro.")
+        
+        # Exportar datos
+        st.subheader("📥 EXPORTAR DATOS DE DETECCIÓN")
+        
+        if palmas_detectadas:
+            df_palmas = pd.DataFrame([{
+                'id': i+1,
+                'longitud': p['centroide'][0],
+                'latitud': p['centroide'][1],
+                'radio_aproximado_m': p['radio_aprox'],
+                'area_m2': p['area_pixels'],
+                'circularidad': p.get('circularidad', 0.8)
+            } for i, p in enumerate(palmas_detectadas)])
+            
+            csv_data = df_palmas.to_csv(index=False)
+            
+            col_exp1, col_exp2 = st.columns(2)
+            
+            with col_exp1:
+                st.download_button(
+                    label="📥 Descargar Coordenadas (CSV)",
+                    data=csv_data,
+                    file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            
+            with col_exp2:
+                if st.session_state.patron_plantacion:
+                    regularidad_texto = f"{st.session_state.patron_plantacion['regularidad']*100:.1f}%"
+                else:
+                    regularidad_texto = 'N/A'
                 
-                with col_exp1:
-                    st.download_button(
-                        label="📥 Descargar Coordenadas (CSV)",
-                        data=csv_data,
-                        file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                
-                with col_exp2:
-                    if st.session_state.patron_plantacion:
-                        regularidad_texto = f"{st.session_state.patron_plantacion['regularidad']*100:.1f}%"
-                    else:
-                        regularidad_texto = 'N/A'
-                    
-                    informe_deteccion = f"""INFORME DE DETECCIÓN DE PALMAS
+                informe_deteccion = f"""INFORME DE DETECCIÓN DE PALMAS
 Fecha: {datetime.now().strftime('%d/%m/%Y')}
 Total palmas: {total_detectadas}
 Densidad: {densidad:.1f} plantas/ha
@@ -1997,14 +1997,14 @@ Patrón: {st.session_state.patron_plantacion['patron'] if st.session_state.patro
 Regularidad: {regularidad_texto}
 Fallas estimadas: {estadisticas.get('fallas_estimadas', 0)}
 """
-                    
-                    st.download_button(
-                        label="📄 Descargar Informe (TXT)",
-                        data=informe_deteccion,
-                        file_name=f"informe_deteccion_{datetime.now().strftime('%Y%m%d')}.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                
+                st.download_button(
+                    label="📄 Descargar Informe (TXT)",
+                    data=informe_deteccion,
+                    file_name=f"informe_deteccion_{datetime.now().strftime('%Y%m%d')}.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
 col_footer1, col_footer2 = st.columns(2)
