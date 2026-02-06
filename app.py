@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 from matplotlib.tri import Triangulation
 import matplotlib.patches as mpatches
 from matplotlib.colors import LinearSegmentedColormap
-from mpl_toolkits.mplot3d import Axes3D
 import io
 from shapely.geometry import Polygon, LineString, Point, MultiPoint
 import math
@@ -1157,7 +1156,6 @@ def descargar_imagen_sentinel2(gdf, fecha, ancho=1024, alto=768):
 
 def generar_imagen_satelital_simulada(gdf):
     from PIL import Image, ImageDraw
-    import numpy as np
     
     ancho, alto = 1024, 768
     img = Image.new('RGB', (ancho, alto), color=(240, 240, 240))
@@ -1279,6 +1277,7 @@ def detectar_palmas_individuales(imagen_bytes, gdf, tamano_minimo=15.0):
     except Exception as e:
         st.error(f"❌ Error en detección de palmas: {str(e)}")
         return simular_deteccion_palmas(gdf)
+
 def simular_deteccion_palmas(gdf, densidad=130):
     bounds = gdf.total_bounds
     min_lon, min_lat, max_lon, max_lat = bounds
@@ -1844,6 +1843,22 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
     with tab7:
         st.header("🌴 DETECCIÓN DE PALMAS ACEITERAS INDIVIDUALES")
         
+        # Mostrar información sobre las librerías si no están disponibles
+        if not DETECCION_DISPONIBLE:
+            st.warning("""
+            ⚠️ **Funcionalidad limitada:** Las librerías de visión por computadora no están instaladas.
+            
+            **Para activar la detección avanzada, instale:**
+            ```
+            pip install opencv-python scikit-image scikit-learn scipy
+            ```
+            
+            **Funcionalidades disponibles sin instalación:**
+            - Simulación de detección de palmas
+            - Estimación de densidad basada en área
+            - Análisis de patrones básico
+            """)
+        
         st.markdown("""
         **Esta herramienta detecta plantas individuales de palma aceitera usando imágenes satelitales de alta resolución.**
         
@@ -1886,7 +1901,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                 img = Image.open(imagen_bytes)
                 
                 # Si tenemos imagen resultado, mostrarla
-                if DETECCION_DISPONIBLE and 'imagen_resultado' in locals():
+                if DETECCION_DISPONIBLE and 'resultados_deteccion' in locals() and 'imagen_resultado' in resultados_deteccion:
                     img_resultado = Image.fromarray(resultados_deteccion['imagen_resultado'])
                     st.image(img_resultado, caption="Palmas detectadas (círculos azules)", 
                              use_container_width=True)
