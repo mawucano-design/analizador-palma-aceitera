@@ -34,9 +34,21 @@ try:
     from sklearn.cluster import DBSCAN, KMeans
     from scipy import ndimage
     DETECCION_DISPONIBLE = True
-except ImportError:
+except ImportError as e:
     DETECCION_DISPONIBLE = False
-    st.warning("⚠️ Algunas funciones de detección requieren librerías adicionales")
+    # Solo mostrar advertencia una vez
+    if 'deteccion_advertencia_mostrada' not in st.session_state:
+        st.session_state.deteccion_advertencia_mostrada = True
+        st.warning(f"""⚠️ Algunas funciones de detección requieren librerías adicionales.
+                
+                **Para activar la detección avanzada de palmas:**
+                ```
+                pip install opencv-python scikit-image scikit-learn scipy
+                ```
+                
+                Error de importación: {str(e)}
+                
+                ⚠️ **Nota:** La aplicación funcionará con funciones básicas sin estas librerías.""")
 
 # ===== SOLUCIÓN PARA ERROR libGL.so.1 =====
 import matplotlib
