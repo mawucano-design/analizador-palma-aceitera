@@ -1,9 +1,0 @@
-libgl1-mesa-glx
-libgdal-dev
-libgeos-dev
-python3-tk
-libglib2.0-0
-libsm6
-libxext6
-libxrender-dev
-libgl1
