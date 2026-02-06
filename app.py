@@ -1996,7 +1996,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                 Patrón: {st.session_state.patron_plantacion['patron'] if st.session_state.patron_plantacion else 'N/A'}
                 Regularidad: {regularidad_texto}
                 Fallas estimadas: {estadisticas.get('fallas_estimadas', 0)}
-        """
+                """
                     
                     st.download_button(
                         label="📄 Descargar Informe (TXT)",
