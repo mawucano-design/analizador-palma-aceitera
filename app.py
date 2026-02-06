@@ -595,35 +595,139 @@ def dividir_plantacion_en_bloques(gdf, n_bloques):
 
 def cargar_archivo_plantacion(uploaded_file):
     try:
+        # Leer el contenido del archivo
+        file_content = uploaded_file.read()
+        
+        # Si es un archivo ZIP (shapefile)
         if uploaded_file.name.endswith('.zip'):
             with tempfile.TemporaryDirectory() as tmp_dir:
-                with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                with zipfile.ZipFile(io.BytesIO(file_content), 'r') as zip_ref:
                     zip_ref.extractall(tmp_dir)
+                
+                # Buscar archivos shapefile
                 shp_files = [f for f in os.listdir(tmp_dir) if f.endswith('.shp')]
                 if shp_files:
                     shp_path = os.path.join(tmp_dir, shp_files[0])
                     gdf = gpd.read_file(shp_path)
-        elif uploaded_file.name.endswith(('.kml', '.kmz')):
-            gdf = gpd.read_file(uploaded_file)
+                else:
+                    st.error("No se encontró shapefile en el archivo ZIP")
+                    return None
+        
+        # Si es un archivo GeoJSON
         elif uploaded_file.name.endswith('.geojson'):
-            gdf = gpd.read_file(uploaded_file)
+            gdf = gpd.read_file(io.BytesIO(file_content))
+        
+        # Si es un archivo KML
+        elif uploaded_file.name.endswith('.kml'):
+            try:
+                # Método 1: Intentar con geopandas primero
+                gdf = gpd.read_file(io.BytesIO(file_content))
+            except:
+                # Método 2: Usar fastkml si geopandas falla
+                try:
+                    from fastkml import kml
+                    import lxml.etree as ET
+                    
+                    # Parsear KML con fastkml
+                    k = kml.KML()
+                    k.from_string(file_content.decode('utf-8'))
+                    
+                    # Extraer todas las geometrías
+                    geometries = []
+                    
+                    def extract_geometries(element):
+                        if hasattr(element, 'geometry'):
+                            if element.geometry is not None:
+                                geometries.append(element.geometry)
+                        if hasattr(element, 'features'):
+                            for feature in element.features:
+                                extract_geometries(feature)
+                    
+                    extract_geometries(k)
+                    
+                    if geometries:
+                        # Convertir a GeoDataFrame
+                        gdf = gpd.GeoDataFrame(geometry=geometries, crs='EPSG:4326')
+                    else:
+                        st.error("No se encontraron geometrías en el archivo KML")
+                        return None
+                        
+                except Exception as e:
+                    st.error(f"Error procesando KML: {str(e)}")
+                    return None
+        
+        # Si es un archivo KMZ (KML comprimido)
+        elif uploaded_file.name.endswith('.kmz'):
+            try:
+                # Extraer KML del KMZ
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    # Guardar KMZ temporalmente
+                    kmz_path = os.path.join(tmp_dir, 'temp.kmz')
+                    with open(kmz_path, 'wb') as f:
+                        f.write(file_content)
+                    
+                    # Extraer archivo KML
+                    with zipfile.ZipFile(kmz_path, 'r') as kmz:
+                        # Buscar archivo KML dentro del KMZ
+                        kml_files = [f for f in kmz.namelist() if f.endswith('.kml')]
+                        if not kml_files:
+                            st.error("No se encontró archivo KML dentro del KMZ")
+                            return None
+                        
+                        # Extraer el primer archivo KML
+                        kml_file_name = kml_files[0]
+                        kmz.extract(kml_file_name, tmp_dir)
+                        kml_path = os.path.join(tmp_dir, kml_file_name)
+                        
+                        # Leer KML
+                        gdf = gpd.read_file(kml_path)
+                        
+            except Exception as e:
+                st.error(f"Error procesando KMZ: {str(e)}")
+                return None
+        
         else:
+            st.error(f"Formato no soportado: {uploaded_file.name}")
             return None
         
+        # Validar y corregir CRS
         gdf = validar_y_corregir_crs(gdf)
+        
+        # Explodir MultiPolygons
         gdf = gdf.explode(ignore_index=True)
+        
+        # Filtrar solo polígonos
         gdf = gdf[gdf.geometry.geom_type.isin(['Polygon', 'MultiPolygon'])]
+        
         if len(gdf) == 0:
+            st.error("No se encontraron polígonos válidos en el archivo")
             return None
         
+        # Unir todas las geometrías en una sola
         geometria_unida = gdf.unary_union
-        gdf_unido = gpd.GeoDataFrame([{'geometry': geometria_unida}], crs='EPSG:4326')
-        gdf_unido = validar_y_corregir_crs(gdf_unido)
+        
+        # Si es un solo polígono, crear GeoDataFrame
+        if geometria_unida.geom_type == 'Polygon':
+            gdf_unido = gpd.GeoDataFrame([{'geometry': geometria_unida}], crs='EPSG:4326')
+        elif geometria_unida.geom_type == 'MultiPolygon':
+            # Si hay múltiples polígonos, unirlos o tomar el primero
+            if len(geometria_unida.geoms) > 0:
+                gdf_unido = gpd.GeoDataFrame([{'geometry': geometria_unida.geoms[0]}], crs='EPSG:4326')
+            else:
+                st.error("No se encontraron polígonos después de la unión")
+                return None
+        else:
+            st.error(f"Tipo de geometría no soportado: {geometria_unida.geom_type}")
+            return None
+        
         gdf_unido['id_bloque'] = 1
+        
         return gdf_unido
         
     except Exception as e:
         st.error(f"❌ Error cargando archivo: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
         return None
 
 # ===== FUNCIONES MODIS =====
