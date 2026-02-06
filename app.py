@@ -128,6 +128,8 @@ if 'palmas_detectadas' not in st.session_state:
     st.session_state.palmas_detectadas = []
 if 'patron_plantacion' not in st.session_state:
     st.session_state.patron_plantacion = None
+if 'resultados_deteccion' not in st.session_state:
+    st.session_state.resultados_deteccion = None
 
 # ===== ESTILOS PERSONALIZADOS =====
 st.markdown("""
@@ -620,40 +622,49 @@ def cargar_archivo_plantacion(uploaded_file):
         # Si es un archivo KML
         elif uploaded_file.name.endswith('.kml'):
             try:
-                # Método 1: Intentar con geopandas primero
-                gdf = gpd.read_file(io.BytesIO(file_content))
-            except:
-                # Método 2: Usar fastkml si geopandas falla
+                # Intentar con geopandas primero
+                gdf = gpd.read_file(io.BytesIO(file_content), driver='KML')
+            except Exception as e:
+                st.warning(f"Geopandas no pudo leer el KML: {str(e)}. Intentando método alternativo...")
+                # Método alternativo: parsear XML manualmente
                 try:
-                    from fastkml import kml
-                    import lxml.etree as ET
+                    # Parsear XML
+                    root = ET.fromstring(file_content)
                     
-                    # Parsear KML con fastkml
-                    k = kml.KML()
-                    k.from_string(file_content.decode('utf-8'))
+                    # Definir namespace KML
+                    ns = {'kml': 'http://www.opengis.net/kml/2.2'}
                     
-                    # Extraer todas las geometrías
-                    geometries = []
+                    polygons = []
                     
-                    def extract_geometries(element):
-                        if hasattr(element, 'geometry'):
-                            if element.geometry is not None:
-                                geometries.append(element.geometry)
-                        if hasattr(element, 'features'):
-                            for feature in element.features:
-                                extract_geometries(feature)
+                    # Buscar todos los polígonos
+                    for polygon in root.findall('.//kml:Polygon', ns):
+                        coords_elem = polygon.find('.//kml:coordinates', ns)
+                        if coords_elem is not None and coords_elem.text:
+                            coord_text = coords_elem.text.strip()
+                            coord_list = []
+                            
+                            for coord in coord_text.split():
+                                try:
+                                    parts = coord.split(',')
+                                    if len(parts) >= 2:
+                                        lon = float(parts[0])
+                                        lat = float(parts[1])
+                                        coord_list.append((lon, lat))
+                                except:
+                                    continue
+                            
+                            if len(coord_list) >= 3:
+                                polygons.append(Polygon(coord_list))
                     
-                    extract_geometries(k)
-                    
-                    if geometries:
-                        # Convertir a GeoDataFrame
-                        gdf = gpd.GeoDataFrame(geometry=geometries, crs='EPSG:4326')
+                    if polygons:
+                        gdf = gpd.GeoDataFrame(geometry=polygons, crs='EPSG:4326')
+                        st.success(f"KML procesado manualmente: {len(polygons)} polígonos encontrados")
                     else:
-                        st.error("No se encontraron geometrías en el archivo KML")
+                        st.error("No se encontraron polígonos en el archivo KML")
                         return None
                         
-                except Exception as e:
-                    st.error(f"Error procesando KML: {str(e)}")
+                except Exception as e2:
+                    st.error(f"Error procesando KML: {str(e2)}")
                     return None
         
         # Si es un archivo KMZ (KML comprimido)
@@ -679,7 +690,7 @@ def cargar_archivo_plantacion(uploaded_file):
                         kmz.extract(kml_file_name, tmp_dir)
                         kml_path = os.path.join(tmp_dir, kml_file_name)
                         
-                        # Leer KML
+                        # Leer KML con geopandas
                         gdf = gpd.read_file(kml_path)
                         
             except Exception as e:
@@ -712,7 +723,10 @@ def cargar_archivo_plantacion(uploaded_file):
         elif geometria_unida.geom_type == 'MultiPolygon':
             # Si hay múltiples polígonos, unirlos o tomar el primero
             if len(geometria_unida.geoms) > 0:
-                gdf_unido = gpd.GeoDataFrame([{'geometry': geometria_unida.geoms[0]}], crs='EPSG:4326')
+                # Tomar el polígono más grande
+                areas = [p.area for p in geometria_unida.geoms]
+                idx_max = areas.index(max(areas))
+                gdf_unido = gpd.GeoDataFrame([{'geometry': geometria_unida.geoms[idx_max]}], crs='EPSG:4326')
             else:
                 st.error("No se encontraron polígonos después de la unión")
                 return None
@@ -1562,6 +1576,7 @@ if uploaded_file:
                                     if resultados_deteccion:
                                         st.session_state.palmas_detectadas = resultados_deteccion['detectadas']
                                         st.session_state.imagen_alta_resolucion = imagen_bytes
+                                        st.session_state.resultados_deteccion = resultados_deteccion
                                         
                                         patron_info = analizar_patron_plantacion(resultados_deteccion['detectadas'])
                                         st.session_state.patron_plantacion = patron_info
@@ -1985,6 +2000,7 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                     if resultados_deteccion:
                         st.session_state.palmas_detectadas = resultados_deteccion.get('detectadas', [])
                         st.session_state.imagen_alta_resolucion = imagen_bytes
+                        st.session_state.resultados_deteccion = resultados_deteccion  # <-- Guardar resultados completos
                         patron_info = analizar_patron_plantacion(resultados_deteccion.get('detectadas', []))
                         st.session_state.patron_plantacion = patron_info
                         st.rerun()
@@ -2005,8 +2021,9 @@ if st.session_state.analisis_completado and 'resultados_todos' in st.session_sta
                 img = Image.open(imagen_bytes)
                 
                 # Si tenemos imagen resultado, mostrarla
-                if DETECCION_DISPONIBLE and 'resultados_deteccion' in locals() and 'imagen_resultado' in resultados_deteccion:
-                    img_resultado = Image.fromarray(resultados_deteccion['imagen_resultado'])
+                if ('resultados_deteccion' in st.session_state and 
+                    'imagen_resultado' in st.session_state.resultados_deteccion):
+                    img_resultado = Image.fromarray(st.session_state.resultados_deteccion['imagen_resultado'])
                     st.image(img_resultado, caption="Palmas detectadas (círculos azules)", 
                              use_container_width=True)
                 else:
