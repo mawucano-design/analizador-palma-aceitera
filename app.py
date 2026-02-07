@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw
 import json
 import hashlib
 import time
+import base64
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
@@ -89,7 +90,8 @@ def init_session_state():
         'modo_prueba': True,
         'dias_restantes': 0,
         'intentos_analisis': 0,
-        'max_intentos_gratis': 1
+        'max_intentos_gratis': 3,
+        'premium_activado': False  # Nueva variable para premium instantáneo
     }
     
     for key, value in defaults.items():
@@ -121,15 +123,6 @@ MODIS_CONFIG = {
         'formato': 'image/png',
         'palette': 'Blues'
     }
-}
-
-# Configuración de ESRI para imágenes base
-ESRI_BASE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services"
-ESRI_SERVICES = {
-    "World_Imagery": f"{ESRI_BASE_URL}/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}",
-    "World_Topo_Map": f"{ESRI_BASE_URL}/World_Topo_Map/MapServer/tile/{{z}}/{{y}}/{{x}}",
-    "World_Street_Map": f"{ESRI_BASE_URL}/World_Street_Map/MapServer/tile/{{z}}/{{y}}/{{x}}",
-    "NatGeo_World_Map": f"{ESRI_BASE_URL}/NatGeo_World_Map/MapServer/tile/{{z}}/{{y}}/{{x}}"
 }
 
 PARAMETROS_PALMA = {
@@ -696,7 +689,6 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
         # Limitar el número de bloques para evitar imágenes grandes
         if len(gdf) > 20:
             gdf = gdf.head(20)
-            st.warning("Mostrando solo los primeros 20 bloques para mejor visualización")
         
         fig, ax = plt.subplots(figsize=(10, 8))
         
@@ -783,7 +775,6 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
         plt.tight_layout()
         return fig
     except Exception as e:
-        st.error(f"Error al generar mapa: {str(e)}")
         # Fallback: mapa simple
         try:
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -804,8 +795,8 @@ def crear_mapa_calor_produccion(gdf):
     
     try:
         # Limitar el número de bloques para evitar imágenes grandes
-        if len(gdf) > 15:
-            gdf = gdf.head(15)
+        if len(gdf) > 10:
+            gdf = gdf.head(10)
         
         fig, ax = plt.subplots(figsize=(10, 8))
         
@@ -884,7 +875,6 @@ def crear_mapa_calor_produccion(gdf):
         
         return fig
     except Exception as e:
-        st.error(f"Error al crear mapa de calor: {str(e)}")
         return None
 
 def crear_imagen_deteccion_esri(gdf, palmas_detectadas):
@@ -946,7 +936,6 @@ def crear_imagen_deteccion_esri(gdf, palmas_detectadas):
         
         return img_bytes
     except Exception as e:
-        st.error(f"Error en visualización ESRI: {str(e)}")
         # Crear imagen simple si falla
         img = Image.new('RGB', (800, 600), color=(200, 220, 200))
         img_bytes = BytesIO()
@@ -990,85 +979,20 @@ def crear_geojson_resultados(gdf):
         
         return geojson_bytes
     except Exception as e:
-        st.error(f"Error al crear GeoJSON: {str(e)}")
         return None
 
-# ===== SISTEMA DE PAGOS (SIMULACIÓN MERCADO PAGO) =====
-def mostrar_panel_pago():
-    """Muestra el panel de pago para activar membresía"""
-    st.markdown("""
-    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                padding: 2em; border-radius: 15px; margin-bottom: 2em; text-align: center;">
-        <h2 style="color: white;">💎 ACTIVAR MEMBRESÍA PREMIUM</h2>
-        <p style="color: white;">Desbloquea todas las funciones por 25 días</p>
-    </div>
-    """, unsafe_allow_html=True)
+def activar_premium_instantaneo():
+    """Activa premium instantáneo para pruebas"""
+    st.session_state.email_usuario = "premium@ejemplo.com"
+    st.session_state.usuario_autenticado = True
+    st.session_state.membresia_valida_hasta = datetime.now() + timedelta(days=25)
+    st.session_state.token_membresia = SistemaMembresias.generar_token("premium@ejemplo.com")
+    st.session_state.dias_restantes = 25
+    st.session_state.premium_activado = True
+    st.session_state.intentos_analisis = 0  # Resetear intentos
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("🗺️ Imágenes MODIS Reales", "✓ Disponible")
-        st.metric("🔥 Mapas de Calor", "✓ Disponible")
-    
-    with col2:
-        st.metric("🌴 Detección Avanzada", "✓ Disponible")
-        st.metric("📊 Exportación Completa", "✓ Disponible")
-    
-    with col3:
-        st.metric("🛰️ Datos Satelitales", "✓ Disponible")
-        st.metric("📈 Análisis Profundo", "✓ Disponible")
-    
-    st.markdown("---")
-    
-    # Formulario de pago simulado
-    with st.form("formulario_pago"):
-        st.subheader("📋 Información de Pago")
-        
-        email = st.text_input("📧 Correo Electrónico", placeholder="tucorreo@ejemplo.com")
-        nombre = st.text_input("👤 Nombre Completo", placeholder="Juan Pérez")
-        
-        st.subheader("💳 Método de Pago")
-        
-        metodo = st.selectbox("Selecciona método de pago:", 
-                            ["Tarjeta de Crédito", "Tarjeta de Débito", "Mercado Pago"])
-        
-        if metodo in ["Tarjeta de Crédito", "Tarjeta de Débito"]:
-            col_num, col_fecha, col_cvv = st.columns(3)
-            with col_num:
-                numero_tarjeta = st.text_input("Número de Tarjeta", placeholder="1234 5678 9012 3456")
-            with col_fecha:
-                fecha_vencimiento = st.text_input("MM/AA", placeholder="12/25")
-            with col_cvv:
-                cvv = st.text_input("CVV", placeholder="123", type="password")
-        
-        st.subheader("💰 Detalles del Plan")
-        
-        col_precio, col_duracion, col_ahorro = st.columns(3)
-        with col_precio:
-            st.metric("Precio", "$49.99 USD")
-        with col_duracion:
-            st.metric("Duración", "25 días")
-        with col_ahorro:
-            st.metric("Ahorro", "67%")
-        
-        acepto_terminos = st.checkbox("✅ Acepto los términos y condiciones")
-        
-        # Botón de pago simulado
-        if st.form_submit_button("🔓 ACTIVAR MEMBRESÍA PREMIUM", use_container_width=True):
-            if email and nombre and acepto_terminos:
-                # Simular pago exitoso
-                st.session_state.email_usuario = email
-                st.session_state.usuario_autenticado = True
-                st.session_state.membresia_valida_hasta = datetime.now() + timedelta(days=25)
-                st.session_state.token_membresia = SistemaMembresias.generar_token(email)
-                st.session_state.mostrar_pago = False
-                st.session_state.dias_restantes = 25
-                
-                st.success("✅ ¡Pago procesado exitosamente! Membresía activada por 25 días.")
-                st.balloons()
-                st.rerun()
-            else:
-                st.error("Por favor completa todos los campos y acepta los términos.")
+    st.success("✅ ¡Premium activado instantáneamente por 25 días!")
+    st.balloons()
 
 # ===== FUNCIÓN PRINCIPAL DE ANÁLISIS =====
 def ejecutar_analisis_completo():
@@ -1089,7 +1013,6 @@ def ejecutar_analisis_completo():
             3. Accede a imágenes satelitales reales
             
             """)
-            st.session_state.mostrar_pago = True
             return
         else:
             st.session_state.intentos_analisis += 1
@@ -1121,6 +1044,7 @@ def ejecutar_analisis_completo():
         # Guardar imagen MODIS para mostrar
         if datos_modis and 'imagen_bytes' in datos_modis and datos_modis['imagen_bytes'] is not None:
             try:
+                # Hacer una copia para evitar problemas de posición
                 datos_modis['imagen_bytes'].seek(0)
                 copia_bytes = BytesIO(datos_modis['imagen_bytes'].read())
                 copia_bytes.seek(0)
@@ -1315,20 +1239,6 @@ def ejecutar_deteccion_palmas():
         st.error("Primero debe cargar un archivo de plantación")
         return
     
-    # Verificar membresía para detección avanzada
-    if not st.session_state.usuario_autenticado:
-        st.warning("""
-        ⚠️ **Detección limitada en modo gratuito**
-        
-        Para acceder a la detección avanzada de palmas:
-        1. Activa tu membresía premium
-        2. Desbloquea imágenes de alta resolución
-        3. Accede a la detección con IA
-        
-        """)
-        st.session_state.mostrar_pago = True
-        return
-    
     with st.spinner("Ejecutando detección de palmas..."):
         gdf = st.session_state.gdf_original
         tamano_minimo = st.session_state.get('tamano_minimo', 15.0)
@@ -1340,6 +1250,8 @@ def ejecutar_deteccion_palmas():
         # Crear imagen de detección con ESRI
         imagen_bytes = crear_imagen_deteccion_esri(gdf, resultados['detectadas'])
         if imagen_bytes:
+            # Asegurarse de que el BytesIO esté en la posición correcta
+            imagen_bytes.seek(0)
             st.session_state.imagen_alta_resolucion = imagen_bytes
         
         st.success(f"✅ Detección completada: {len(resultados['detectadas'])} palmas detectadas")
@@ -1405,11 +1317,6 @@ div[data-testid="metric-container"] {
 </style>
 """, unsafe_allow_html=True)
 
-# Mostrar panel de pago si está activado
-if st.session_state.mostrar_pago:
-    mostrar_panel_pago()
-    st.stop()
-
 # Banner principal
 st.markdown("""
 <div style="background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
@@ -1445,8 +1352,8 @@ with col_status2:
         st.markdown('<span class="free-badge">GRATUITO</span>', unsafe_allow_html=True)
 
 with col_status3:
-    if st.button("💎 ACTUALIZAR A PREMIUM"):
-        st.session_state.mostrar_pago = True
+    if st.button("🚀 ACTIVAR PREMIUM INSTANTÁNEO", type="primary"):
+        activar_premium_instantaneo()
         st.rerun()
 
 # Sidebar
@@ -1458,9 +1365,6 @@ with st.sidebar:
         st.success(f"✅ Premium: {st.session_state.dias_restantes} días")
     else:
         st.warning("🔓 Modo Gratuito")
-        if st.button("🚀 ACTIVAR PREMIUM", use_container_width=True):
-            st.session_state.mostrar_pago = True
-            st.rerun()
     
     st.markdown("---")
     
@@ -1501,9 +1405,6 @@ with st.sidebar:
     deteccion_habilitada = st.checkbox("Activar detección de plantas", value=True)
     if deteccion_habilitada:
         tamano_minimo = st.slider("Tamaño mínimo (m²):", 1.0, 50.0, 15.0, 1.0)
-        
-        if not st.session_state.usuario_autenticado:
-            st.warning("⚠️ Detección limitada en modo gratuito")
     
     st.markdown("---")
     st.markdown("### 📤 Subir Polígono")
@@ -1521,6 +1422,21 @@ with st.sidebar:
         intentos_restantes = st.session_state.max_intentos_gratis - st.session_state.intentos_analisis
         st.progress(st.session_state.intentos_analisis / st.session_state.max_intentos_gratis)
         st.caption(f"Análisis restantes: {intentos_restantes}/{st.session_state.max_intentos_gratis}")
+    
+    # Botón para activar premium instantáneo (solo para pruebas)
+    st.markdown("---")
+    st.markdown("### 🚀 Acceso Premium")
+    if not st.session_state.usuario_autenticado:
+        if st.button("🎁 ACTIVAR PREMIUM GRATIS (25 días)", use_container_width=True, type="primary"):
+            activar_premium_instantaneo()
+            st.rerun()
+    else:
+        if st.button("🔄 REINICIAR SISTEMA", use_container_width=True):
+            # Reiniciar session_state
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            init_session_state()
+            st.rerun()
     
     # Almacenar parámetros en session_state
     st.session_state.n_divisiones = n_divisiones
@@ -1679,7 +1595,7 @@ if st.session_state.analisis_completado:
                     if st.session_state.geojson_bytes:
                         st.download_button(
                             label="🗺️ Descargar GeoJSON",
-                            data=st.session_state.geojson_bytes,
+                            data=st.session_state.geojson_bytes.getvalue(),
                             file_name=f"analisis_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson",
                             mime="application/json",
                             use_container_width=True
@@ -1703,7 +1619,7 @@ if st.session_state.analisis_completado:
                     if st.session_state.mapa_calor_bytes:
                         st.download_button(
                             label="🔥 Descargar Mapa Calor",
-                            data=st.session_state.mapa_calor_bytes,
+                            data=st.session_state.mapa_calor_bytes.getvalue(),
                             file_name=f"mapa_calor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
                             mime="image/png",
                             use_container_width=True
@@ -1711,7 +1627,7 @@ if st.session_state.analisis_completado:
             else:
                 st.warning("⚠️ La exportación de datos está disponible solo para usuarios premium")
                 if st.button("💎 ACTUALIZAR PARA EXPORTAR", use_container_width=True):
-                    st.session_state.mostrar_pago = True
+                    activar_premium_instantaneo()
                     st.rerun()
             
             st.subheader("📋 RESUMEN POR BLOQUE")
@@ -1767,7 +1683,7 @@ if st.session_state.analisis_completado:
                 
                 """)
                 if st.button("💎 DESBLOQUEAR MAPAS DE CALOR", use_container_width=True):
-                    st.session_state.mostrar_pago = True
+                    activar_premium_instantaneo()
                     st.rerun()
         
         with tab3:
@@ -1814,6 +1730,7 @@ if st.session_state.analisis_completado:
                 
                 if st.session_state.imagen_modis_bytes:
                     try:
+                        # Asegurarse de que esté en la posición correcta
                         st.session_state.imagen_modis_bytes.seek(0)
                         st.image(st.session_state.imagen_modis_bytes,
                                 caption=f"Imagen MODIS {datos_modis.get('indice', '')} - {datos_modis.get('fecha_imagen', '')}",
@@ -1834,7 +1751,7 @@ if st.session_state.analisis_completado:
                         
                         """)
                         if st.button("💎 VER IMÁGENES REALES", use_container_width=True):
-                            st.session_state.mostrar_pago = True
+                            activar_premium_instantaneo()
                             st.rerun()
             else:
                 st.warning("No hay datos MODIS disponibles. Ejecute el análisis primero.")
@@ -1963,7 +1880,7 @@ if st.session_state.analisis_completado:
                 
                 """)
                 if st.button("💎 DESBLOQUEAR ANÁLISIS ECONÓMICO", use_container_width=True):
-                    st.session_state.mostrar_pago = True
+                    activar_premium_instantaneo()
                     st.rerun()
         
         with tab6:
@@ -2001,6 +1918,7 @@ if st.session_state.analisis_completado:
                     st.subheader("📷 Visualización de Detección (ESRI + Centroides)")
                     if hasattr(st.session_state, 'imagen_alta_resolucion') and st.session_state.imagen_alta_resolucion is not None:
                         try:
+                            # Asegurarse de que esté en la posición correcta
                             st.session_state.imagen_alta_resolucion.seek(0)
                             st.image(st.session_state.imagen_alta_resolucion,
                                     caption="Detección de palmas sobre imagen base ESRI con puntos centroides",
@@ -2069,28 +1987,56 @@ if st.session_state.analisis_completado:
                 
                 """)
                 
-                # Demo de detección limitada
+                # Demo de detección limitada - VERSIÓN CORREGIDA
                 if st.button("👁️ VER DEMO DE DETECCIÓN", use_container_width=True):
-                    # Crear demo básica
-                    img_demo = Image.new('RGB', (600, 400), color=(200, 220, 200))
-                    draw_demo = ImageDraw.Draw(img_demo)
-                    
-                    # Dibujar algunos puntos de ejemplo
-                    for i in range(20):
-                        x = np.random.randint(50, 550)
-                        y = np.random.randint(50, 350)
-                        draw_demo.ellipse([x-3, y-3, x+3, y+3], fill=(255, 0, 0))
-                    
-                    img_bytes = BytesIO()
-                    img_demo.save(img_bytes, format='PNG')
-                    img_bytes.seek(0)
-                    
-                    st.image(img_bytes, caption="Demo: Detección básica (Premium desbloquea más funciones)", 
-                            use_container_width=True)
+                    # Crear demo básica CORREGIDA
+                    try:
+                        img_demo = Image.new('RGB', (600, 400), color=(200, 220, 200))
+                        draw_demo = ImageDraw.Draw(img_demo)
+                        
+                        # Dibujar algunos puntos de ejemplo
+                        for i in range(20):
+                            x = np.random.randint(50, 550)
+                            y = np.random.randint(50, 350)
+                            draw_demo.ellipse([x-3, y-3, x+3, y+3], fill=(255, 0, 0))
+                        
+                        # Convertir a bytes de forma segura
+                        img_bytes = BytesIO()
+                        img_demo.save(img_bytes, format='PNG')
+                        img_bytes.seek(0)  # Asegurar posición inicial
+                        
+                        # Crear copia para mostrar
+                        img_bytes_copy = BytesIO(img_bytes.getvalue())
+                        img_bytes_copy.seek(0)
+                        
+                        st.image(img_bytes_copy, 
+                                caption="Demo: Detección básica (Premium desbloquea más funciones)",
+                                use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Error al crear demo: {str(e)}")
                 
                 if st.button("💎 DESBLOQUEAR DETECCIÓN AVANZADA", use_container_width=True):
-                    st.session_state.mostrar_pago = True
+                    activar_premium_instantaneo()
                     st.rerun()
+
+# Si no hay archivo cargado, mostrar mensaje
+elif not st.session_state.archivo_cargado:
+    st.info("""
+    📋 **INSTRUCCIONES PARA COMENZAR:**
+    
+    1. **Carga tu plantación** usando el panel lateral
+    2. **Configura los parámetros** de análisis
+    3. **Activa Premium** para acceso completo (botón en la parte superior)
+    4. **Ejecuta el análisis** completo
+    5. **Explora los resultados** en las pestañas
+    
+    ⚡ **Características Premium:**
+    - Análisis ilimitados
+    - Imágenes MODIS reales de NASA
+    - Mapas de calor avanzados
+    - Detección precisa de palmas
+    - Exportación completa de datos
+    """)
 
 # Pie de página
 st.markdown("---")
@@ -2100,9 +2046,7 @@ st.markdown("""
     <p>Datos satelitales: NASA MODIS - Acceso público | Funciones Premium requieren suscripción</p>
     <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
     <p style="font-size: 0.8em; margin-top: 20px;">
-        <strong>Términos del servicio:</strong> La versión gratuita incluye análisis limitados con datos simulados. 
-        La versión Premium ofrece acceso completo por 25 días desde la activación. 
-        Los pagos se procesan a través de Mercado Pago. Cancelación en cualquier momento.
+        <strong>Modo de prueba:</strong> Premium activado instantáneamente para pruebas. En producción, se integraría con Mercado Pago.
     </p>
 </div>
 """, unsafe_allow_html=True)
