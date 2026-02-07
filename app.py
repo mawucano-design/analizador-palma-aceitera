@@ -30,7 +30,6 @@ except ImportError:
     if 'deteccion_advertencia_mostrada' not in st.session_state:
         st.session_state.deteccion_advertencia_mostrada = True
 
-
 # ===== CONFIGURACIÓN =====
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
