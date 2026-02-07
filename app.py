@@ -1,4 +1,4 @@
-# app.py - Versión completa para PALMA ACEITERA con membresías y detección mejorada
+# app.py - Versión completa para PALMA ACEITERA con membresías premium
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
@@ -53,8 +53,6 @@ class SistemaMembresias:
     def verificar_membresia(token, dias_duracion=25):
         """Verifica si la membresía es válida"""
         try:
-            # En producción, esto verificaría contra una base de datos
-            # Por ahora simulamos con session_state
             if 'membresia_valida_hasta' not in st.session_state:
                 return False
             
@@ -91,7 +89,7 @@ def init_session_state():
         'dias_restantes': 0,
         'intentos_analisis': 0,
         'max_intentos_gratis': 3,
-        'premium_activado': False  # Nueva variable para premium instantáneo
+        'premium_activado': False
     }
     
     for key, value in defaults.items():
@@ -349,141 +347,209 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE ANÁLISIS CON MODIS =====
+# ===== FUNCIONES DE ANÁLISIS CON MODIS MEJORADAS =====
 def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
-    """Obtiene imagen MODIS real de NASA GIBS"""
+    """Obtiene imagen MODIS real de NASA GIBS - VERSIÓN MEJORADA"""
     try:
         bounds = gdf.total_bounds
         min_lon, min_lat, max_lon, max_lat = bounds
         
-        # Añadir margen
-        min_lon -= 0.02
-        max_lon += 0.02
-        min_lat -= 0.02
-        max_lat += 0.02
+        # Añadir margen pequeño
+        min_lon -= 0.01
+        max_lon += 0.01
+        min_lat -= 0.01
+        max_lat += 0.01
         
         if indice not in MODIS_CONFIG:
             indice = 'NDVI'
         
         config = MODIS_CONFIG[indice]
         
-        # Parámetros WMS para NASA GIBS
+        # Parámetros WMS para NASA GIBS - CORREGIDOS
         wms_params = {
             'SERVICE': 'WMS',
             'REQUEST': 'GetMap',
-            'VERSION': '1.3.0',
+            'VERSION': '1.1.1',
             'LAYERS': config['layers'][0],
-            'CRS': 'EPSG:4326',
-            'BBOX': f'{min_lat},{min_lon},{max_lat},{max_lon}',
+            'FORMAT': 'image/png',
+            'BBOX': f'{min_lon},{min_lat},{max_lon},{max_lat}',
             'WIDTH': '800',
             'HEIGHT': '600',
-            'FORMAT': 'image/png',
+            'SRS': 'EPSG:4326',
             'TIME': fecha.strftime('%Y-%m-%d'),
             'STYLES': f'boxfill/{config["palette"]}',
-            'COLORSCALERANGE': '0,1'
+            'COLORSCALERANGE': '0.0,1.0',
+            'TRANSPARENT': 'TRUE'
         }
         
         response = requests.get(config['url_base'], params=wms_params, timeout=30)
         
         if response.status_code == 200:
+            # Verificar que sea realmente una imagen PNG
+            content_type = response.headers.get('Content-Type', '')
+            if 'image' not in content_type:
+                return None
+            
             # Crear un nuevo BytesIO para la imagen
             imagen_bytes = BytesIO(response.content)
-            imagen_bytes.seek(0)  # Asegurar que esté al inicio
-            return imagen_bytes
+            
+            # Verificar que sea una imagen PNG válida
+            try:
+                img = Image.open(imagen_bytes)
+                img.verify()
+                imagen_bytes.seek(0)
+                
+                # Si es muy grande, redimensionar
+                if img.size[0] > 1000 or img.size[1] > 1000:
+                    img = img.resize((800, 600), Image.Resampling.LANCZOS)
+                    new_bytes = BytesIO()
+                    img.save(new_bytes, format='PNG')
+                    new_bytes.seek(0)
+                    return new_bytes
+                
+                return imagen_bytes
+            except Exception:
+                return None
         else:
-            st.warning(f"No se pudo obtener imagen MODIS real. Código: {response.status_code}")
             return None
-    except Exception as e:
-        st.warning(f"Error obteniendo imagen MODIS: {str(e)}")
+    except requests.exceptions.Timeout:
+        return None
+    except requests.exceptions.ConnectionError:
+        return None
+    except Exception:
         return None
 
-def generar_imagen_modis_simulada(gdf):
-    """Genera una imagen MODIS simulada con tamaño controlado"""
+def generar_imagen_modis_simulada_mejorada(gdf):
+    """Genera una imagen MODIS simulada más realista"""
     try:
-        width, height = 800, 600  # Tamaño reducido
-        img = Image.new('RGB', (width, height), color=(200, 200, 200))
+        width, height = 800, 600
+        
+        # Crear imagen con gradiente de vegetación
+        img = Image.new('RGB', (width, height), color=(220, 220, 220))
         draw = ImageDraw.Draw(img)
         
-        # Patrón de vegetación simulando campos
         bounds = gdf.total_bounds
         min_lon, min_lat, max_lon, max_lat = bounds
         
-        # Convertir coordenadas a píxeles
-        def coord_to_pixel(lon, lat):
-            x = int((lon - min_lon) / (max_lon - min_lon) * width)
-            y = int((max_lat - lat) / (max_lat - min_lat) * height)
-            return x, y
+        # Crear patrón de vegetación más realista
+        for i in range(0, width, 4):
+            for j in range(0, height, 4):
+                # Gradiente basado en posición
+                x_ratio = i / width
+                y_ratio = j / height
+                
+                # Simular diferentes tipos de vegetación
+                if (i // 100 + j // 100) % 3 == 0:
+                    # Áreas de alta vegetación
+                    green = int(100 + (x_ratio * y_ratio * 100))
+                    red = int(50 + (1 - x_ratio) * 30)
+                    blue = int(50 + (1 - y_ratio) * 30)
+                elif (i // 100 + j // 100) % 3 == 1:
+                    # Áreas de vegetación media
+                    green = int(80 + (x_ratio * y_ratio * 80))
+                    red = int(80 + (1 - x_ratio) * 40)
+                    blue = int(40 + (1 - y_ratio) * 40)
+                else:
+                    # Áreas de baja vegetación/suelo
+                    green = int(60 + (x_ratio * y_ratio * 60))
+                    red = int(120 + (1 - x_ratio) * 60)
+                    blue = int(60 + (1 - y_ratio) * 30)
+                
+                # Añadir variación aleatoria
+                variation = np.random.randint(-10, 10)
+                green = max(0, min(255, green + variation))
+                red = max(0, min(255, red + variation // 2))
+                blue = max(0, min(255, blue + variation // 2))
+                
+                draw.point((i, j), fill=(red, green, blue))
         
-        # Dibujar áreas verdes (vegetación) más simples
-        for i in range(0, width, 40):
-            for j in range(0, height, 40):
-                if (i // 80 + j // 80) % 2 == 0:
-                    green_intensity = np.random.randint(100, 180)
-                    draw.rectangle([i, j, i+39, j+39], 
-                                 fill=(50, green_intensity, 50))
-        
-        # Añadir algunos patrones de cultivo simples
-        for i in range(3):
-            center_x = np.random.randint(100, width-100)
-            center_y = np.random.randint(100, height-100)
-            radius = np.random.randint(30, 80)
+        # Añadir patrones de cultivo (filas)
+        for row in range(5):
+            y_start = int(height * 0.1 + row * height * 0.15)
+            y_end = y_start + int(height * 0.1)
             
-            for r in range(0, radius, 15):
-                green = max(50, min(180, 150 - r//4))
-                draw.ellipse([center_x-r, center_y-r, center_x+r, center_y+r], 
-                            outline=(50, green, 50), width=1)
+            for x in range(0, width, 15):
+                # Patrón de filas de cultivo
+                if (x // 30) % 2 == row % 2:
+                    draw.rectangle([x, y_start, x+10, y_end], 
+                                 fill=(50, 180, 50), outline=(30, 150, 30))
+        
+        # Añadir ríos/cuerpos de agua
+        for i in range(3):
+            x_center = np.random.randint(width * 0.3, width * 0.7)
+            y_center = np.random.randint(height * 0.3, height * 0.7)
+            river_width = np.random.randint(10, 30)
+            
+            for w in range(-river_width, river_width):
+                x = x_center + w
+                if 0 <= x < width:
+                    for y in range(height):
+                        dist_from_center = abs(w) / river_width
+                        if np.random.random() > dist_from_center * 0.8:
+                            blue_intensity = int(150 + np.random.randint(-20, 20))
+                            draw.point((x, y), fill=(50, 100, blue_intensity))
         
         img_bytes = BytesIO()
-        img.save(img_bytes, format='PNG', optimize=True)
+        img.save(img_bytes, format='PNG', optimize=True, compress_level=6)
         img_bytes.seek(0)
+        
         return img_bytes
-    except Exception as e:
-        # Fallback más simple si hay error
+    except Exception:
+        # Fallback ultra simple si hay error
         img = Image.new('RGB', (800, 600), color=(100, 150, 100))
         img_bytes = BytesIO()
         img.save(img_bytes, format='PNG')
         img_bytes.seek(0)
         return img_bytes
 
-def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
-    """Obtiene datos MODIS reales o simulados"""
+def obtener_datos_modis_mejorado(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
+    """Obtiene datos MODIS reales o simulados - VERSIÓN MEJORADA"""
     try:
         fecha_media = fecha_inicio + (fecha_fin - fecha_inicio) / 2
         
-        # Verificar membresía para imágenes reales
-        if not st.session_state.usuario_autenticado or not SistemaMembresias.verificar_membresia(st.session_state.token_membresia):
-            # Modo gratuito - usar simulados
-            imagen_bytes = generar_imagen_modis_simulada(gdf)
-            fuente = f'MODIS {indice} (Simulado) - Modo Gratuito'
-            estado = 'simulado'
-        else:
-            # Modo premium - intentar obtener real
-            imagen_bytes = obtener_imagen_modis_real(gdf, fecha_media, indice)
-            if imagen_bytes is None:
-                # Fallback a simulados
-                imagen_bytes = generar_imagen_modis_simulada(gdf)
-                fuente = f'MODIS {indice} (Simulado) - NASA'
-                estado = 'simulado'
-            else:
-                fuente = f'MODIS {indice} - NASA GIBS (Premium)'
+        # Verificar membresía
+        usar_reales = st.session_state.usuario_autenticado
+        
+        imagen_bytes = None
+        estado = 'simulado'
+        fuente = f'MODIS {indice} (Simulado)'
+        
+        if usar_reales:
+            # Intentar obtener imagen MODIS real
+            imagen_real = obtener_imagen_modis_real(gdf, fecha_media, indice)
+            
+            if imagen_real is not None:
+                imagen_bytes = imagen_real
                 estado = 'real'
+                fuente = f'MODIS {indice} - NASA GIBS (Premium)'
+            else:
+                # Fallback a simulados
+                imagen_bytes = generar_imagen_modis_simulada_mejorada(gdf)
+                estado = 'simulado'
+                fuente = f'MODIS {indice} (Simulado - Fallback)'
+        else:
+            # Modo gratuito - usar simulados
+            imagen_bytes = generar_imagen_modis_simulada_mejorada(gdf)
+            estado = 'simulado'
+            fuente = f'MODIS {indice} (Simulado - Modo Gratuito)'
         
+        # Asegurarse de que la imagen esté en posición 0
         if imagen_bytes:
-            imagen_bytes.seek(0)  # Asegurar que esté al inicio
+            imagen_bytes.seek(0)
         
-        # Calcular valores basados en ubicación y fecha
+        # Calcular valores NDVI/otros índices
         centroide = gdf.geometry.unary_union.centroid
         lat_norm = (centroide.y + 90) / 180
         lon_norm = (centroide.x + 180) / 360
         
         mes = fecha_media.month
-        if 3 <= mes <= 5:  # Otoño en hemisferio sur
+        if 3 <= mes <= 5:
             base_valor = 0.65
-        elif 6 <= mes <= 8:  # Invierno
+        elif 6 <= mes <= 8:
             base_valor = 0.55
-        elif 9 <= mes <= 11:  # Primavera
+        elif 9 <= mes <= 11:
             base_valor = 0.75
-        else:  # Verano
+        else:
             base_valor = 0.70
         
         variacion = (lat_norm * lon_norm) * 0.15
@@ -507,18 +573,27 @@ def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
             'fecha_imagen': fecha_media.strftime('%Y-%m-%d'),
             'resolucion': '250m',
             'estado': estado,
-            'bbox': gdf.total_bounds.tolist()
+            'bbox': gdf.total_bounds.tolist(),
+            'imagen_disponible': imagen_bytes is not None
         }
         
         # Solo agregar imagen_bytes si no es None
         if imagen_bytes:
-            resultado['imagen_bytes'] = imagen_bytes
+            # Crear copia para evitar problemas de posición
+            imagen_bytes_copia = BytesIO(imagen_bytes.read())
+            imagen_bytes_copia.seek(0)
+            resultado['imagen_bytes'] = imagen_bytes_copia
+            
+            # Guardar copia separada en session_state
+            imagen_bytes.seek(0)
+            copia_session = BytesIO(imagen_bytes.read())
+            copia_session.seek(0)
+            st.session_state.imagen_modis_bytes = copia_session
         
         return resultado
         
     except Exception as e:
-        st.error(f"Error en datos MODIS: {str(e)}")
-        # Retornar datos simulados como fallback
+        # Retornar datos simulados como fallback robusto
         return {
             'indice': indice,
             'valor_promedio': 0.65,
@@ -526,7 +601,8 @@ def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
             'fecha_imagen': datetime.now().strftime('%Y-%m-%d'),
             'resolucion': '250m',
             'estado': 'simulado',
-            'nota': 'Datos simulados - Error en conexión'
+            'nota': 'Datos simulados - Error en conexión',
+            'imagen_disponible': False
         }
 
 def generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin):
@@ -681,7 +757,7 @@ def analizar_requerimientos_nutricionales(ndvi_values, edades, datos_climaticos)
 
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
 def crear_mapa_bloques(gdf, palmas_detectadas=None):
-    """Crea un mapa de los bloques con matplotlib - VERSIÓN MEJORADA"""
+    """Crea un mapa de los bloques con matplotlib"""
     if gdf is None or len(gdf) == 0:
         return None
     
@@ -706,13 +782,10 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
                 
                 # Asignar color basado en valor normalizado
                 if norm_val < 0.33:
-                    # Rojo para bajo NDVI
-                    colors.append((1.0, 0.5, 0.5, 0.6))  # RGBA
+                    colors.append((1.0, 0.5, 0.5, 0.6))
                 elif norm_val < 0.66:
-                    # Amarillo para medio NDVI
                     colors.append((1.0, 1.0, 0.5, 0.6))
                 else:
-                    # Verde para alto NDVI
                     colors.append((0.5, 1.0, 0.5, 0.6))
             
             # Dibujar cada polígono con su color
@@ -757,7 +830,7 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
         # Añadir palmas detectadas si existen (limitado a 100)
         if palmas_detectadas and len(palmas_detectadas) > 0:
             try:
-                coords = np.array([p['centroide'] for p in palmas_detectadas[:100]])  # Limitar a 100 puntos
+                coords = np.array([p['centroide'] for p in palmas_detectadas[:100]])
                 ax.scatter(coords[:, 0], coords[:, 1], 
                           s=20, color='blue', alpha=0.5, label='Palmas detectadas')
             except Exception:
@@ -774,7 +847,7 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
         
         plt.tight_layout()
         return fig
-    except Exception as e:
+    except Exception:
         # Fallback: mapa simple
         try:
             fig, ax = plt.subplots(figsize=(10, 8))
@@ -789,7 +862,7 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
             return None
 
 def crear_mapa_calor_produccion(gdf):
-    """Crea un mapa de calor de producción por bloque - VERSIÓN SEGURA"""
+    """Crea un mapa de calor de producción por bloque"""
     if gdf is None or 'produccion_estimada' not in gdf.columns:
         return None
     
@@ -804,7 +877,7 @@ def crear_mapa_calor_produccion(gdf):
         produccion = gdf['produccion_estimada'].values
         min_prod, max_prod = produccion.min(), produccion.max()
         
-        if max_prod - min_prod < 0.001:  # Evitar división por cero
+        if max_prod - min_prod < 0.001:
             min_prod = max_prod - 1000
         
         # Crear colormap para calor
@@ -874,11 +947,11 @@ def crear_mapa_calor_produccion(gdf):
         st.session_state.mapa_calor_bytes = img_bytes
         
         return fig
-    except Exception as e:
+    except Exception:
         return None
 
 def crear_imagen_deteccion_esri(gdf, palmas_detectadas):
-    """Crea imagen de detección sobre fondo ESRI - VERSIÓN MEJORADA"""
+    """Crea imagen de detección sobre fondo ESRI"""
     try:
         # Tamaño controlado
         width, height = 800, 600
@@ -935,7 +1008,7 @@ def crear_imagen_deteccion_esri(gdf, palmas_detectadas):
         img_bytes.seek(0)
         
         return img_bytes
-    except Exception as e:
+    except Exception:
         # Crear imagen simple si falla
         img = Image.new('RGB', (800, 600), color=(200, 220, 200))
         img_bytes = BytesIO()
@@ -978,7 +1051,7 @@ def crear_geojson_resultados(gdf):
         st.session_state.geojson_bytes = geojson_bytes
         
         return geojson_bytes
-    except Exception as e:
+    except Exception:
         return None
 
 def activar_premium_instantaneo():
@@ -989,7 +1062,7 @@ def activar_premium_instantaneo():
     st.session_state.token_membresia = SistemaMembresias.generar_token("premium@ejemplo.com")
     st.session_state.dias_restantes = 25
     st.session_state.premium_activado = True
-    st.session_state.intentos_analisis = 0  # Resetear intentos
+    st.session_state.intentos_analisis = 0
     
     st.success("✅ ¡Premium activado instantáneamente por 25 días!")
     st.balloons()
@@ -1016,7 +1089,6 @@ def ejecutar_analisis_completo():
             return
         else:
             st.session_state.intentos_analisis += 1
-            st.info(f"Análisis gratuito utilizado: {st.session_state.intentos_analisis}/{st.session_state.max_intentos_gratis}")
     
     with st.spinner("Ejecutando análisis completo..."):
         # Obtener parámetros del sidebar
@@ -1038,21 +1110,8 @@ def ejecutar_analisis_completo():
             area_total = 0.0
         
         # 1. Obtener datos MODIS (reales o simulados según membresía)
-        datos_modis = obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice_seleccionado)
+        datos_modis = obtener_datos_modis_mejorado(gdf, fecha_inicio, fecha_fin, indice_seleccionado)
         st.session_state.datos_modis = datos_modis
-        
-        # Guardar imagen MODIS para mostrar
-        if datos_modis and 'imagen_bytes' in datos_modis and datos_modis['imagen_bytes'] is not None:
-            try:
-                # Hacer una copia para evitar problemas de posición
-                datos_modis['imagen_bytes'].seek(0)
-                copia_bytes = BytesIO(datos_modis['imagen_bytes'].read())
-                copia_bytes.seek(0)
-                st.session_state.imagen_modis_bytes = copia_bytes
-            except Exception:
-                st.session_state.imagen_modis_bytes = None
-        else:
-            st.session_state.imagen_modis_bytes = None
         
         # 2. Obtener datos climáticos
         datos_climaticos = generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin)
@@ -2003,7 +2062,7 @@ if st.session_state.analisis_completado:
                         # Convertir a bytes de forma segura
                         img_bytes = BytesIO()
                         img_demo.save(img_bytes, format='PNG')
-                        img_bytes.seek(0)  # Asegurar posición inicial
+                        img_bytes.seek(0)
                         
                         # Crear copia para mostrar
                         img_bytes_copy = BytesIO(img_bytes.getvalue())
