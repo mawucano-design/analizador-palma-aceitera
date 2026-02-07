@@ -21,3 +21,5 @@ fastkml==0.12
 pykml==0.2.0
 lxml==4.9.3
 folium
+streamlit_folium
+folium_static
