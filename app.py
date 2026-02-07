@@ -333,7 +333,7 @@ def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
             'VERSION': '1.3.0',
             'LAYERS': config['layers'][0],
             'CRS': 'EPSG:4326',
-            'BBOX': f'{min_lon},{min_lat},{max_lon},{max_lat}',
+            'BBOX': f'{min_lat},{min_lon},{max_lat},{max_lon}',
             'WIDTH': '1024',
             'HEIGHT': '768',
             'FORMAT': 'image/png',
@@ -345,53 +345,64 @@ def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
         response = requests.get(config['url_base'], params=wms_params, timeout=30)
         
         if response.status_code == 200:
-            return BytesIO(response.content)
+            # Crear un nuevo BytesIO para la imagen
+            imagen_bytes = BytesIO(response.content)
+            imagen_bytes.seek(0)  # Asegurar que esté al inicio
+            return imagen_bytes
         else:
             st.warning(f"No se pudo obtener imagen MODIS real. Código: {response.status_code}")
-            return generar_imagen_modis_simulada(gdf)
+            return None
     except Exception as e:
         st.warning(f"Error obteniendo imagen MODIS: {str(e)}")
-        return generar_imagen_modis_simulada(gdf)
+        return None
 
 def generar_imagen_modis_simulada(gdf):
     """Genera una imagen MODIS simulada con patrones de vegetación"""
-    width, height = 1024, 768
-    img = Image.new('RGB', (width, height), color=(200, 200, 200))
-    draw = ImageDraw.Draw(img)
-    
-    # Patrón de vegetación simulando campos
-    bounds = gdf.total_bounds
-    min_lon, min_lat, max_lon, max_lat = bounds
-    
-    # Convertir coordenadas a píxeles
-    def coord_to_pixel(lon, lat):
-        x = int((lon - min_lon) / (max_lon - min_lon) * width)
-        y = int((max_lat - lat) / (max_lat - min_lat) * height)
-        return x, y
-    
-    # Dibujar áreas verdes (vegetación)
-    for i in range(0, width, 50):
-        for j in range(0, height, 50):
-            if (i // 100 + j // 100) % 2 == 0:
-                green_intensity = np.random.randint(100, 200)
-                draw.rectangle([i, j, i+49, j+49], 
-                             fill=(50, green_intensity, 50))
-    
-    # Añadir algunos patrones de cultivo
-    for i in range(5):
-        center_x = np.random.randint(100, width-100)
-        center_y = np.random.randint(100, height-100)
-        radius = np.random.randint(50, 150)
+    try:
+        width, height = 1024, 768
+        img = Image.new('RGB', (width, height), color=(200, 200, 200))
+        draw = ImageDraw.Draw(img)
         
-        for r in range(0, radius, 10):
-            green = max(50, min(200, 150 - r//5))
-            draw.ellipse([center_x-r, center_y-r, center_x+r, center_y+r], 
-                        outline=(50, green, 50), width=2)
-    
-    img_bytes = BytesIO()
-    img.save(img_bytes, format='PNG')
-    img_bytes.seek(0)
-    return img_bytes
+        # Patrón de vegetación simulando campos
+        bounds = gdf.total_bounds
+        min_lon, min_lat, max_lon, max_lat = bounds
+        
+        # Convertir coordenadas a píxeles
+        def coord_to_pixel(lon, lat):
+            x = int((lon - min_lon) / (max_lon - min_lon) * width)
+            y = int((max_lat - lat) / (max_lat - min_lat) * height)
+            return x, y
+        
+        # Dibujar áreas verdes (vegetación)
+        for i in range(0, width, 50):
+            for j in range(0, height, 50):
+                if (i // 100 + j // 100) % 2 == 0:
+                    green_intensity = np.random.randint(100, 200)
+                    draw.rectangle([i, j, i+49, j+49], 
+                                 fill=(50, green_intensity, 50))
+        
+        # Añadir algunos patrones de cultivo
+        for i in range(5):
+            center_x = np.random.randint(100, width-100)
+            center_y = np.random.randint(100, height-100)
+            radius = np.random.randint(50, 150)
+            
+            for r in range(0, radius, 10):
+                green = max(50, min(200, 150 - r//5))
+                draw.ellipse([center_x-r, center_y-r, center_x+r, center_y+r], 
+                            outline=(50, green, 50), width=2)
+        
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        return img_bytes
+    except Exception as e:
+        # Fallback más simple si hay error
+        img = Image.new('RGB', (1024, 768), color=(100, 150, 100))
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        return img_bytes
 
 def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
     """Obtiene datos MODIS reales o simulados"""
@@ -404,6 +415,8 @@ def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
         if imagen_bytes is None:
             # Usar imagen simulada
             imagen_bytes = generar_imagen_modis_simulada(gdf)
+            if imagen_bytes:
+                imagen_bytes.seek(0)  # Asegurar que esté al inicio
             fuente = f'MODIS {indice} (Simulado) - NASA'
             estado = 'simulado'
         else:
@@ -439,88 +452,81 @@ def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
         else:
             valor = base_valor + variacion
         
-        return {
+        resultado = {
             'indice': indice,
             'valor_promedio': round(valor, 3),
             'fuente': fuente,
             'fecha_imagen': fecha_media.strftime('%Y-%m-%d'),
             'resolucion': '250m',
             'estado': estado,
-            'imagen_bytes': imagen_bytes,
             'bbox': gdf.total_bounds.tolist()
         }
         
+        # Solo agregar imagen_bytes si no es None
+        if imagen_bytes:
+            resultado['imagen_bytes'] = imagen_bytes
+        
+        return resultado
+        
     except Exception as e:
         st.error(f"Error en datos MODIS: {str(e)}")
-        return generar_datos_simulados_modis(gdf, fecha_inicio, fecha_fin, indice)
-
-def generar_datos_simulados_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
-    """Genera datos MODIS simulados"""
-    centroide = gdf.geometry.unary_union.centroid
-    lat_norm = (centroide.y + 90) / 180
-    lon_norm = (centroide.x + 180) / 360
-    
-    if indice == 'NDVI':
-        base_valor = 0.65
-        variacion = (lat_norm * lon_norm) * 0.2
-        valor = base_valor + variacion + np.random.normal(0, 0.1)
-        valor = max(0.1, min(0.9, valor))
-    elif indice == 'EVI':
-        base_valor = 0.6
-        variacion = (lat_norm * lon_norm) * 0.15
-        valor = base_valor + variacion + np.random.normal(0, 0.08)
-        valor = max(0.1, min(0.9, valor))
-    else:
-        base_valor = 0.5
-        variacion = (lat_norm * lon_norm) * 0.1
-        valor = base_valor + variacion
-    
-    return {
-        'indice': indice,
-        'valor_promedio': round(valor, 3),
-        'fuente': 'MODIS (Simulado) - NASA',
-        'fecha_imagen': datetime.now().strftime('%Y-%m-%d'),
-        'resolucion': '250m',
-        'estado': 'simulado',
-        'nota': 'Datos simulados - Sin conexión a servidores NASA'
-    }
+        # Retornar datos simulados como fallback
+        return {
+            'indice': indice,
+            'valor_promedio': 0.65,
+            'fuente': 'MODIS (Simulado) - NASA',
+            'fecha_imagen': datetime.now().strftime('%Y-%m-%d'),
+            'resolucion': '250m',
+            'estado': 'simulado',
+            'nota': 'Datos simulados - Error en conexión'
+        }
 
 def generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin):
     """Genera datos climáticos simulados"""
-    centroide = gdf.geometry.unary_union.centroid
-    lat_norm = (centroide.y + 90) / 180
-    
-    if lat_norm > 0.6:
-        temp_base = 20
-        precip_base = 80
-    elif lat_norm > 0.3:
-        temp_base = 25
-        precip_base = 120
-    else:
-        temp_base = 27
-        precip_base = 180
-    
-    mes = fecha_inicio.month
-    if 12 <= mes <= 2:
-        temp_ajuste = 5
-        precip_ajuste = 40
-    elif 3 <= mes <= 5:
-        temp_ajuste = 0
-        precip_ajuste = 20
-    elif 6 <= mes <= 8:
-        temp_ajuste = -5
-        precip_ajuste = 10
-    else:
-        temp_ajuste = 2
-        precip_ajuste = 30
-    
-    return {
-        'temperatura_promedio': temp_base + temp_ajuste + np.random.normal(0, 2),
-        'precipitacion_total': max(0, precip_base + precip_ajuste + np.random.normal(0, 30)),
-        'radiacion_promedio': 18 + np.random.normal(0, 3),
-        'dias_con_lluvia': 15 + np.random.randint(-5, 5),
-        'humedad_promedio': 75 + np.random.normal(0, 5)
-    }
+    try:
+        centroide = gdf.geometry.unary_union.centroid
+        lat_norm = (centroide.y + 90) / 180
+        
+        if lat_norm > 0.6:
+            temp_base = 20
+            precip_base = 80
+        elif lat_norm > 0.3:
+            temp_base = 25
+            precip_base = 120
+        else:
+            temp_base = 27
+            precip_base = 180
+        
+        mes = fecha_inicio.month
+        if 12 <= mes <= 2:
+            temp_ajuste = 5
+            precip_ajuste = 40
+        elif 3 <= mes <= 5:
+            temp_ajuste = 0
+            precip_ajuste = 20
+        elif 6 <= mes <= 8:
+            temp_ajuste = -5
+            precip_ajuste = 10
+        else:
+            temp_ajuste = 2
+            precip_ajuste = 30
+        
+        return {
+            'temperatura_promedio': temp_base + temp_ajuste + np.random.normal(0, 2),
+            'precipitacion_total': max(0, precip_base + precip_ajuste + np.random.normal(0, 30)),
+            'radiacion_promedio': 18 + np.random.normal(0, 3),
+            'dias_con_lluvia': 15 + np.random.randint(-5, 5),
+            'humedad_promedio': 75 + np.random.normal(0, 5)
+        }
+    except Exception:
+        # Datos climáticos por defecto
+        return {
+            'temperatura_promedio': 25.0,
+            'precipitacion_total': 1800.0,
+            'radiacion_promedio': 18.0,
+            'dias_con_lluvia': 15,
+            'humedad_promedio': 75.0
+        }
 
 def analizar_edad_plantacion(gdf_dividido):
     """Analiza la edad de la plantación por bloque"""
@@ -631,187 +637,215 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
     if gdf is None or len(gdf) == 0:
         return None
     
-    fig, ax = plt.subplots(figsize=(12, 10))
-    
-    # Configurar colores basados en NDVI si está disponible
-    if 'ndvi_modis' in gdf.columns:
-        # Obtener valores NDVI y normalizarlos
-        ndvi_values = gdf['ndvi_modis'].values
-        min_ndvi, max_ndvi = ndvi_values.min(), ndvi_values.max()
+    try:
+        fig, ax = plt.subplots(figsize=(12, 10))
         
-        # Crear colormap manualmente
-        colors = []
-        for ndvi in ndvi_values:
-            # Normalizar NDVI entre 0 y 1
-            norm_val = (ndvi - min_ndvi) / (max_ndvi - min_ndvi) if max_ndvi > min_ndvi else 0.5
+        # Configurar colores basados en NDVI si está disponible
+        if 'ndvi_modis' in gdf.columns:
+            # Obtener valores NDVI y normalizarlos
+            ndvi_values = gdf['ndvi_modis'].values
+            min_ndvi, max_ndvi = ndvi_values.min(), ndvi_values.max()
             
-            # Asignar color basado en valor normalizado
-            if norm_val < 0.33:
-                # Rojo para bajo NDVI
-                colors.append((1.0, 0.5, 0.5, 0.6))  # RGBA
-            elif norm_val < 0.66:
-                # Amarillo para medio NDVI
-                colors.append((1.0, 1.0, 0.5, 0.6))
-            else:
-                # Verde para alto NDVI
-                colors.append((0.5, 1.0, 0.5, 0.6))
+            # Crear colormap manualmente
+            colors = []
+            for ndvi in ndvi_values:
+                # Normalizar NDVI entre 0 y 1
+                norm_val = (ndvi - min_ndvi) / (max_ndvi - min_ndvi) if max_ndvi > min_ndvi else 0.5
+                
+                # Asignar color basado en valor normalizado
+                if norm_val < 0.33:
+                    # Rojo para bajo NDVI
+                    colors.append((1.0, 0.5, 0.5, 0.6))  # RGBA
+                elif norm_val < 0.66:
+                    # Amarillo para medio NDVI
+                    colors.append((1.0, 1.0, 0.5, 0.6))
+                else:
+                    # Verde para alto NDVI
+                    colors.append((0.5, 1.0, 0.5, 0.6))
+            
+            # Dibujar cada polígono con su color
+            for idx, row in gdf.iterrows():
+                try:
+                    if row.geometry.geom_type == 'Polygon':
+                        poly_coords = list(row.geometry.exterior.coords)
+                        polygon = MplPolygon(poly_coords, closed=True, 
+                                           facecolor=colors[idx], 
+                                           edgecolor='black', 
+                                           linewidth=1,
+                                           alpha=0.6)
+                        ax.add_patch(polygon)
+                    elif row.geometry.geom_type == 'MultiPolygon':
+                        for poly in row.geometry.geoms:
+                            poly_coords = list(poly.exterior.coords)
+                            polygon = MplPolygon(poly_coords, closed=True,
+                                               facecolor=colors[idx],
+                                               edgecolor='black',
+                                               linewidth=1,
+                                               alpha=0.6)
+                            ax.add_patch(polygon)
+                except Exception:
+                    continue
+            
+            # Añadir etiquetas de bloques
+            for idx, row in gdf.iterrows():
+                try:
+                    centroid = row.geometry.centroid
+                    ax.text(centroid.x, centroid.y, str(int(row['id_bloque'])), 
+                           fontsize=9, ha='center', va='center',
+                           bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
+                except Exception:
+                    continue
+        else:
+            # Dibujar polígonos simples
+            gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
         
-        # Dibujar cada polígono con su color
-        for idx, row in gdf.iterrows():
-            if row.geometry.geom_type == 'Polygon':
-                poly_coords = list(row.geometry.exterior.coords)
-                polygon = MplPolygon(poly_coords, closed=True, 
-                                   facecolor=colors[idx], 
-                                   edgecolor='black', 
-                                   linewidth=1,
-                                   alpha=0.6)
-                ax.add_patch(polygon)
-            elif row.geometry.geom_type == 'MultiPolygon':
-                for poly in row.geometry.geoms:
-                    poly_coords = list(poly.exterior.coords)
-                    polygon = MplPolygon(poly_coords, closed=True,
-                                       facecolor=colors[idx],
-                                       edgecolor='black',
-                                       linewidth=1,
-                                       alpha=0.6)
-                    ax.add_patch(polygon)
+        # Añadir palmas detectadas si existen
+        if palmas_detectadas and len(palmas_detectadas) > 0:
+            try:
+                coords = np.array([p['centroide'] for p in palmas_detectadas])
+                ax.scatter(coords[:, 0], coords[:, 1], 
+                          s=20, color='blue', alpha=0.7, label='Palmas detectadas')
+            except Exception:
+                pass
         
-        # Añadir etiquetas de bloques
-        for idx, row in gdf.iterrows():
-            centroid = row.geometry.centroid
-            ax.text(centroid.x, centroid.y, str(int(row['id_bloque'])), 
-                   fontsize=9, ha='center', va='center',
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
-    else:
-        # Dibujar polígonos simples
+        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        
+        return fig
+    except Exception as e:
+        # Fallback: mapa simple
+        fig, ax = plt.subplots(figsize=(12, 10))
         gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
-    
-    # Añadir palmas detectadas si existen
-    if palmas_detectadas and len(palmas_detectadas) > 0:
-        coords = np.array([p['centroide'] for p in palmas_detectadas])
-        ax.scatter(coords[:, 0], coords[:, 1], 
-                  s=20, color='blue', alpha=0.7, label='Palmas detectadas')
-    
-    ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=16, fontweight='bold')
-    ax.set_xlabel('Longitud')
-    ax.set_ylabel('Latitud')
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    
-    return fig
+        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
+        return fig
 
 def crear_grafico_ndvi_bloques(gdf):
     """Crea gráfico de barras de NDVI por bloque"""
     if gdf is None or 'ndvi_modis' not in gdf.columns:
         return None
     
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    bloques = gdf['id_bloque'].astype(str)
-    ndvi_values = gdf['ndvi_modis']
-    
-    # Colores basados en valor NDVI
-    colors = []
-    for val in ndvi_values:
-        if val < 0.4:
-            colors.append('red')
-        elif val < 0.6:
-            colors.append('orange')
-        elif val < 0.75:
-            colors.append('yellow')
-        else:
-            colors.append('green')
-    
-    bars = ax.bar(bloques, ndvi_values, color=colors, edgecolor='black')
-    ax.axhline(y=PARAMETROS_PALMA['NDVI_OPTIMO'], color='green', linestyle='--', 
-               label=f'Óptimo ({PARAMETROS_PALMA["NDVI_OPTIMO"]})')
-    ax.axhline(y=0.5, color='orange', linestyle='--', alpha=0.5, label='Mínimo aceptable')
-    
-    ax.set_xlabel('Bloque')
-    ax.set_ylabel('NDVI')
-    ax.set_title('NDVI por Bloque - Palma Aceitera', fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Añadir valores en las barras
-    for bar, val in zip(bars, ndvi_values):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-               f'{val:.3f}', ha='center', va='bottom' if height > 0 else 'top',
-               fontsize=9)
-    
-    return fig
+    try:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        bloques = gdf['id_bloque'].astype(str)
+        ndvi_values = gdf['ndvi_modis']
+        
+        # Colores basados en valor NDVI
+        colors = []
+        for val in ndvi_values:
+            if val < 0.4:
+                colors.append('red')
+            elif val < 0.6:
+                colors.append('orange')
+            elif val < 0.75:
+                colors.append('yellow')
+            else:
+                colors.append('green')
+        
+        bars = ax.bar(bloques, ndvi_values, color=colors, edgecolor='black')
+        ax.axhline(y=PARAMETROS_PALMA['NDVI_OPTIMO'], color='green', linestyle='--', 
+                   label=f'Óptimo ({PARAMETROS_PALMA["NDVI_OPTIMO"]})')
+        ax.axhline(y=0.5, color='orange', linestyle='--', alpha=0.5, label='Mínimo aceptable')
+        
+        ax.set_xlabel('Bloque')
+        ax.set_ylabel('NDVI')
+        ax.set_title('NDVI por Bloque - Palma Aceitera', fontsize=14, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Añadir valores en las barras
+        for bar, val in zip(bars, ndvi_values):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{val:.3f}', ha='center', va='bottom' if height > 0 else 'top',
+                   fontsize=9)
+        
+        return fig
+    except Exception:
+        return None
 
 def crear_grafico_produccion(gdf):
     """Crea gráfico de producción por bloque"""
     if gdf is None or 'produccion_estimada' not in gdf.columns:
         return None
     
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    bloques = gdf['id_bloque'].astype(str)
-    produccion = gdf['produccion_estimada']
-    
-    # Ordenar bloques por producción
-    sorted_indices = np.argsort(produccion)[::-1]
-    bloques_sorted = bloques.iloc[sorted_indices]
-    produccion_sorted = produccion.iloc[sorted_indices]
-    
-    bars = ax.bar(bloques_sorted, produccion_sorted, color='#4caf50', edgecolor='#2e7d32')
-    
-    ax.set_xlabel('Bloque')
-    ax.set_ylabel('Producción (kg/ha)')
-    ax.set_title('Producción Estimada por Bloque', fontsize=14, fontweight='bold')
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Añadir valores
-    for bar, val in zip(bars, produccion_sorted):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-               f'{val:,.0f}', ha='center', va='bottom', fontsize=9)
-    
-    return fig
+    try:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        bloques = gdf['id_bloque'].astype(str)
+        produccion = gdf['produccion_estimada']
+        
+        # Ordenar bloques por producción
+        sorted_indices = np.argsort(produccion)[::-1]
+        bloques_sorted = bloques.iloc[sorted_indices]
+        produccion_sorted = produccion.iloc[sorted_indices]
+        
+        bars = ax.bar(bloques_sorted, produccion_sorted, color='#4caf50', edgecolor='#2e7d32')
+        
+        ax.set_xlabel('Bloque')
+        ax.set_ylabel('Producción (kg/ha)')
+        ax.set_title('Producción Estimada por Bloque', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Añadir valores
+        for bar, val in zip(bars, produccion_sorted):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{val:,.0f}', ha='center', va='bottom', fontsize=9)
+        
+        return fig
+    except Exception:
+        return None
 
 def crear_grafico_rentabilidad(gdf):
     """Crea gráfico de rentabilidad por bloque"""
     if gdf is None or 'rentabilidad' not in gdf.columns:
         return None
     
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    bloques = gdf['id_bloque'].astype(str)
-    rentabilidad = gdf['rentabilidad']
-    
-    # Colores basados en rentabilidad
-    colors = []
-    for val in rentabilidad:
-        if val < 0:
-            colors.append('red')
-        elif val < 15:
-            colors.append('orange')
-        elif val < 25:
-            colors.append('yellow')
-        else:
-            colors.append('green')
-    
-    bars = ax.bar(bloques, rentabilidad, color=colors, edgecolor='black')
-    ax.axhline(y=0, color='black', linewidth=1)
-    ax.axhline(y=15, color='green', linestyle='--', alpha=0.5, label='Umbral rentable (15%)')
-    
-    ax.set_xlabel('Bloque')
-    ax.set_ylabel('Rentabilidad (%)')
-    ax.set_title('Rentabilidad por Bloque', fontsize=14, fontweight='bold')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    # Añadir valores
-    for bar, val in zip(bars, rentabilidad):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height,
-               f'{val:.1f}%', ha='center', va='bottom' if val >= 0 else 'top',
-               fontsize=9, fontweight='bold')
-    
-    return fig
+    try:
+        fig, ax = plt.subplots(figsize=(12, 6))
+        
+        bloques = gdf['id_bloque'].astype(str)
+        rentabilidad = gdf['rentabilidad']
+        
+        # Colores basados en rentabilidad
+        colors = []
+        for val in rentabilidad:
+            if val < 0:
+                colors.append('red')
+            elif val < 15:
+                colors.append('orange')
+            elif val < 25:
+                colors.append('yellow')
+            else:
+                colors.append('green')
+        
+        bars = ax.bar(bloques, rentabilidad, color=colors, edgecolor='black')
+        ax.axhline(y=0, color='black', linewidth=1)
+        ax.axhline(y=15, color='green', linestyle='--', alpha=0.5, label='Umbral rentable (15%)')
+        
+        ax.set_xlabel('Bloque')
+        ax.set_ylabel('Rentabilidad (%)')
+        ax.set_title('Rentabilidad por Bloque', fontsize=14, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
+        
+        # Añadir valores
+        for bar, val in zip(bars, rentabilidad):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'{val:.1f}%', ha='center', va='bottom' if val >= 0 else 'top',
+                   fontsize=9, fontweight='bold')
+        
+        return fig
+    except Exception:
+        return None
 
 # ===== FUNCIÓN PRINCIPAL DE ANÁLISIS =====
 def ejecutar_analisis_completo():
@@ -828,15 +862,32 @@ def ejecutar_analisis_completo():
         fecha_fin = st.session_state.get('fecha_fin', datetime.now())
         
         gdf = st.session_state.gdf_original
-        area_total = calcular_superficie(gdf)
+        
+        # Verificar que gdf no sea None
+        if gdf is None:
+            st.error("Error: No se cargó correctamente la plantación")
+            return
+            
+        try:
+            area_total = calcular_superficie(gdf)
+        except Exception:
+            area_total = 0.0
         
         # 1. Obtener datos MODIS reales
         datos_modis = obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice_seleccionado)
         st.session_state.datos_modis = datos_modis
         
-        # Guardar imagen MODIS para mostrar
-        if 'imagen_bytes' in datos_modis:
-            st.session_state.imagen_modis_bytes = datos_modis['imagen_bytes']
+        # Guardar imagen MODIS para mostrar - SOLO SI EXISTE
+        if datos_modis and 'imagen_bytes' in datos_modis and datos_modis['imagen_bytes'] is not None:
+            try:
+                datos_modis['imagen_bytes'].seek(0)
+                copia_bytes = BytesIO(datos_modis['imagen_bytes'].read())
+                copia_bytes.seek(0)
+                st.session_state.imagen_modis_bytes = copia_bytes
+            except Exception:
+                st.session_state.imagen_modis_bytes = None
+        else:
+            st.session_state.imagen_modis_bytes = None
         
         # 2. Obtener datos climáticos
         datos_climaticos = generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin)
@@ -848,13 +899,16 @@ def ejecutar_analisis_completo():
         # 4. Calcular áreas
         areas_ha = []
         for idx, row in gdf_dividido.iterrows():
-            area_gdf = gpd.GeoDataFrame({'geometry': [row.geometry]}, crs=gdf_dividido.crs)
-            area_ha_val = calcular_superficie(area_gdf)
-            if hasattr(area_ha_val, 'iloc'):
-                area_ha_val = float(area_ha_val.iloc[0])
-            else:
-                area_ha_val = float(area_ha_val)
-            areas_ha.append(area_ha_val)
+            try:
+                area_gdf = gpd.GeoDataFrame({'geometry': [row.geometry]}, crs=gdf_dividido.crs)
+                area_ha_val = calcular_superficie(area_gdf)
+                if hasattr(area_ha_val, 'iloc'):
+                    area_ha_val = float(area_ha_val.iloc[0])
+                else:
+                    area_ha_val = float(area_ha_val)
+                areas_ha.append(area_ha_val)
+            except Exception:
+                areas_ha.append(0.0)
         
         gdf_dividido['area_ha'] = areas_ha
         
@@ -867,13 +921,16 @@ def ejecutar_analisis_completo():
         valor_modis = datos_modis.get('valor_promedio', 0.65)
         
         for idx, row in gdf_dividido.iterrows():
-            centroid = row.geometry.centroid
-            lat_norm = (centroid.y + 90) / 180
-            lon_norm = (centroid.x + 180) / 360
-            variacion = (lat_norm * lon_norm) * 0.2 - 0.1
-            ndvi = valor_modis + variacion + np.random.normal(0, 0.05)
-            ndvi = max(0.4, min(0.85, ndvi))
-            ndvi_bloques.append(ndvi)
+            try:
+                centroid = row.geometry.centroid
+                lat_norm = (centroid.y + 90) / 180
+                lon_norm = (centroid.x + 180) / 360
+                variacion = (lat_norm * lon_norm) * 0.2 - 0.1
+                ndvi = valor_modis + variacion + np.random.normal(0, 0.05)
+                ndvi = max(0.4, min(0.85, ndvi))
+                ndvi_bloques.append(ndvi)
+            except Exception:
+                ndvi_bloques.append(0.65)
         
         gdf_dividido['ndvi_modis'] = ndvi_bloques
         
@@ -895,8 +952,11 @@ def ejecutar_analisis_completo():
         precio_racimo = 0.15
         ingresos = []
         for idx, row in gdf_dividido.iterrows():
-            ingreso = row['produccion_estimada'] * precio_racimo * row['area_ha']
-            ingresos.append(round(ingreso, 2))
+            try:
+                ingreso = row['produccion_estimada'] * precio_racimo * row['area_ha']
+                ingresos.append(round(ingreso, 2))
+            except Exception:
+                ingresos.append(0.0)
         
         gdf_dividido['ingreso_estimado'] = ingresos
         
@@ -906,24 +966,30 @@ def ejecutar_analisis_completo():
         
         costos_totales = []
         for idx, row in gdf_dividido.iterrows():
-            costo_n = row['req_N'] * precio_n * row['area_ha']
-            costo_p = row['req_P'] * precio_p * row['area_ha']
-            costo_k = row['req_K'] * precio_k * row['area_ha']
-            costo_mg = row['req_Mg'] * precio_mg * row['area_ha']
-            costo_b = row['req_B'] * precio_b * row['area_ha']
-            costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * row['area_ha']
-            costo_total = costo_n + costo_p + costo_k + costo_mg + costo_b + costo_base
-            costos_totales.append(round(costo_total, 2))
+            try:
+                costo_n = row['req_N'] * precio_n * row['area_ha']
+                costo_p = row['req_P'] * precio_p * row['area_ha']
+                costo_k = row['req_K'] * precio_k * row['area_ha']
+                costo_mg = row['req_Mg'] * precio_mg * row['area_ha']
+                costo_b = row['req_B'] * precio_b * row['area_ha']
+                costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * row['area_ha']
+                costo_total = costo_n + costo_p + costo_k + costo_mg + costo_b + costo_base
+                costos_totales.append(round(costo_total, 2))
+            except Exception:
+                costos_totales.append(0.0)
         
         gdf_dividido['costo_total'] = costos_totales
         
         # 11. Rentabilidad
         rentabilidades = []
         for idx, row in gdf_dividido.iterrows():
-            ingreso = row['ingreso_estimado']
-            costo = row['costo_total']
-            rentabilidad = (ingreso - costo) / costo * 100 if costo > 0 else 0
-            rentabilidades.append(round(rentabilidad, 1))
+            try:
+                ingreso = row['ingreso_estimado']
+                costo = row['costo_total']
+                rentabilidad = (ingreso - costo) / costo * 100 if costo > 0 else 0
+                rentabilidades.append(round(rentabilidad, 1))
+            except Exception:
+                rentabilidades.append(0.0)
         
         gdf_dividido['rentabilidad'] = rentabilidades
         
@@ -947,47 +1013,57 @@ def ejecutar_analisis_completo():
 # ===== FUNCIONES DE DETECCIÓN =====
 def simular_deteccion_palmas(gdf, densidad=130):
     """Simula la detección de palmas"""
-    bounds = gdf.total_bounds
-    min_lon, min_lat, max_lon, max_lat = bounds
-    
-    area_ha = calcular_superficie(gdf)
-    num_palmas = int(area_ha * densidad)
-    
-    palmas_detectadas = []
-    lado = np.sqrt(10000 / densidad)
-    lado_grados = lado / 111000
-    
-    rows = int((max_lat - min_lat) / lado_grados)
-    cols = int((max_lon - min_lon) / (lado_grados * 0.866))
-    
-    for i in range(rows):
-        for j in range(cols):
-            if len(palmas_detectadas) >= num_palmas:
-                break
+    try:
+        bounds = gdf.total_bounds
+        min_lon, min_lat, max_lon, max_lat = bounds
+        
+        area_ha = calcular_superficie(gdf)
+        num_palmas = int(area_ha * densidad)
+        
+        palmas_detectadas = []
+        lado = np.sqrt(10000 / densidad)
+        lado_grados = lado / 111000
+        
+        rows = int((max_lat - min_lat) / lado_grados)
+        cols = int((max_lon - min_lon) / (lado_grados * 0.866))
+        
+        for i in range(rows):
+            for j in range(cols):
+                if len(palmas_detectadas) >= num_palmas:
+                    break
+                    
+                offset = lado_grados * 0.5 if i % 2 == 0 else 0
+                lon = min_lon + (j * lado_grados * 0.866) + offset
+                lat = min_lat + (i * lado_grados * 0.75)
                 
-            offset = lado_grados * 0.5 if i % 2 == 0 else 0
-            lon = min_lon + (j * lado_grados * 0.866) + offset
-            lat = min_lat + (i * lado_grados * 0.75)
-            
-            if lon <= max_lon and lat <= max_lat:
-                lon += np.random.normal(0, lado_grados * 0.2)
-                lat += np.random.normal(0, lado_grados * 0.2)
-                
-                palmas_detectadas.append({
-                    'centroide': (lon, lat),
-                    'area_pixels': np.random.uniform(50, 150),
-                    'circularidad': np.random.uniform(0.7, 0.9),
-                    'radio_aprox': np.random.uniform(4, 8),
-                    'simulado': True
-                })
-    
-    return {
-        'detectadas': palmas_detectadas,
-        'total': len(palmas_detectadas),
-        'patron': 'hexagonal',
-        'densidad_calculada': len(palmas_detectadas) / area_ha if area_ha > 0 else densidad,
-        'area_ha': area_ha
-    }
+                if lon <= max_lon and lat <= max_lat:
+                    lon += np.random.normal(0, lado_grados * 0.2)
+                    lat += np.random.normal(0, lado_grados * 0.2)
+                    
+                    palmas_detectadas.append({
+                        'centroide': (lon, lat),
+                        'area_pixels': np.random.uniform(50, 150),
+                        'circularidad': np.random.uniform(0.7, 0.9),
+                        'radio_aprox': np.random.uniform(4, 8),
+                        'simulado': True
+                    })
+        
+        return {
+            'detectadas': palmas_detectadas,
+            'total': len(palmas_detectadas),
+            'patron': 'hexagonal',
+            'densidad_calculada': len(palmas_detectadas) / area_ha if area_ha > 0 else densidad,
+            'area_ha': area_ha
+        }
+    except Exception:
+        # Retorno mínimo en caso de error
+        return {
+            'detectadas': [],
+            'total': 0,
+            'patron': 'indeterminado',
+            'densidad_calculada': 0,
+            'area_ha': 0
+        }
 
 def ejecutar_deteccion_palmas():
     """Ejecuta la detección de palmas individuales"""
@@ -1003,28 +1079,36 @@ def ejecutar_deteccion_palmas():
         resultados = simular_deteccion_palmas(gdf)
         st.session_state.palmas_detectadas = resultados['detectadas']
         
-        # Crear imagen simulada para mostrar
-        width, height = 800, 600
-        img = Image.new('RGB', (width, height), color=(240, 240, 240))
-        draw = ImageDraw.Draw(img)
-        
-        # Dibujar palmas detectadas
-        bounds = gdf.total_bounds
-        min_lon, min_lat, max_lon, max_lat = bounds
-        
-        for palma in resultados['detectadas'][:100]:  # Limitar a 100 para visualización
-            lon, lat = palma['centroide']
-            x = int((lon - min_lon) / (max_lon - min_lon) * width)
-            y = int((max_lat - lat) / (max_lat - min_lat) * height)
-            radio = int(palma['radio_aprox'] * 2)  # Aumentar para visualización
+        try:
+            # Crear imagen simulada para mostrar
+            width, height = 800, 600
+            img = Image.new('RGB', (width, height), color=(240, 240, 240))
+            draw = ImageDraw.Draw(img)
             
-            draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
-                        fill=(50, 200, 50), outline=(30, 150, 30))
-        
-        img_bytes = BytesIO()
-        img.save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        st.session_state.imagen_alta_resolucion = img_bytes
+            # Dibujar palmas detectadas
+            bounds = gdf.total_bounds
+            min_lon, min_lat, max_lon, max_lat = bounds
+            
+            for palma in resultados['detectadas'][:100]:  # Limitar a 100 para visualización
+                lon, lat = palma['centroide']
+                x = int((lon - min_lon) / (max_lon - min_lon) * width)
+                y = int((max_lat - lat) / (max_lat - min_lat) * height)
+                radio = int(palma['radio_aprox'] * 2)  # Aumentar para visualización
+                
+                draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
+                            fill=(50, 200, 50), outline=(30, 150, 30))
+            
+            img_bytes = BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            st.session_state.imagen_alta_resolucion = img_bytes
+        except Exception:
+            # Crear imagen simple si falla
+            img = Image.new('RGB', (800, 600), color=(200, 220, 200))
+            img_bytes = BytesIO()
+            img.save(img_bytes, format='PNG')
+            img_bytes.seek(0)
+            st.session_state.imagen_alta_resolucion = img_bytes
         
         st.success(f"✅ Detección completada (simulada): {len(resultados['detectadas'])} palmas detectadas")
 
@@ -1155,7 +1239,10 @@ if uploaded_file and not st.session_state.archivo_cargado:
 # Mostrar información si hay archivo cargado
 if st.session_state.archivo_cargado and st.session_state.gdf_original is not None:
     gdf = st.session_state.gdf_original
-    area_total = calcular_superficie(gdf)
+    try:
+        area_total = calcular_superficie(gdf)
+    except Exception:
+        area_total = 0.0
     
     col1, col2 = st.columns(2)
     
@@ -1167,13 +1254,16 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
             st.write(f"- **Variedad:** {variedad}")
         
         # Mostrar mapa básico
-        fig, ax = plt.subplots(figsize=(8, 6))
-        gdf.plot(ax=ax, color='#8bc34a', edgecolor='#4caf50', alpha=0.7)
-        ax.set_title("Plantación de Palma Aceitera", fontweight='bold')
-        ax.set_xlabel("Longitud")
-        ax.set_ylabel("Latitud")
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
+        try:
+            fig, ax = plt.subplots(figsize=(8, 6))
+            gdf.plot(ax=ax, color='#8bc34a', edgecolor='#4caf50', alpha=0.7)
+            ax.set_title("Plantación de Palma Aceitera", fontweight='bold')
+            ax.set_xlabel("Longitud")
+            ax.set_ylabel("Latitud")
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+        except Exception:
+            st.info("No se pudo mostrar el mapa de la plantación")
     
     with col2:
         st.markdown("### 🎯 ACCIONES")
@@ -1216,44 +1306,71 @@ if st.session_state.analisis_completado:
             # Métricas principales
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Área Total", f"{resultados['area_total']:.1f} ha")
+                st.metric("Área Total", f"{resultados.get('area_total', 0):.1f} ha")
             with col2:
-                edad_prom = gdf_completo['edad_anios'].mean()
-                st.metric("Edad Promedio", f"{edad_prom:.1f} años")
+                try:
+                    edad_prom = gdf_completo['edad_anios'].mean()
+                    st.metric("Edad Promedio", f"{edad_prom:.1f} años")
+                except Exception:
+                    st.metric("Edad Promedio", "N/A")
             with col3:
-                prod_prom = gdf_completo['produccion_estimada'].mean()
-                st.metric("Producción Promedio", f"{prod_prom:,.0f} kg/ha")
+                try:
+                    prod_prom = gdf_completo['produccion_estimada'].mean()
+                    st.metric("Producción Promedio", f"{prod_prom:,.0f} kg/ha")
+                except Exception:
+                    st.metric("Producción Promedio", "N/A")
             with col4:
-                rent_prom = gdf_completo['rentabilidad'].mean()
-                st.metric("Rentabilidad Promedio", f"{rent_prom:.1f}%")
+                try:
+                    rent_prom = gdf_completo['rentabilidad'].mean()
+                    st.metric("Rentabilidad Promedio", f"{rent_prom:.1f}%")
+                except Exception:
+                    st.metric("Rentabilidad Promedio", "N/A")
             
             # Resumen nutricional
             st.subheader("🧪 RESUMEN NUTRICIONAL")
             col_n1, col_n2, col_n3, col_n4, col_n5 = st.columns(5)
             with col_n1:
-                st.metric("N", f"{gdf_completo['req_N'].mean():.0f} kg/ha")
+                try:
+                    st.metric("N", f"{gdf_completo['req_N'].mean():.0f} kg/ha")
+                except Exception:
+                    st.metric("N", "N/A")
             with col_n2:
-                st.metric("P", f"{gdf_completo['req_P'].mean():.0f} kg/ha")
+                try:
+                    st.metric("P", f"{gdf_completo['req_P'].mean():.0f} kg/ha")
+                except Exception:
+                    st.metric("P", "N/A")
             with col_n3:
-                st.metric("K", f"{gdf_completo['req_K'].mean():.0f} kg/ha")
+                try:
+                    st.metric("K", f"{gdf_completo['req_K'].mean():.0f} kg/ha")
+                except Exception:
+                    st.metric("K", "N/A")
             with col_n4:
-                st.metric("Mg", f"{gdf_completo['req_Mg'].mean():.0f} kg/ha")
+                try:
+                    st.metric("Mg", f"{gdf_completo['req_Mg'].mean():.0f} kg/ha")
+                except Exception:
+                    st.metric("Mg", "N/A")
             with col_n5:
-                st.metric("B", f"{gdf_completo['req_B'].mean():.3f} kg/ha")
+                try:
+                    st.metric("B", f"{gdf_completo['req_B'].mean():.3f} kg/ha")
+                except Exception:
+                    st.metric("B", "N/A")
             
             st.subheader("📋 RESUMEN POR BLOQUE")
-            columnas = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 
-                       'produccion_estimada', 'rentabilidad']
-            tabla = gdf_completo[columnas].copy()
-            tabla.columns = ['Bloque', 'Área (ha)', 'Edad (años)', 'NDVI', 
-                            'Producción (kg/ha)', 'Rentabilidad (%)']
-            st.dataframe(tabla.style.format({
-                'Área (ha)': '{:.2f}',
-                'Edad (años)': '{:.1f}',
-                'NDVI': '{:.3f}',
-                'Producción (kg/ha)': '{:,.0f}',
-                'Rentabilidad (%)': '{:.1f}'
-            }))
+            try:
+                columnas = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 
+                           'produccion_estimada', 'rentabilidad']
+                tabla = gdf_completo[columnas].copy()
+                tabla.columns = ['Bloque', 'Área (ha)', 'Edad (años)', 'NDVI', 
+                                'Producción (kg/ha)', 'Rentabilidad (%)']
+                st.dataframe(tabla.style.format({
+                    'Área (ha)': '{:.2f}',
+                    'Edad (años)': '{:.1f}',
+                    'NDVI': '{:.3f}',
+                    'Producción (kg/ha)': '{:,.0f}',
+                    'Rentabilidad (%)': '{:.1f}'
+                }))
+            except Exception as e:
+                st.warning(f"No se pudo mostrar la tabla de bloques: {str(e)}")
         
         with tab2:
             st.subheader("🗺️ MAPAS Y VISUALIZACIONES")
@@ -1269,30 +1386,36 @@ if st.session_state.analisis_completado:
             except Exception as e:
                 st.error(f"Error al generar mapa: {str(e)}")
                 # Mostrar un mapa simple como fallback
-                fig_fallback, ax_fallback = plt.subplots(figsize=(10, 8))
-                gdf_completo.plot(ax=ax_fallback, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
-                ax_fallback.set_title('Mapa de Bloques - Palma Aceitera', fontweight='bold')
-                ax_fallback.set_xlabel('Longitud')
-                ax_fallback.set_ylabel('Latitud')
-                ax_fallback.grid(True, alpha=0.3)
-                st.pyplot(fig_fallback)
+                try:
+                    fig_fallback, ax_fallback = plt.subplots(figsize=(10, 8))
+                    gdf_completo.plot(ax=ax_fallback, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
+                    ax_fallback.set_title('Mapa de Bloques - Palma Aceitera', fontweight='bold')
+                    ax_fallback.set_xlabel('Longitud')
+                    ax_fallback.set_ylabel('Latitud')
+                    ax_fallback.grid(True, alpha=0.3)
+                    st.pyplot(fig_fallback)
+                except Exception:
+                    st.info("No se pudo generar ningún mapa")
             
             # Mapa simple de la plantación original
             st.markdown("### 📍 Mapa de la Plantación Original")
-            fig_original, ax_original = plt.subplots(figsize=(10, 8))
-            gdf_completo.plot(ax=ax_original, color='lightgreen', edgecolor='darkgreen', alpha=0.5)
-            
-            # Marcar centroides de los bloques
-            centroides = gdf_completo.geometry.centroid
-            ax_original.scatter(centroides.x, centroides.y, 
-                               s=50, color='red', alpha=0.7, label='Centroides de bloques')
-            
-            ax_original.set_title('Plantación Original con Bloques', fontsize=14, fontweight='bold')
-            ax_original.set_xlabel('Longitud')
-            ax_original.set_ylabel('Latitud')
-            ax_original.legend()
-            ax_original.grid(True, alpha=0.3)
-            st.pyplot(fig_original)
+            try:
+                fig_original, ax_original = plt.subplots(figsize=(10, 8))
+                gdf_completo.plot(ax=ax_original, color='lightgreen', edgecolor='darkgreen', alpha=0.5)
+                
+                # Marcar centroides de los bloques
+                centroides = gdf_completo.geometry.centroid
+                ax_original.scatter(centroides.x, centroides.y, 
+                                   s=50, color='red', alpha=0.7, label='Centroides de bloques')
+                
+                ax_original.set_title('Plantación Original con Bloques', fontsize=14, fontweight='bold')
+                ax_original.set_xlabel('Longitud')
+                ax_original.set_ylabel('Latitud')
+                ax_original.legend()
+                ax_original.grid(True, alpha=0.3)
+                st.pyplot(fig_original)
+            except Exception:
+                st.info("No se pudo mostrar el mapa de la plantación original")
         
         with tab3:
             st.subheader("DATOS SATELITALES MODIS")
@@ -1328,19 +1451,60 @@ if st.session_state.analisis_completado:
                     st.write(f"- **Óptimo para palma:** {PARAMETROS_PALMA['NDVI_OPTIMO']}")
                     st.write(f"- **Diferencia:** {(valor - PARAMETROS_PALMA['NDVI_OPTIMO']):.3f}")
                 
-                # Mostrar imagen MODIS
+                # Mostrar imagen MODIS - CON MANEJO DE ERRORES
                 st.subheader("🖼️ IMAGEN MODIS")
-                if st.session_state.imagen_modis_bytes:
-                    # Reiniciar el puntero del BytesIO
-                    st.session_state.imagen_modis_bytes.seek(0)
-                    st.image(st.session_state.imagen_modis_bytes, 
-                            caption=f"Imagen MODIS {datos_modis.get('indice', '')} - {datos_modis.get('fecha_imagen', '')}",
-                            use_container_width=True)
-                elif 'imagen_bytes' in datos_modis:
-                    datos_modis['imagen_bytes'].seek(0)
-                    st.image(datos_modis['imagen_bytes'],
-                            caption=f"Imagen MODIS {datos_modis.get('indice', '')}",
-                            use_container_width=True)
+                
+                # Intentar múltiples fuentes para la imagen
+                imagen_a_mostrar = None
+                fuente_imagen = ""
+                
+                # 1. Intentar con imagen en session_state
+                if hasattr(st.session_state, 'imagen_modis_bytes') and st.session_state.imagen_modis_bytes is not None:
+                    try:
+                        st.session_state.imagen_modis_bytes.seek(0)
+                        imagen_a_mostrar = st.session_state.imagen_modis_bytes
+                        fuente_imagen = "session_state"
+                    except Exception:
+                        pass
+                
+                # 2. Intentar con imagen en datos_modis
+                if imagen_a_mostrar is None and 'imagen_bytes' in datos_modis and datos_modis['imagen_bytes'] is not None:
+                    try:
+                        datos_modis['imagen_bytes'].seek(0)
+                        imagen_a_mostrar = datos_modis['imagen_bytes']
+                        fuente_imagen = "datos_modis"
+                    except Exception:
+                        pass
+                
+                # 3. Generar imagen simulada como último recurso
+                if imagen_a_mostrar is None:
+                    try:
+                        imagen_a_mostrar = generar_imagen_modis_simulada(st.session_state.gdf_original)
+                        fuente_imagen = "simulada"
+                        st.info("Mostrando imagen MODIS simulada")
+                    except Exception:
+                        pass
+                
+                # Mostrar la imagen si se encontró alguna
+                if imagen_a_mostrar is not None:
+                    try:
+                        # Asegurarse de que el puntero esté al inicio
+                        if hasattr(imagen_a_mostrar, 'seek'):
+                            imagen_a_mostrar.seek(0)
+                        
+                        caption = f"Imagen MODIS {datos_modis.get('indice', '')} - {datos_modis.get('fecha_imagen', '')}"
+                        if fuente_imagen == "simulada":
+                            caption += " (Simulada)"
+                        
+                        st.image(imagen_a_mostrar, 
+                                caption=caption,
+                                use_container_width=True)
+                    except Exception:
+                        st.info("No se pudo mostrar la imagen MODIS")
+                else:
+                    st.info("No hay imagen MODIS disponible para mostrar")
+            else:
+                st.warning("No hay datos MODIS disponibles. Ejecute el análisis primero.")
         
         with tab4:
             st.subheader("📈 GRÁFICOS DE ANÁLISIS")
@@ -1350,76 +1514,93 @@ if st.session_state.analisis_completado:
             fig_ndvi = crear_grafico_ndvi_bloques(gdf_completo)
             if fig_ndvi:
                 st.pyplot(fig_ndvi)
+            else:
+                st.info("No se pudo generar el gráfico de NDVI")
             
             # Gráfico de producción
             st.markdown("### 📈 Producción por Bloque")
             fig_prod = crear_grafico_produccion(gdf_completo)
             if fig_prod:
                 st.pyplot(fig_prod)
+            else:
+                st.info("No se pudo generar el gráfico de producción")
             
             # Gráfico de rentabilidad
             st.markdown("### 💰 Rentabilidad por Bloque")
             fig_rent = crear_grafico_rentabilidad(gdf_completo)
             if fig_rent:
                 st.pyplot(fig_rent)
+            else:
+                st.info("No se pudo generar el gráfico de rentabilidad")
             
             # Gráfico de edad
             st.markdown("### 📅 Distribución de Edades")
-            fig_edad, ax_edad = plt.subplots(figsize=(10, 6))
-            ax_edad.hist(gdf_completo['edad_anios'], bins=10, color='#4caf50', 
-                        edgecolor='#2e7d32', alpha=0.7)
-            ax_edad.set_xlabel('Edad (años)')
-            ax_edad.set_ylabel('Número de bloques')
-            ax_edad.set_title('Distribución de Edades de la Plantación', fontweight='bold')
-            ax_edad.grid(True, alpha=0.3)
-            st.pyplot(fig_edad)
+            try:
+                fig_edad, ax_edad = plt.subplots(figsize=(10, 6))
+                ax_edad.hist(gdf_completo['edad_anios'], bins=10, color='#4caf50', 
+                            edgecolor='#2e7d32', alpha=0.7)
+                ax_edad.set_xlabel('Edad (años)')
+                ax_edad.set_ylabel('Número de bloques')
+                ax_edad.set_title('Distribución de Edades de la Plantación', fontweight='bold')
+                ax_edad.grid(True, alpha=0.3)
+                st.pyplot(fig_edad)
+            except Exception:
+                st.info("No se pudo generar el gráfico de distribución de edades")
         
         with tab5:
             st.subheader("💰 ANÁLISIS ECONÓMICO")
             
             # Métricas económicas
-            ingreso_total = gdf_completo['ingreso_estimado'].sum()
-            costo_total = gdf_completo['costo_total'].sum()
-            ganancia_total = ingreso_total - costo_total
-            rentabilidad_prom = gdf_completo['rentabilidad'].mean()
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Ingreso Total", f"${ingreso_total:,.0f} USD")
-            with col2:
-                st.metric("Costo Total", f"${costo_total:,.0f} USD")
-            with col3:
-                st.metric("Ganancia Total", f"${ganancia_total:,.0f} USD")
-            with col4:
-                st.metric("Rentabilidad Promedio", f"{rentabilidad_prom:.1f}%")
+            try:
+                ingreso_total = gdf_completo['ingreso_estimado'].sum()
+                costo_total = gdf_completo['costo_total'].sum()
+                ganancia_total = ingreso_total - costo_total
+                rentabilidad_prom = gdf_completo['rentabilidad'].mean()
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Ingreso Total", f"${ingreso_total:,.0f} USD")
+                with col2:
+                    st.metric("Costo Total", f"${costo_total:,.0f} USD")
+                with col3:
+                    st.metric("Ganancia Total", f"${ganancia_total:,.0f} USD")
+                with col4:
+                    st.metric("Rentabilidad Promedio", f"{rentabilidad_prom:.1f}%")
+            except Exception:
+                st.warning("No se pudieron calcular las métricas económicas")
             
             # Análisis de costos
             st.subheader("📊 DISTRIBUCIÓN DE COSTOS")
-            
-            # Calcular costos por componente
-            costo_fertilizantes = gdf_completo[['costo_N', 'costo_P', 'costo_K', 'costo_Mg', 'costo_B']].sum().sum()
-            costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * gdf_completo['area_ha'].sum()
-            
-            labels = ['Fertilizantes', 'Costo Base']
-            sizes = [costo_fertilizantes, costo_base]
-            colors = ['#4caf50', '#2196f3']
-            
-            fig_costos, ax_costos = plt.subplots(figsize=(8, 8))
-            ax_costos.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-            ax_costos.set_title('Distribución de Costos de Producción', fontweight='bold')
-            st.pyplot(fig_costos)
+            try:
+                # Calcular costos por componente
+                costo_fertilizantes = gdf_completo[['costo_N', 'costo_P', 'costo_K', 'costo_Mg', 'costo_B']].sum().sum()
+                costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * gdf_completo['area_ha'].sum()
+                
+                labels = ['Fertilizantes', 'Costo Base']
+                sizes = [costo_fertilizantes, costo_base]
+                colors = ['#4caf50', '#2196f3']
+                
+                fig_costos, ax_costos = plt.subplots(figsize=(8, 8))
+                ax_costos.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+                ax_costos.set_title('Distribución de Costos de Producción', fontweight='bold')
+                st.pyplot(fig_costos)
+            except Exception:
+                st.info("No se pudo generar el gráfico de distribución de costos")
             
             # Tabla de costos detallada
             st.subheader("📋 DETALLE DE COSTOS POR BLOQUE")
-            costos_cols = ['id_bloque', 'costo_total', 'ingreso_estimado', 'rentabilidad']
-            if all(col in gdf_completo.columns for col in costos_cols):
-                df_costos = gdf_completo[costos_cols].copy()
-                df_costos.columns = ['Bloque', 'Costo Total (USD)', 'Ingreso Estimado (USD)', 'Rentabilidad (%)']
-                st.dataframe(df_costos.style.format({
-                    'Costo Total (USD)': '{:,.2f}',
-                    'Ingreso Estimado (USD)': '{:,.2f}',
-                    'Rentabilidad (%)': '{:.1f}'
-                }))
+            try:
+                costos_cols = ['id_bloque', 'costo_total', 'ingreso_estimado', 'rentabilidad']
+                if all(col in gdf_completo.columns for col in costos_cols):
+                    df_costos = gdf_completo[costos_cols].copy()
+                    df_costos.columns = ['Bloque', 'Costo Total (USD)', 'Ingreso Estimado (USD)', 'Rentabilidad (%)']
+                    st.dataframe(df_costos.style.format({
+                        'Costo Total (USD)': '{:,.2f}',
+                        'Ingreso Estimado (USD)': '{:,.2f}',
+                        'Rentabilidad (%)': '{:.1f}'
+                    }))
+            except Exception:
+                st.info("No se pudo mostrar la tabla de costos detallada")
         
         with tab6:
             st.subheader("🌴 DETECCIÓN DE PALMAS INDIVIDUALES")
@@ -1442,7 +1623,7 @@ if st.session_state.analisis_completado:
             if st.session_state.palmas_detectadas:
                 palmas = st.session_state.palmas_detectadas
                 total = len(palmas)
-                area_total = resultados['area_total']
+                area_total = resultados.get('area_total', 0)
                 densidad = total / area_total if area_total > 0 else 0
                 
                 st.success(f"✅ Detección completada: {total} palmas detectadas")
@@ -1454,42 +1635,54 @@ if st.session_state.analisis_completado:
                 with col2:
                     st.metric("Densidad", f"{densidad:.0f} plantas/ha")
                 with col3:
-                    area_prom = np.mean([p.get('area_pixels', 0) for p in palmas])
-                    st.metric("Área promedio", f"{area_prom:.1f} m²")
+                    try:
+                        area_prom = np.mean([p.get('area_pixels', 0) for p in palmas])
+                        st.metric("Área promedio", f"{area_prom:.1f} m²")
+                    except Exception:
+                        st.metric("Área promedio", "N/A")
                 with col4:
-                    st.metric("Cobertura estimada", f"{(total * area_prom) / (area_total * 10000) * 100:.1f}%")
+                    try:
+                        cobertura = (total * area_prom) / (area_total * 10000) * 100 if area_total > 0 else 0
+                        st.metric("Cobertura estimada", f"{cobertura:.1f}%")
+                    except Exception:
+                        st.metric("Cobertura estimada", "N/A")
                 
-                # Mostrar imagen con detección
+                # Mostrar imagen con detección - CON MANEJO DE ERRORES
                 st.subheader("📷 Visualización de Detección")
-                if st.session_state.imagen_alta_resolucion:
-                    # CORRECCIÓN: Reiniciar el puntero del BytesIO
-                    st.session_state.imagen_alta_resolucion.seek(0)
-                    st.image(st.session_state.imagen_alta_resolucion,
-                            caption="Simulación de detección de palmas individuales",
-                            use_container_width=True)
-                
+                if hasattr(st.session_state, 'imagen_alta_resolucion') and st.session_state.imagen_alta_resolucion is not None:
+                    try:
+                        st.session_state.imagen_alta_resolucion.seek(0)
+                        st.image(st.session_state.imagen_alta_resolucion,
+                                caption="Simulación de detección de palmas individuales",
+                                use_container_width=True)
+                    except Exception:
+                        st.info("No se pudo mostrar la imagen de detección")
+                else:
+                    st.info("No hay imagen de detección disponible")
+                    
                 # Mapa de distribución
                 st.subheader("🗺️ Mapa de Distribución de Palmas")
-                
-                fig_palmas, ax_palmas = plt.subplots(figsize=(12, 8))
-                gdf_completo.plot(ax=ax_palmas, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
-                
-                if palmas and len(palmas) > 0:
-                    coords = np.array([p['centroide'] for p in palmas])
-                    ax_palmas.scatter(coords[:, 0], coords[:, 1], 
-                                    s=10, color='blue', alpha=0.6, label='Palmas detectadas')
-                
-                ax_palmas.set_title(f'Distribución de {total} Palmas Detectadas', 
-                                   fontsize=14, fontweight='bold')
-                ax_palmas.set_xlabel('Longitud')
-                ax_palmas.set_ylabel('Latitud')
-                ax_palmas.legend()
-                ax_palmas.grid(True, alpha=0.3)
-                st.pyplot(fig_palmas)
+                try:
+                    fig_palmas, ax_palmas = plt.subplots(figsize=(12, 8))
+                    gdf_completo.plot(ax=ax_palmas, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
+                    
+                    if palmas and len(palmas) > 0:
+                        coords = np.array([p['centroide'] for p in palmas])
+                        ax_palmas.scatter(coords[:, 0], coords[:, 1], 
+                                        s=10, color='blue', alpha=0.6, label='Palmas detectadas')
+                    
+                    ax_palmas.set_title(f'Distribución de {total} Palmas Detectadas', 
+                                       fontsize=14, fontweight='bold')
+                    ax_palmas.set_xlabel('Longitud')
+                    ax_palmas.set_ylabel('Latitud')
+                    ax_palmas.legend()
+                    ax_palmas.grid(True, alpha=0.3)
+                    st.pyplot(fig_palmas)
+                except Exception:
+                    st.info("No se pudo generar el mapa de distribución de palmas")
                 
                 # Análisis de densidad
                 st.subheader("📊 ANÁLISIS DE DENSIDAD")
-                
                 densidad_optima = 130  # plantas/ha
                 if densidad < densidad_optima * 0.8:
                     st.error(f"**DENSIDAD BAJA:** {densidad:.0f} plantas/ha (Óptimo: {densidad_optima})")
@@ -1503,44 +1696,45 @@ if st.session_state.analisis_completado:
                 
                 # Exportar datos
                 st.subheader("📥 EXPORTAR DATOS")
-                
                 if palmas and len(palmas) > 0:
-                    df_palmas = pd.DataFrame([{
-                        'id': i+1,
-                        'longitud': p['centroide'][0],
-                        'latitud': p['centroide'][1],
-                        'area_m2': p.get('area_pixels', 0),
-                        'radio_m': p.get('radio_aprox', 0)
-                    } for i, p in enumerate(palmas)])
-                    
-                    csv_data = df_palmas.to_csv(index=False)
-                    
-                    col_exp1, col_exp2 = st.columns(2)
-                    
-                    with col_exp1:
-                        st.download_button(
-                            label="📥 Descargar Coordenadas (CSV)",
-                            data=csv_data,
-                            file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    
-                    with col_exp2:
-                        informe = f"""INFORME DE DETECCIÓN DE PALMAS
+                    try:
+                        df_palmas = pd.DataFrame([{
+                            'id': i+1,
+                            'longitud': p.get('centroide', (0, 0))[0],
+                            'latitud': p.get('centroide', (0, 0))[1],
+                            'area_m2': p.get('area_pixels', 0),
+                            'radio_m': p.get('radio_aprox', 0)
+                        } for i, p in enumerate(palmas)])
+                        
+                        csv_data = df_palmas.to_csv(index=False)
+                        
+                        col_exp1, col_exp2 = st.columns(2)
+                        
+                        with col_exp1:
+                            st.download_button(
+                                label="📥 Descargar Coordenadas (CSV)",
+                                data=csv_data,
+                                file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                        
+                        with col_exp2:
+                            informe = f"""INFORME DE DETECCIÓN DE PALMAS
 Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}
 Total palmas: {total}
 Área total: {area_total:.1f} ha
 Densidad: {densidad:.1f} plantas/ha
-Cobertura vegetal: {(total * area_prom) / (area_total * 10000) * 100:.1f}%
-"""
-                        st.download_button(
-                            label="📄 Descargar Informe (TXT)",
-                            data=informe,
-                            file_name=f"informe_deteccion_{datetime.now().strftime('%Y%m%d')}.txt",
-                            mime="text/plain",
-                            use_container_width=True
-                        )
+Cobertura vegetal: {(total * area_prom) / (area_total * 10000) * 100:.1f}%"""
+                            st.download_button(
+                                label="📄 Descargar Informe (TXT)",
+                                data=informe,
+                                file_name=f"informe_deteccion_{datetime.now().strftime('%Y%m%d')}.txt",
+                                mime="text/plain",
+                                use_container_width=True
+                            )
+                    except Exception:
+                        st.info("No se pudieron exportar los datos de detección")
             else:
                 st.info("La detección de palmas no se ha ejecutado aún.")
                 if st.button("🔍 EJECUTAR DETECCIÓN DE PALMAS", key="detectar_palmas_tab6"):
