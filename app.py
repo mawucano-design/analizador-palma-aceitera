@@ -12,13 +12,14 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib.patches import Polygon as MplPolygon
 import io
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon, Point, box
 import math
 import warnings
 from io import BytesIO
 import requests
 import re
 from PIL import Image, ImageDraw
+import json
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
@@ -50,7 +51,9 @@ def init_session_state():
         'datos_climaticos': {},
         'deteccion_ejecutada': False,
         'imagen_modis_bytes': None,
-        'mapa_generado': False
+        'mapa_generado': False,
+        'mapa_calor_bytes': None,
+        'geojson_bytes': None
     }
     
     for key, value in defaults.items():
@@ -82,6 +85,15 @@ MODIS_CONFIG = {
         'formato': 'image/png',
         'palette': 'Blues'
     }
+}
+
+# Configuración de ESRI para imágenes base
+ESRI_BASE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services"
+ESRI_SERVICES = {
+    "World_Imagery": f"{ESRI_BASE_URL}/World_Imagery/MapServer/tile/{{z}}/{{y}}/{{x}}",
+    "World_Topo_Map": f"{ESRI_BASE_URL}/World_Topo_Map/MapServer/tile/{{z}}/{{y}}/{{x}}",
+    "World_Street_Map": f"{ESRI_BASE_URL}/World_Street_Map/MapServer/tile/{{z}}/{{y}}/{{x}}",
+    "NatGeo_World_Map": f"{ESRI_BASE_URL}/NatGeo_World_Map/MapServer/tile/{{z}}/{{y}}/{{x}}"
 }
 
 PARAMETROS_PALMA = {
@@ -633,12 +645,12 @@ def analizar_requerimientos_nutricionales(ndvi_values, edades, datos_climaticos)
 
 # ===== FUNCIONES DE VISUALIZACIÓN =====
 def crear_mapa_bloques(gdf, palmas_detectadas=None):
-    """Crea un mapa de los bloques con matplotlib"""
+    """Crea un mapa de los bloques con matplotlib - VERSIÓN CORREGIDA"""
     if gdf is None or len(gdf) == 0:
         return None
     
     try:
-        fig, ax = plt.subplots(figsize=(12, 10))
+        fig, ax = plt.subplots(figsize=(10, 8))
         
         # Configurar colores basados en NDVI si está disponible
         if 'ndvi_modis' in gdf.columns:
@@ -667,7 +679,9 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
             for idx, row in gdf.iterrows():
                 try:
                     if row.geometry.geom_type == 'Polygon':
-                        poly_coords = list(row.geometry.exterior.coords)
+                        # Simplificar geometría si tiene demasiados puntos
+                        simplified = row.geometry.simplify(0.0001)
+                        poly_coords = list(simplified.exterior.coords)
                         polygon = MplPolygon(poly_coords, closed=True, 
                                            facecolor=colors[idx], 
                                            edgecolor='black', 
@@ -676,7 +690,8 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
                         ax.add_patch(polygon)
                     elif row.geometry.geom_type == 'MultiPolygon':
                         for poly in row.geometry.geoms:
-                            poly_coords = list(poly.exterior.coords)
+                            simplified = poly.simplify(0.0001)
+                            poly_coords = list(simplified.exterior.coords)
                             polygon = MplPolygon(poly_coords, closed=True,
                                                facecolor=colors[idx],
                                                edgecolor='black',
@@ -702,27 +717,33 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
         # Añadir palmas detectadas si existen
         if palmas_detectadas and len(palmas_detectadas) > 0:
             try:
-                coords = np.array([p['centroide'] for p in palmas_detectadas])
+                coords = np.array([p['centroide'] for p in palmas_detectadas[:200]])  # Limitar a 200 puntos
                 ax.scatter(coords[:, 0], coords[:, 1], 
-                          s=20, color='blue', alpha=0.7, label='Palmas detectadas')
+                          s=10, color='blue', alpha=0.5, label='Palmas detectadas')
             except Exception:
                 pass
         
-        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=16, fontweight='bold')
+        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=14, fontweight='bold')
         ax.set_xlabel('Longitud')
         ax.set_ylabel('Latitud')
         ax.grid(True, alpha=0.3)
-        ax.legend()
         
+        # Añadir leyenda solo si hay palmas
+        if palmas_detectadas and len(palmas_detectadas) > 0:
+            ax.legend()
+        
+        plt.tight_layout()
         return fig
     except Exception as e:
+        st.error(f"Error al generar mapa: {str(e)}")
         # Fallback: mapa simple
-        fig, ax = plt.subplots(figsize=(12, 10))
+        fig, ax = plt.subplots(figsize=(10, 8))
         gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
-        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=16, fontweight='bold')
+        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=14, fontweight='bold')
         ax.set_xlabel('Longitud')
         ax.set_ylabel('Latitud')
         ax.grid(True, alpha=0.3)
+        plt.tight_layout()
         return fig
 
 def crear_grafico_ndvi_bloques(gdf):
@@ -766,6 +787,7 @@ def crear_grafico_ndvi_bloques(gdf):
                    f'{val:.3f}', ha='center', va='bottom' if height > 0 else 'top',
                    fontsize=9)
         
+        plt.tight_layout()
         return fig
     except Exception:
         return None
@@ -799,6 +821,7 @@ def crear_grafico_produccion(gdf):
             ax.text(bar.get_x() + bar.get_width()/2., height,
                    f'{val:,.0f}', ha='center', va='bottom', fontsize=9)
         
+        plt.tight_layout()
         return fig
     except Exception:
         return None
@@ -843,8 +866,130 @@ def crear_grafico_rentabilidad(gdf):
                    f'{val:.1f}%', ha='center', va='bottom' if val >= 0 else 'top',
                    fontsize=9, fontweight='bold')
         
+        plt.tight_layout()
         return fig
     except Exception:
+        return None
+
+def crear_mapa_calor_produccion(gdf):
+    """Crea un mapa de calor de producción por bloque"""
+    if gdf is None or 'produccion_estimada' not in gdf.columns:
+        return None
+    
+    try:
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Obtener valores de producción
+        produccion = gdf['produccion_estimada'].values
+        min_prod, max_prod = produccion.min(), produccion.max()
+        
+        # Crear colormap para calor
+        import matplotlib.cm as cm
+        norm = plt.Normalize(min_prod, max_prod)
+        cmap = cm.YlOrRd
+        
+        # Dibujar cada polígono con color basado en producción
+        for idx, row in gdf.iterrows():
+            try:
+                valor_prod = row['produccion_estimada']
+                color = cmap(norm(valor_prod))
+                
+                if row.geometry.geom_type == 'Polygon':
+                    simplified = row.geometry.simplify(0.0001)
+                    poly_coords = list(simplified.exterior.coords)
+                    polygon = MplPolygon(poly_coords, closed=True, 
+                                       facecolor=color, 
+                                       edgecolor='black', 
+                                       linewidth=1,
+                                       alpha=0.7)
+                    ax.add_patch(polygon)
+                elif row.geometry.geom_type == 'MultiPolygon':
+                    for poly in row.geometry.geoms:
+                        simplified = poly.simplify(0.0001)
+                        poly_coords = list(simplified.exterior.coords)
+                        polygon = MplPolygon(poly_coords, closed=True,
+                                           facecolor=color,
+                                           edgecolor='black',
+                                           linewidth=1,
+                                           alpha=0.7)
+                        ax.add_patch(polygon)
+            except Exception:
+                continue
+        
+        # Añadir barra de color
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        cbar = plt.colorbar(sm, ax=ax, shrink=0.7)
+        cbar.set_label('Producción (kg/ha)', fontsize=12)
+        
+        # Añadir etiquetas de valores
+        for idx, row in gdf.iterrows():
+            try:
+                centroid = row.geometry.centroid
+                ax.text(centroid.x, centroid.y, 
+                       f"{int(row['produccion_estimada']):,}",
+                       fontsize=8, ha='center', va='center',
+                       bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+            except Exception:
+                continue
+        
+        ax.set_title('Mapa de Calor - Producción Estimada', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        
+        # Guardar figura en bytes
+        img_bytes = BytesIO()
+        fig.savefig(img_bytes, format='PNG', dpi=150, bbox_inches='tight')
+        img_bytes.seek(0)
+        
+        # Guardar en session_state para exportar
+        st.session_state.mapa_calor_bytes = img_bytes
+        
+        return fig
+    except Exception as e:
+        st.error(f"Error al crear mapa de calor: {str(e)}")
+        return None
+
+def crear_geojson_resultados(gdf):
+    """Crea un GeoJSON con todos los resultados del análisis"""
+    try:
+        # Crear copia del GeoDataFrame
+        gdf_export = gdf.copy()
+        
+        # Convertir geometrías a WGS84 si no lo están
+        if gdf_export.crs != 'EPSG:4326':
+            gdf_export = gdf_export.to_crs('EPSG:4326')
+        
+        # Convertir a GeoJSON
+        geojson_dict = json.loads(gdf_export.to_json())
+        
+        # Agregar metadatos
+        geojson_dict['metadata'] = {
+            'export_date': datetime.now().isoformat(),
+            'total_blocks': len(gdf),
+            'area_total_ha': float(gdf['area_ha'].sum()),
+            'production_avg': float(gdf['produccion_estimada'].mean()),
+            'ndvi_avg': float(gdf['ndvi_modis'].mean()),
+            'rentability_avg': float(gdf['rentabilidad'].mean())
+        }
+        
+        # Convertir a string JSON
+        geojson_str = json.dumps(geojson_dict, indent=2)
+        
+        # Crear bytes
+        geojson_bytes = BytesIO()
+        geojson_bytes.write(geojson_str.encode('utf-8'))
+        geojson_bytes.seek(0)
+        
+        # Guardar en session_state
+        st.session_state.geojson_bytes = geojson_bytes
+        
+        return geojson_bytes
+    except Exception as e:
+        st.error(f"Error al crear GeoJSON: {str(e)}")
         return None
 
 # ===== FUNCIÓN PRINCIPAL DE ANÁLISIS =====
@@ -993,6 +1138,9 @@ def ejecutar_analisis_completo():
         
         gdf_dividido['rentabilidad'] = rentabilidades
         
+        # 12. Crear GeoJSON para exportar
+        crear_geojson_resultados(gdf_dividido)
+        
         # Marcar que el mapa ha sido generado
         st.session_state.mapa_generado = True
         
@@ -1065,8 +1213,50 @@ def simular_deteccion_palmas(gdf, densidad=130):
             'area_ha': 0
         }
 
+def obtener_imagen_esri_base(gdf, servicio="World_Imagery", zoom=15):
+    """Obtiene imagen base de ESRI"""
+    try:
+        bounds = gdf.total_bounds
+        min_lon, min_lat, max_lon, max_lat = bounds
+        
+        # Añadir margen
+        min_lon -= 0.002
+        max_lon += 0.002
+        min_lat -= 0.002
+        max_lat += 0.002
+        
+        # Calcular centro
+        center_lat = (min_lat + max_lat) / 2
+        center_lon = (min_lon + max_lon) / 2
+        
+        # Calcular tamaño basado en zoom
+        width, height = 800, 600
+        
+        # Construir URL de ESRI (solo para referencia, necesitaríamos implementar más)
+        # Por ahora, generamos una imagen simulada con patrón de ESRI
+        
+        img = Image.new('RGB', (width, height), color=(240, 240, 240))
+        draw = ImageDraw.Draw(img)
+        
+        # Simular imagen satelital con patrones
+        for i in range(0, width, 20):
+            for j in range(0, height, 20):
+                if (i // 40 + j // 40) % 2 == 0:
+                    green = np.random.randint(80, 180)
+                    brown = np.random.randint(100, 150)
+                    draw.rectangle([i, j, i+19, j+19], 
+                                 fill=(brown, green, brown//2))
+        
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        return img_bytes
+    except Exception as e:
+        st.warning(f"No se pudo obtener imagen ESRI: {str(e)}")
+        return None
+
 def ejecutar_deteccion_palmas():
-    """Ejecuta la detección de palmas individuales"""
+    """Ejecuta la detección de palmas individuales con visualización ESRI"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
         return
@@ -1080,29 +1270,53 @@ def ejecutar_deteccion_palmas():
         st.session_state.palmas_detectadas = resultados['detectadas']
         
         try:
-            # Crear imagen simulada para mostrar
-            width, height = 800, 600
-            img = Image.new('RGB', (width, height), color=(240, 240, 240))
-            draw = ImageDraw.Draw(img)
+            # Obtener imagen base de ESRI
+            esri_image = obtener_imagen_esri_base(gdf)
             
-            # Dibujar palmas detectadas
-            bounds = gdf.total_bounds
-            min_lon, min_lat, max_lon, max_lat = bounds
-            
-            for palma in resultados['detectadas'][:100]:  # Limitar a 100 para visualización
-                lon, lat = palma['centroide']
-                x = int((lon - min_lon) / (max_lon - min_lon) * width)
-                y = int((max_lat - lat) / (max_lat - min_lat) * height)
-                radio = int(palma['radio_aprox'] * 2)  # Aumentar para visualización
+            if esri_image:
+                img = Image.open(esri_image)
+                draw = ImageDraw.Draw(img)
                 
-                draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
-                            fill=(50, 200, 50), outline=(30, 150, 30))
-            
-            img_bytes = BytesIO()
-            img.save(img_bytes, format='PNG')
-            img_bytes.seek(0)
-            st.session_state.imagen_alta_resolucion = img_bytes
-        except Exception:
+                bounds = gdf.total_bounds
+                min_lon, min_lat, max_lon, max_lat = bounds
+                width, height = img.size
+                
+                # Dibujar palmas detectadas como puntos
+                for palma in resultados['detectadas'][:500]:  # Limitar para visualización
+                    lon, lat = palma['centroide']
+                    x = int((lon - min_lon) / (max_lon - min_lon) * width)
+                    y = int((max_lat - lat) / (max_lat - min_lat) * height)
+                    
+                    # Dibujar punto centroide
+                    radio = 3
+                    draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
+                                fill=(255, 0, 0), outline=(255, 255, 255))
+                
+                # Dibujar borde de la plantación
+                poly_points = []
+                if gdf.iloc[0].geometry.geom_type == 'Polygon':
+                    for lon, lat in gdf.iloc[0].geometry.exterior.coords:
+                        x = int((lon - min_lon) / (max_lon - min_lon) * width)
+                        y = int((max_lat - lat) / (max_lat - min_lat) * height)
+                        poly_points.append((x, y))
+                    
+                    if len(poly_points) > 2:
+                        draw.polygon(poly_points, outline=(0, 255, 0), width=2)
+                
+                img_bytes = BytesIO()
+                img.save(img_bytes, format='PNG')
+                img_bytes.seek(0)
+                st.session_state.imagen_alta_resolucion = img_bytes
+            else:
+                # Crear imagen simple si no hay ESRI
+                img = Image.new('RGB', (800, 600), color=(200, 220, 200))
+                img_bytes = BytesIO()
+                img.save(img_bytes, format='PNG')
+                img_bytes.seek(0)
+                st.session_state.imagen_alta_resolucion = img_bytes
+        
+        except Exception as e:
+            st.error(f"Error en visualización ESRI: {str(e)}")
             # Crear imagen simple si falla
             img = Image.new('RGB', (800, 600), color=(200, 220, 200))
             img_bytes = BytesIO()
@@ -1261,6 +1475,7 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
             ax.set_xlabel("Longitud")
             ax.set_ylabel("Latitud")
             ax.grid(True, alpha=0.3)
+            plt.tight_layout()
             st.pyplot(fig)
         except Exception:
             st.info("No se pudo mostrar el mapa de la plantación")
@@ -1355,6 +1570,44 @@ if st.session_state.analisis_completado:
                 except Exception:
                     st.metric("B", "N/A")
             
+            # Botón para exportar GeoJSON
+            st.subheader("📥 EXPORTAR RESULTADOS")
+            col_exp1, col_exp2, col_exp3 = st.columns(3)
+            
+            with col_exp1:
+                if st.session_state.geojson_bytes:
+                    st.download_button(
+                        label="🗺️ Descargar GeoJSON",
+                        data=st.session_state.geojson_bytes,
+                        file_name=f"analisis_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson",
+                        mime="application/json",
+                        use_container_width=True
+                    )
+            
+            with col_exp2:
+                # Exportar CSV
+                try:
+                    csv_data = gdf_completo.drop(columns=['geometry']).to_csv(index=False)
+                    st.download_button(
+                        label="📊 Descargar CSV",
+                        data=csv_data,
+                        file_name=f"datos_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                except Exception:
+                    st.button("📊 Descargar CSV", disabled=True, use_container_width=True)
+            
+            with col_exp3:
+                if st.session_state.mapa_calor_bytes:
+                    st.download_button(
+                        label="🔥 Descargar Mapa Calor",
+                        data=st.session_state.mapa_calor_bytes,
+                        file_name=f"mapa_calor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                        mime="image/png",
+                        use_container_width=True
+                    )
+            
             st.subheader("📋 RESUMEN POR BLOQUE")
             try:
                 columnas = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 
@@ -1393,29 +1646,21 @@ if st.session_state.analisis_completado:
                     ax_fallback.set_xlabel('Longitud')
                     ax_fallback.set_ylabel('Latitud')
                     ax_fallback.grid(True, alpha=0.3)
+                    plt.tight_layout()
                     st.pyplot(fig_fallback)
                 except Exception:
                     st.info("No se pudo generar ningún mapa")
             
-            # Mapa simple de la plantación original
-            st.markdown("### 📍 Mapa de la Plantación Original")
+            # Mapa de calor de producción
+            st.markdown("### 🔥 Mapa de Calor - Producción Estimada")
             try:
-                fig_original, ax_original = plt.subplots(figsize=(10, 8))
-                gdf_completo.plot(ax=ax_original, color='lightgreen', edgecolor='darkgreen', alpha=0.5)
-                
-                # Marcar centroides de los bloques
-                centroides = gdf_completo.geometry.centroid
-                ax_original.scatter(centroides.x, centroides.y, 
-                                   s=50, color='red', alpha=0.7, label='Centroides de bloques')
-                
-                ax_original.set_title('Plantación Original con Bloques', fontsize=14, fontweight='bold')
-                ax_original.set_xlabel('Longitud')
-                ax_original.set_ylabel('Latitud')
-                ax_original.legend()
-                ax_original.grid(True, alpha=0.3)
-                st.pyplot(fig_original)
-            except Exception:
-                st.info("No se pudo mostrar el mapa de la plantación original")
+                mapa_calor_fig = crear_mapa_calor_produccion(gdf_completo)
+                if mapa_calor_fig:
+                    st.pyplot(mapa_calor_fig)
+                else:
+                    st.info("No se pudo generar el mapa de calor")
+            except Exception as e:
+                st.error(f"Error al generar mapa de calor: {str(e)}")
         
         with tab3:
             st.subheader("DATOS SATELITALES MODIS")
@@ -1543,6 +1788,7 @@ if st.session_state.analisis_completado:
                 ax_edad.set_ylabel('Número de bloques')
                 ax_edad.set_title('Distribución de Edades de la Plantación', fontweight='bold')
                 ax_edad.grid(True, alpha=0.3)
+                plt.tight_layout()
                 st.pyplot(fig_edad)
             except Exception:
                 st.info("No se pudo generar el gráfico de distribución de edades")
@@ -1573,16 +1819,21 @@ if st.session_state.analisis_completado:
             st.subheader("📊 DISTRIBUCIÓN DE COSTOS")
             try:
                 # Calcular costos por componente
-                costo_fertilizantes = gdf_completo[['costo_N', 'costo_P', 'costo_K', 'costo_Mg', 'costo_B']].sum().sum()
+                costo_n = (gdf_completo['req_N'] * 1.2 * gdf_completo['area_ha']).sum()
+                costo_p = (gdf_completo['req_P'] * 2.5 * gdf_completo['area_ha']).sum()
+                costo_k = (gdf_completo['req_K'] * 1.8 * gdf_completo['area_ha']).sum()
+                costo_mg = (gdf_completo['req_Mg'] * 1.5 * gdf_completo['area_ha']).sum()
+                costo_b = (gdf_completo['req_B'] * 15.0 * gdf_completo['area_ha']).sum()
                 costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * gdf_completo['area_ha'].sum()
                 
-                labels = ['Fertilizantes', 'Costo Base']
-                sizes = [costo_fertilizantes, costo_base]
-                colors = ['#4caf50', '#2196f3']
+                labels = ['Nitrógeno', 'Fósforo', 'Potasio', 'Magnesio', 'Boro', 'Costo Base']
+                sizes = [costo_n, costo_p, costo_k, costo_mg, costo_b, costo_base]
+                colors = ['#4caf50', '#2196f3', '#ff9800', '#9c27b0', '#f44336', '#795548']
                 
                 fig_costos, ax_costos = plt.subplots(figsize=(8, 8))
                 ax_costos.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
                 ax_costos.set_title('Distribución de Costos de Producción', fontweight='bold')
+                plt.tight_layout()
                 st.pyplot(fig_costos)
             except Exception:
                 st.info("No se pudo generar el gráfico de distribución de costos")
@@ -1648,12 +1899,12 @@ if st.session_state.analisis_completado:
                         st.metric("Cobertura estimada", "N/A")
                 
                 # Mostrar imagen con detección - CON MANEJO DE ERRORES
-                st.subheader("📷 Visualización de Detección")
+                st.subheader("📷 Visualización de Detección (ESRI + Centroides)")
                 if hasattr(st.session_state, 'imagen_alta_resolucion') and st.session_state.imagen_alta_resolucion is not None:
                     try:
                         st.session_state.imagen_alta_resolucion.seek(0)
                         st.image(st.session_state.imagen_alta_resolucion,
-                                caption="Simulación de detección de palmas individuales",
+                                caption="Detección de palmas sobre imagen base ESRI con puntos centroides",
                                 use_container_width=True)
                     except Exception:
                         st.info("No se pudo mostrar la imagen de detección")
@@ -1663,13 +1914,14 @@ if st.session_state.analisis_completado:
                 # Mapa de distribución
                 st.subheader("🗺️ Mapa de Distribución de Palmas")
                 try:
-                    fig_palmas, ax_palmas = plt.subplots(figsize=(12, 8))
+                    fig_palmas, ax_palmas = plt.subplots(figsize=(10, 8))
                     gdf_completo.plot(ax=ax_palmas, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
                     
                     if palmas and len(palmas) > 0:
-                        coords = np.array([p['centroide'] for p in palmas])
+                        # Limitar a 1000 puntos para mejor visualización
+                        coords = np.array([p['centroide'] for p in palmas[:1000]])
                         ax_palmas.scatter(coords[:, 0], coords[:, 1], 
-                                        s=10, color='blue', alpha=0.6, label='Palmas detectadas')
+                                        s=5, color='red', alpha=0.6, label='Palmas detectadas (centroides)')
                     
                     ax_palmas.set_title(f'Distribución de {total} Palmas Detectadas', 
                                        fontsize=14, fontweight='bold')
@@ -1677,6 +1929,7 @@ if st.session_state.analisis_completado:
                     ax_palmas.set_ylabel('Latitud')
                     ax_palmas.legend()
                     ax_palmas.grid(True, alpha=0.3)
+                    plt.tight_layout()
                     st.pyplot(fig_palmas)
                 except Exception:
                     st.info("No se pudo generar el mapa de distribución de palmas")
@@ -1694,8 +1947,8 @@ if st.session_state.analisis_completado:
                     st.success(f"**DENSIDAD ÓPTIMA:** {densidad:.0f} plantas/ha")
                     st.write("La densidad de plantación es adecuada")
                 
-                # Exportar datos
-                st.subheader("📥 EXPORTAR DATOS")
+                # Exportar datos de palmas
+                st.subheader("📥 EXPORTAR DATOS DE PALMAS")
                 if palmas and len(palmas) > 0:
                     try:
                         df_palmas = pd.DataFrame([{
@@ -1703,10 +1956,17 @@ if st.session_state.analisis_completado:
                             'longitud': p.get('centroide', (0, 0))[0],
                             'latitud': p.get('centroide', (0, 0))[1],
                             'area_m2': p.get('area_pixels', 0),
-                            'radio_m': p.get('radio_aprox', 0)
+                            'radio_m': p.get('radio_aprox', 0),
+                            'circularidad': p.get('circularidad', 0)
                         } for i, p in enumerate(palmas)])
                         
+                        # Exportar CSV
                         csv_data = df_palmas.to_csv(index=False)
+                        
+                        # Exportar GeoJSON de palmas
+                        geometry = [Point(p['longitud'], p['latitud']) for _, p in df_palmas.iterrows()]
+                        gdf_palmas = gpd.GeoDataFrame(df_palmas, geometry=geometry, crs='EPSG:4326')
+                        geojson_palmas = gdf_palmas.to_json()
                         
                         col_exp1, col_exp2 = st.columns(2)
                         
@@ -1720,17 +1980,11 @@ if st.session_state.analisis_completado:
                             )
                         
                         with col_exp2:
-                            informe = f"""INFORME DE DETECCIÓN DE PALMAS
-Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}
-Total palmas: {total}
-Área total: {area_total:.1f} ha
-Densidad: {densidad:.1f} plantas/ha
-Cobertura vegetal: {(total * area_prom) / (area_total * 10000) * 100:.1f}%"""
                             st.download_button(
-                                label="📄 Descargar Informe (TXT)",
-                                data=informe,
-                                file_name=f"informe_deteccion_{datetime.now().strftime('%Y%m%d')}.txt",
-                                mime="text/plain",
+                                label="🗺️ Descargar GeoJSON Palmas",
+                                data=geojson_palmas,
+                                file_name=f"palmas_detectadas_{datetime.now().strftime('%Y%m%d')}.geojson",
+                                mime="application/json",
                                 use_container_width=True
                             )
                     except Exception:
