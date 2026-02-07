@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib.patches import Polygon as MplPolygon
-from matplotlib.collections import PatchCollection
 import io
 from shapely.geometry import Polygon, Point
 import math
@@ -20,7 +19,6 @@ from io import BytesIO
 import requests
 import re
 from PIL import Image, ImageDraw
-import json
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
@@ -637,37 +635,46 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
     
     # Configurar colores basados en NDVI si está disponible
     if 'ndvi_modis' in gdf.columns:
-        # Normalizar NDVI para colores
+        # Obtener valores NDVI y normalizarlos
         ndvi_values = gdf['ndvi_modis'].values
-        norm = plt.Normalize(vmin=min(ndvi_values), vmax=max(ndvi_values))
-        cmap = plt.cm.RdYlGn
+        min_ndvi, max_ndvi = ndvi_values.min(), ndvi_values.max()
         
-        # Dibujar cada polígono con color basado en NDVI
-        patches = []
+        # Crear colormap manualmente
         colors = []
+        for ndvi in ndvi_values:
+            # Normalizar NDVI entre 0 y 1
+            norm_val = (ndvi - min_ndvi) / (max_ndvi - min_ndvi) if max_ndvi > min_ndvi else 0.5
+            
+            # Asignar color basado en valor normalizado
+            if norm_val < 0.33:
+                # Rojo para bajo NDVI
+                colors.append((1.0, 0.5, 0.5, 0.6))  # RGBA
+            elif norm_val < 0.66:
+                # Amarillo para medio NDVI
+                colors.append((1.0, 1.0, 0.5, 0.6))
+            else:
+                # Verde para alto NDVI
+                colors.append((0.5, 1.0, 0.5, 0.6))
         
+        # Dibujar cada polígono con su color
         for idx, row in gdf.iterrows():
             if row.geometry.geom_type == 'Polygon':
                 poly_coords = list(row.geometry.exterior.coords)
-                polygon = MplPolygon(poly_coords, closed=True)
-                patches.append(polygon)
-                colors.append(cmap(norm(row['ndvi_modis'])))
+                polygon = MplPolygon(poly_coords, closed=True, 
+                                   facecolor=colors[idx], 
+                                   edgecolor='black', 
+                                   linewidth=1,
+                                   alpha=0.6)
+                ax.add_patch(polygon)
             elif row.geometry.geom_type == 'MultiPolygon':
                 for poly in row.geometry.geoms:
                     poly_coords = list(poly.exterior.coords)
-                    polygon = MplPolygon(poly_coords, closed=True)
-                    patches.append(polygon)
-                    colors.append(cmap(norm(row['ndvi_modis'])))
-        
-        # Crear colección de polígonos
-        collection = PatchCollection(patches, alpha=0.6, edgecolor='black', linewidth=1)
-        collection.set_array(np.array(colors))
-        ax.add_collection(collection)
-        
-        # Añadir barra de color
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        sm.set_array([])
-        plt.colorbar(sm, ax=ax, label='NDVI')
+                    polygon = MplPolygon(poly_coords, closed=True,
+                                       facecolor=colors[idx],
+                                       edgecolor='black',
+                                       linewidth=1,
+                                       alpha=0.6)
+                    ax.add_patch(polygon)
         
         # Añadir etiquetas de bloques
         for idx, row in gdf.iterrows():
@@ -1253,9 +1260,22 @@ if st.session_state.analisis_completado:
             
             # Mapa de bloques con NDVI
             st.markdown("### 🗺️ Mapa de Bloques (Coloreado por NDVI)")
-            mapa_fig = crear_mapa_bloques(gdf_completo, st.session_state.palmas_detectadas)
-            if mapa_fig:
-                st.pyplot(mapa_fig)
+            try:
+                mapa_fig = crear_mapa_bloques(gdf_completo, st.session_state.palmas_detectadas)
+                if mapa_fig:
+                    st.pyplot(mapa_fig)
+                else:
+                    st.info("No se pudo generar el mapa de bloques")
+            except Exception as e:
+                st.error(f"Error al generar mapa: {str(e)}")
+                # Mostrar un mapa simple como fallback
+                fig_fallback, ax_fallback = plt.subplots(figsize=(10, 8))
+                gdf_completo.plot(ax=ax_fallback, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
+                ax_fallback.set_title('Mapa de Bloques - Palma Aceitera', fontweight='bold')
+                ax_fallback.set_xlabel('Longitud')
+                ax_fallback.set_ylabel('Latitud')
+                ax_fallback.grid(True, alpha=0.3)
+                st.pyplot(fig_fallback)
             
             # Mapa simple de la plantación original
             st.markdown("### 📍 Mapa de la Plantación Original")
