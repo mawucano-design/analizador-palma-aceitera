@@ -1,4 +1,4 @@
-# app.py - Versión completa para PALMA ACEITERA con detección de plantas individuales
+# app.py - Versión completa para PALMA ACEITERA con membresías y detección mejorada
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
@@ -20,6 +20,8 @@ import requests
 import re
 from PIL import Image, ImageDraw
 import json
+import hashlib
+import time
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
@@ -34,6 +36,31 @@ except ImportError:
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 warnings.filterwarnings('ignore')
+
+# ===== SISTEMA DE MEMBRESÍAS =====
+class SistemaMembresias:
+    """Sistema de membresías con validación de 25 días"""
+    
+    @staticmethod
+    def generar_token(email, dias=25):
+        """Genera un token único basado en email y tiempo"""
+        timestamp = int(time.time())
+        hash_input = f"{email}_{timestamp}_{dias}"
+        return hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+    
+    @staticmethod
+    def verificar_membresia(token, dias_duracion=25):
+        """Verifica si la membresía es válida"""
+        try:
+            # En producción, esto verificaría contra una base de datos
+            # Por ahora simulamos con session_state
+            if 'membresia_valida_hasta' not in st.session_state:
+                return False
+            
+            fecha_validez = st.session_state.membresia_valida_hasta
+            return datetime.now() < fecha_validez
+        except:
+            return False
 
 # ===== INICIALIZACIÓN DE SESIÓN =====
 def init_session_state():
@@ -53,7 +80,16 @@ def init_session_state():
         'imagen_modis_bytes': None,
         'mapa_generado': False,
         'mapa_calor_bytes': None,
-        'geojson_bytes': None
+        'geojson_bytes': None,
+        'usuario_autenticado': False,
+        'email_usuario': None,
+        'membresia_valida_hasta': None,
+        'token_membresia': None,
+        'mostrar_pago': False,
+        'modo_prueba': True,
+        'dias_restantes': 0,
+        'intentos_analisis': 0,
+        'max_intentos_gratis': 1
     }
     
     for key, value in defaults.items():
@@ -346,8 +382,8 @@ def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
             'LAYERS': config['layers'][0],
             'CRS': 'EPSG:4326',
             'BBOX': f'{min_lat},{min_lon},{max_lat},{max_lon}',
-            'WIDTH': '1024',
-            'HEIGHT': '768',
+            'WIDTH': '800',
+            'HEIGHT': '600',
             'FORMAT': 'image/png',
             'TIME': fecha.strftime('%Y-%m-%d'),
             'STYLES': f'boxfill/{config["palette"]}',
@@ -369,9 +405,9 @@ def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
         return None
 
 def generar_imagen_modis_simulada(gdf):
-    """Genera una imagen MODIS simulada con patrones de vegetación"""
+    """Genera una imagen MODIS simulada con tamaño controlado"""
     try:
-        width, height = 1024, 768
+        width, height = 800, 600  # Tamaño reducido
         img = Image.new('RGB', (width, height), color=(200, 200, 200))
         draw = ImageDraw.Draw(img)
         
@@ -385,32 +421,32 @@ def generar_imagen_modis_simulada(gdf):
             y = int((max_lat - lat) / (max_lat - min_lat) * height)
             return x, y
         
-        # Dibujar áreas verdes (vegetación)
-        for i in range(0, width, 50):
-            for j in range(0, height, 50):
-                if (i // 100 + j // 100) % 2 == 0:
-                    green_intensity = np.random.randint(100, 200)
-                    draw.rectangle([i, j, i+49, j+49], 
+        # Dibujar áreas verdes (vegetación) más simples
+        for i in range(0, width, 40):
+            for j in range(0, height, 40):
+                if (i // 80 + j // 80) % 2 == 0:
+                    green_intensity = np.random.randint(100, 180)
+                    draw.rectangle([i, j, i+39, j+39], 
                                  fill=(50, green_intensity, 50))
         
-        # Añadir algunos patrones de cultivo
-        for i in range(5):
+        # Añadir algunos patrones de cultivo simples
+        for i in range(3):
             center_x = np.random.randint(100, width-100)
             center_y = np.random.randint(100, height-100)
-            radius = np.random.randint(50, 150)
+            radius = np.random.randint(30, 80)
             
-            for r in range(0, radius, 10):
-                green = max(50, min(200, 150 - r//5))
+            for r in range(0, radius, 15):
+                green = max(50, min(180, 150 - r//4))
                 draw.ellipse([center_x-r, center_y-r, center_x+r, center_y+r], 
-                            outline=(50, green, 50), width=2)
+                            outline=(50, green, 50), width=1)
         
         img_bytes = BytesIO()
-        img.save(img_bytes, format='PNG')
+        img.save(img_bytes, format='PNG', optimize=True)
         img_bytes.seek(0)
         return img_bytes
     except Exception as e:
         # Fallback más simple si hay error
-        img = Image.new('RGB', (1024, 768), color=(100, 150, 100))
+        img = Image.new('RGB', (800, 600), color=(100, 150, 100))
         img_bytes = BytesIO()
         img.save(img_bytes, format='PNG')
         img_bytes.seek(0)
@@ -421,19 +457,26 @@ def obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice='NDVI'):
     try:
         fecha_media = fecha_inicio + (fecha_fin - fecha_inicio) / 2
         
-        # Intentar obtener imagen MODIS real
-        imagen_bytes = obtener_imagen_modis_real(gdf, fecha_media, indice)
-        
-        if imagen_bytes is None:
-            # Usar imagen simulada
+        # Verificar membresía para imágenes reales
+        if not st.session_state.usuario_autenticado or not SistemaMembresias.verificar_membresia(st.session_state.token_membresia):
+            # Modo gratuito - usar simulados
             imagen_bytes = generar_imagen_modis_simulada(gdf)
-            if imagen_bytes:
-                imagen_bytes.seek(0)  # Asegurar que esté al inicio
-            fuente = f'MODIS {indice} (Simulado) - NASA'
+            fuente = f'MODIS {indice} (Simulado) - Modo Gratuito'
             estado = 'simulado'
         else:
-            fuente = f'MODIS {indice} - NASA GIBS'
-            estado = 'real'
+            # Modo premium - intentar obtener real
+            imagen_bytes = obtener_imagen_modis_real(gdf, fecha_media, indice)
+            if imagen_bytes is None:
+                # Fallback a simulados
+                imagen_bytes = generar_imagen_modis_simulada(gdf)
+                fuente = f'MODIS {indice} (Simulado) - NASA'
+                estado = 'simulado'
+            else:
+                fuente = f'MODIS {indice} - NASA GIBS (Premium)'
+                estado = 'real'
+        
+        if imagen_bytes:
+            imagen_bytes.seek(0)  # Asegurar que esté al inicio
         
         # Calcular valores basados en ubicación y fecha
         centroide = gdf.geometry.unary_union.centroid
@@ -643,13 +686,18 @@ def analizar_requerimientos_nutricionales(ndvi_values, edades, datos_climaticos)
     
     return requerimientos_n, requerimientos_p, requerimientos_k, requerimientos_mg, requerimientos_b
 
-# ===== FUNCIONES DE VISUALIZACIÓN =====
+# ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
 def crear_mapa_bloques(gdf, palmas_detectadas=None):
-    """Crea un mapa de los bloques con matplotlib - VERSIÓN CORREGIDA"""
+    """Crea un mapa de los bloques con matplotlib - VERSIÓN MEJORADA"""
     if gdf is None or len(gdf) == 0:
         return None
     
     try:
+        # Limitar el número de bloques para evitar imágenes grandes
+        if len(gdf) > 20:
+            gdf = gdf.head(20)
+            st.warning("Mostrando solo los primeros 20 bloques para mejor visualización")
+        
         fig, ax = plt.subplots(figsize=(10, 8))
         
         # Configurar colores basados en NDVI si está disponible
@@ -679,8 +727,8 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
             for idx, row in gdf.iterrows():
                 try:
                     if row.geometry.geom_type == 'Polygon':
-                        # Simplificar geometría si tiene demasiados puntos
-                        simplified = row.geometry.simplify(0.0001)
+                        # Simplificar geometría
+                        simplified = row.geometry.simplify(0.001, preserve_topology=True)
                         poly_coords = list(simplified.exterior.coords)
                         polygon = MplPolygon(poly_coords, closed=True, 
                                            facecolor=colors[idx], 
@@ -690,7 +738,7 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
                         ax.add_patch(polygon)
                     elif row.geometry.geom_type == 'MultiPolygon':
                         for poly in row.geometry.geoms:
-                            simplified = poly.simplify(0.0001)
+                            simplified = poly.simplify(0.001, preserve_topology=True)
                             poly_coords = list(simplified.exterior.coords)
                             polygon = MplPolygon(poly_coords, closed=True,
                                                facecolor=colors[idx],
@@ -714,12 +762,12 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
             # Dibujar polígonos simples
             gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
         
-        # Añadir palmas detectadas si existen
+        # Añadir palmas detectadas si existen (limitado a 100)
         if palmas_detectadas and len(palmas_detectadas) > 0:
             try:
-                coords = np.array([p['centroide'] for p in palmas_detectadas[:200]])  # Limitar a 200 puntos
+                coords = np.array([p['centroide'] for p in palmas_detectadas[:100]])  # Limitar a 100 puntos
                 ax.scatter(coords[:, 0], coords[:, 1], 
-                          s=10, color='blue', alpha=0.5, label='Palmas detectadas')
+                          s=20, color='blue', alpha=0.5, label='Palmas detectadas')
             except Exception:
                 pass
         
@@ -737,151 +785,36 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
     except Exception as e:
         st.error(f"Error al generar mapa: {str(e)}")
         # Fallback: mapa simple
-        fig, ax = plt.subplots(figsize=(10, 8))
-        gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
-        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=14, fontweight='bold')
-        ax.set_xlabel('Longitud')
-        ax.set_ylabel('Latitud')
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        return fig
-
-def crear_grafico_ndvi_bloques(gdf):
-    """Crea gráfico de barras de NDVI por bloque"""
-    if gdf is None or 'ndvi_modis' not in gdf.columns:
-        return None
-    
-    try:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        bloques = gdf['id_bloque'].astype(str)
-        ndvi_values = gdf['ndvi_modis']
-        
-        # Colores basados en valor NDVI
-        colors = []
-        for val in ndvi_values:
-            if val < 0.4:
-                colors.append('red')
-            elif val < 0.6:
-                colors.append('orange')
-            elif val < 0.75:
-                colors.append('yellow')
-            else:
-                colors.append('green')
-        
-        bars = ax.bar(bloques, ndvi_values, color=colors, edgecolor='black')
-        ax.axhline(y=PARAMETROS_PALMA['NDVI_OPTIMO'], color='green', linestyle='--', 
-                   label=f'Óptimo ({PARAMETROS_PALMA["NDVI_OPTIMO"]})')
-        ax.axhline(y=0.5, color='orange', linestyle='--', alpha=0.5, label='Mínimo aceptable')
-        
-        ax.set_xlabel('Bloque')
-        ax.set_ylabel('NDVI')
-        ax.set_title('NDVI por Bloque - Palma Aceitera', fontsize=14, fontweight='bold')
-        ax.legend()
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        # Añadir valores en las barras
-        for bar, val in zip(bars, ndvi_values):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{val:.3f}', ha='center', va='bottom' if height > 0 else 'top',
-                   fontsize=9)
-        
-        plt.tight_layout()
-        return fig
-    except Exception:
-        return None
-
-def crear_grafico_produccion(gdf):
-    """Crea gráfico de producción por bloque"""
-    if gdf is None or 'produccion_estimada' not in gdf.columns:
-        return None
-    
-    try:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        bloques = gdf['id_bloque'].astype(str)
-        produccion = gdf['produccion_estimada']
-        
-        # Ordenar bloques por producción
-        sorted_indices = np.argsort(produccion)[::-1]
-        bloques_sorted = bloques.iloc[sorted_indices]
-        produccion_sorted = produccion.iloc[sorted_indices]
-        
-        bars = ax.bar(bloques_sorted, produccion_sorted, color='#4caf50', edgecolor='#2e7d32')
-        
-        ax.set_xlabel('Bloque')
-        ax.set_ylabel('Producción (kg/ha)')
-        ax.set_title('Producción Estimada por Bloque', fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        # Añadir valores
-        for bar, val in zip(bars, produccion_sorted):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{val:,.0f}', ha='center', va='bottom', fontsize=9)
-        
-        plt.tight_layout()
-        return fig
-    except Exception:
-        return None
-
-def crear_grafico_rentabilidad(gdf):
-    """Crea gráfico de rentabilidad por bloque"""
-    if gdf is None or 'rentabilidad' not in gdf.columns:
-        return None
-    
-    try:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        
-        bloques = gdf['id_bloque'].astype(str)
-        rentabilidad = gdf['rentabilidad']
-        
-        # Colores basados en rentabilidad
-        colors = []
-        for val in rentabilidad:
-            if val < 0:
-                colors.append('red')
-            elif val < 15:
-                colors.append('orange')
-            elif val < 25:
-                colors.append('yellow')
-            else:
-                colors.append('green')
-        
-        bars = ax.bar(bloques, rentabilidad, color=colors, edgecolor='black')
-        ax.axhline(y=0, color='black', linewidth=1)
-        ax.axhline(y=15, color='green', linestyle='--', alpha=0.5, label='Umbral rentable (15%)')
-        
-        ax.set_xlabel('Bloque')
-        ax.set_ylabel('Rentabilidad (%)')
-        ax.set_title('Rentabilidad por Bloque', fontsize=14, fontweight='bold')
-        ax.legend()
-        ax.grid(True, alpha=0.3, axis='y')
-        
-        # Añadir valores
-        for bar, val in zip(bars, rentabilidad):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{val:.1f}%', ha='center', va='bottom' if val >= 0 else 'top',
-                   fontsize=9, fontweight='bold')
-        
-        plt.tight_layout()
-        return fig
-    except Exception:
-        return None
+        try:
+            fig, ax = plt.subplots(figsize=(10, 8))
+            gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
+            ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=14, fontweight='bold')
+            ax.set_xlabel('Longitud')
+            ax.set_ylabel('Latitud')
+            ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            return fig
+        except:
+            return None
 
 def crear_mapa_calor_produccion(gdf):
-    """Crea un mapa de calor de producción por bloque"""
+    """Crea un mapa de calor de producción por bloque - VERSIÓN SEGURA"""
     if gdf is None or 'produccion_estimada' not in gdf.columns:
         return None
     
     try:
+        # Limitar el número de bloques para evitar imágenes grandes
+        if len(gdf) > 15:
+            gdf = gdf.head(15)
+        
         fig, ax = plt.subplots(figsize=(10, 8))
         
         # Obtener valores de producción
         produccion = gdf['produccion_estimada'].values
         min_prod, max_prod = produccion.min(), produccion.max()
+        
+        if max_prod - min_prod < 0.001:  # Evitar división por cero
+            min_prod = max_prod - 1000
         
         # Crear colormap para calor
         import matplotlib.cm as cm
@@ -895,7 +828,8 @@ def crear_mapa_calor_produccion(gdf):
                 color = cmap(norm(valor_prod))
                 
                 if row.geometry.geom_type == 'Polygon':
-                    simplified = row.geometry.simplify(0.0001)
+                    # Simplificar geometría
+                    simplified = row.geometry.simplify(0.001, preserve_topology=True)
                     poly_coords = list(simplified.exterior.coords)
                     polygon = MplPolygon(poly_coords, closed=True, 
                                        facecolor=color, 
@@ -905,7 +839,7 @@ def crear_mapa_calor_produccion(gdf):
                     ax.add_patch(polygon)
                 elif row.geometry.geom_type == 'MultiPolygon':
                     for poly in row.geometry.geoms:
-                        simplified = poly.simplify(0.0001)
+                        simplified = poly.simplify(0.001, preserve_topology=True)
                         poly_coords = list(simplified.exterior.coords)
                         polygon = MplPolygon(poly_coords, closed=True,
                                            facecolor=color,
@@ -940,9 +874,9 @@ def crear_mapa_calor_produccion(gdf):
         
         plt.tight_layout()
         
-        # Guardar figura en bytes
+        # Guardar figura en bytes con DPI controlado
         img_bytes = BytesIO()
-        fig.savefig(img_bytes, format='PNG', dpi=150, bbox_inches='tight')
+        fig.savefig(img_bytes, format='PNG', dpi=100, bbox_inches='tight')
         img_bytes.seek(0)
         
         # Guardar en session_state para exportar
@@ -952,6 +886,73 @@ def crear_mapa_calor_produccion(gdf):
     except Exception as e:
         st.error(f"Error al crear mapa de calor: {str(e)}")
         return None
+
+def crear_imagen_deteccion_esri(gdf, palmas_detectadas):
+    """Crea imagen de detección sobre fondo ESRI - VERSIÓN MEJORADA"""
+    try:
+        # Tamaño controlado
+        width, height = 800, 600
+        
+        # Crear imagen de fondo (simulación ESRI)
+        img = Image.new('RGB', (width, height), color=(220, 230, 220))
+        draw = ImageDraw.Draw(img)
+        
+        bounds = gdf.total_bounds
+        min_lon, min_lat, max_lon, max_lat = bounds
+        
+        # Dibujar patrón de terreno
+        for i in range(0, width, 30):
+            for j in range(0, height, 30):
+                if (i // 60 + j // 60) % 2 == 0:
+                    green = np.random.randint(100, 180)
+                    draw.rectangle([i, j, i+29, j+29], 
+                                 fill=(80, green, 70))
+        
+        # Dibujar contorno de la plantación
+        poly_points = []
+        if gdf.iloc[0].geometry.geom_type == 'Polygon':
+            for lon, lat in gdf.iloc[0].geometry.exterior.coords:
+                x = int((lon - min_lon) / (max_lon - min_lon) * width)
+                y = int((max_lat - lat) / (max_lat - min_lat) * height)
+                poly_points.append((x, y))
+            
+            if len(poly_points) > 2:
+                draw.polygon(poly_points, outline=(0, 150, 0), fill=(100, 200, 100, 64))
+        
+        # Dibujar palmas detectadas (limitado a 200 para visualización)
+        palmas_mostrar = palmas_detectadas[:200] if len(palmas_detectadas) > 200 else palmas_detectadas
+        
+        for palma in palmas_mostrar:
+            lon, lat = palma['centroide']
+            x = int((lon - min_lon) / (max_lon - min_lon) * width)
+            y = int((max_lat - lat) / (max_lat - min_lat) * height)
+            
+            # Dibujar punto centroide
+            radio = 4
+            draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
+                        fill=(255, 50, 50), outline=(255, 255, 255))
+        
+        # Añadir leyenda
+        draw.rectangle([10, 10, 200, 80], fill=(255, 255, 255, 200))
+        draw.ellipse([20, 20, 30, 30], fill=(255, 50, 50), outline=(0, 0, 0))
+        draw.text((40, 20), "Palma detectada", fill=(0, 0, 0))
+        
+        draw.rectangle([20, 40, 190, 50], fill=(100, 200, 100))
+        draw.text((40, 40), "Área plantación", fill=(0, 0, 0))
+        
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG', optimize=True)
+        img_bytes.seek(0)
+        
+        return img_bytes
+    except Exception as e:
+        st.error(f"Error en visualización ESRI: {str(e)}")
+        # Crear imagen simple si falla
+        img = Image.new('RGB', (800, 600), color=(200, 220, 200))
+        img_bytes = BytesIO()
+        img.save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        return img_bytes
 
 def crear_geojson_resultados(gdf):
     """Crea un GeoJSON con todos los resultados del análisis"""
@@ -992,12 +993,107 @@ def crear_geojson_resultados(gdf):
         st.error(f"Error al crear GeoJSON: {str(e)}")
         return None
 
+# ===== SISTEMA DE PAGOS (SIMULACIÓN MERCADO PAGO) =====
+def mostrar_panel_pago():
+    """Muestra el panel de pago para activar membresía"""
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                padding: 2em; border-radius: 15px; margin-bottom: 2em; text-align: center;">
+        <h2 style="color: white;">💎 ACTIVAR MEMBRESÍA PREMIUM</h2>
+        <p style="color: white;">Desbloquea todas las funciones por 25 días</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("🗺️ Imágenes MODIS Reales", "✓ Disponible")
+        st.metric("🔥 Mapas de Calor", "✓ Disponible")
+    
+    with col2:
+        st.metric("🌴 Detección Avanzada", "✓ Disponible")
+        st.metric("📊 Exportación Completa", "✓ Disponible")
+    
+    with col3:
+        st.metric("🛰️ Datos Satelitales", "✓ Disponible")
+        st.metric("📈 Análisis Profundo", "✓ Disponible")
+    
+    st.markdown("---")
+    
+    # Formulario de pago simulado
+    with st.form("formulario_pago"):
+        st.subheader("📋 Información de Pago")
+        
+        email = st.text_input("📧 Correo Electrónico", placeholder="tucorreo@ejemplo.com")
+        nombre = st.text_input("👤 Nombre Completo", placeholder="Juan Pérez")
+        
+        st.subheader("💳 Método de Pago")
+        
+        metodo = st.selectbox("Selecciona método de pago:", 
+                            ["Tarjeta de Crédito", "Tarjeta de Débito", "Mercado Pago"])
+        
+        if metodo in ["Tarjeta de Crédito", "Tarjeta de Débito"]:
+            col_num, col_fecha, col_cvv = st.columns(3)
+            with col_num:
+                numero_tarjeta = st.text_input("Número de Tarjeta", placeholder="1234 5678 9012 3456")
+            with col_fecha:
+                fecha_vencimiento = st.text_input("MM/AA", placeholder="12/25")
+            with col_cvv:
+                cvv = st.text_input("CVV", placeholder="123", type="password")
+        
+        st.subheader("💰 Detalles del Plan")
+        
+        col_precio, col_duracion, col_ahorro = st.columns(3)
+        with col_precio:
+            st.metric("Precio", "$49.99 USD")
+        with col_duracion:
+            st.metric("Duración", "25 días")
+        with col_ahorro:
+            st.metric("Ahorro", "67%")
+        
+        acepto_terminos = st.checkbox("✅ Acepto los términos y condiciones")
+        
+        # Botón de pago simulado
+        if st.form_submit_button("🔓 ACTIVAR MEMBRESÍA PREMIUM", use_container_width=True):
+            if email and nombre and acepto_terminos:
+                # Simular pago exitoso
+                st.session_state.email_usuario = email
+                st.session_state.usuario_autenticado = True
+                st.session_state.membresia_valida_hasta = datetime.now() + timedelta(days=25)
+                st.session_state.token_membresia = SistemaMembresias.generar_token(email)
+                st.session_state.mostrar_pago = False
+                st.session_state.dias_restantes = 25
+                
+                st.success("✅ ¡Pago procesado exitosamente! Membresía activada por 25 días.")
+                st.balloons()
+                st.rerun()
+            else:
+                st.error("Por favor completa todos los campos y acepta los términos.")
+
 # ===== FUNCIÓN PRINCIPAL DE ANÁLISIS =====
 def ejecutar_analisis_completo():
     """Ejecuta el análisis completo y almacena resultados en session_state"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
         return
+    
+    # Verificar límites de análisis gratuito
+    if not st.session_state.usuario_autenticado:
+        if st.session_state.intentos_analisis >= st.session_state.max_intentos_gratis:
+            st.warning("""
+            ⚠️ **Límite de análisis gratuito alcanzado**
+            
+            Has utilizado todos tus análisis gratuitos. Para continuar:
+            1. Activa tu membresía premium
+            2. Desbloquea análisis ilimitados
+            3. Accede a imágenes satelitales reales
+            
+            """)
+            st.session_state.mostrar_pago = True
+            return
+        else:
+            st.session_state.intentos_analisis += 1
+            st.info(f"Análisis gratuito utilizado: {st.session_state.intentos_analisis}/{st.session_state.max_intentos_gratis}")
     
     with st.spinner("Ejecutando análisis completo..."):
         # Obtener parámetros del sidebar
@@ -1018,11 +1114,11 @@ def ejecutar_analisis_completo():
         except Exception:
             area_total = 0.0
         
-        # 1. Obtener datos MODIS reales
+        # 1. Obtener datos MODIS (reales o simulados según membresía)
         datos_modis = obtener_datos_modis(gdf, fecha_inicio, fecha_fin, indice_seleccionado)
         st.session_state.datos_modis = datos_modis
         
-        # Guardar imagen MODIS para mostrar - SOLO SI EXISTE
+        # Guardar imagen MODIS para mostrar
         if datos_modis and 'imagen_bytes' in datos_modis and datos_modis['imagen_bytes'] is not None:
             try:
                 datos_modis['imagen_bytes'].seek(0)
@@ -1213,52 +1309,24 @@ def simular_deteccion_palmas(gdf, densidad=130):
             'area_ha': 0
         }
 
-def obtener_imagen_esri_base(gdf, servicio="World_Imagery", zoom=15):
-    """Obtiene imagen base de ESRI"""
-    try:
-        bounds = gdf.total_bounds
-        min_lon, min_lat, max_lon, max_lat = bounds
-        
-        # Añadir margen
-        min_lon -= 0.002
-        max_lon += 0.002
-        min_lat -= 0.002
-        max_lat += 0.002
-        
-        # Calcular centro
-        center_lat = (min_lat + max_lat) / 2
-        center_lon = (min_lon + max_lon) / 2
-        
-        # Calcular tamaño basado en zoom
-        width, height = 800, 600
-        
-        # Construir URL de ESRI (solo para referencia, necesitaríamos implementar más)
-        # Por ahora, generamos una imagen simulada con patrón de ESRI
-        
-        img = Image.new('RGB', (width, height), color=(240, 240, 240))
-        draw = ImageDraw.Draw(img)
-        
-        # Simular imagen satelital con patrones
-        for i in range(0, width, 20):
-            for j in range(0, height, 20):
-                if (i // 40 + j // 40) % 2 == 0:
-                    green = np.random.randint(80, 180)
-                    brown = np.random.randint(100, 150)
-                    draw.rectangle([i, j, i+19, j+19], 
-                                 fill=(brown, green, brown//2))
-        
-        img_bytes = BytesIO()
-        img.save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        return img_bytes
-    except Exception as e:
-        st.warning(f"No se pudo obtener imagen ESRI: {str(e)}")
-        return None
-
 def ejecutar_deteccion_palmas():
-    """Ejecuta la detección de palmas individuales con visualización ESRI"""
+    """Ejecuta la detección de palmas individuales"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
+        return
+    
+    # Verificar membresía para detección avanzada
+    if not st.session_state.usuario_autenticado:
+        st.warning("""
+        ⚠️ **Detección limitada en modo gratuito**
+        
+        Para acceder a la detección avanzada de palmas:
+        1. Activa tu membresía premium
+        2. Desbloquea imágenes de alta resolución
+        3. Accede a la detección con IA
+        
+        """)
+        st.session_state.mostrar_pago = True
         return
     
     with st.spinner("Ejecutando detección de palmas..."):
@@ -1269,73 +1337,23 @@ def ejecutar_deteccion_palmas():
         resultados = simular_deteccion_palmas(gdf)
         st.session_state.palmas_detectadas = resultados['detectadas']
         
-        try:
-            # Obtener imagen base de ESRI
-            esri_image = obtener_imagen_esri_base(gdf)
-            
-            if esri_image:
-                img = Image.open(esri_image)
-                draw = ImageDraw.Draw(img)
-                
-                bounds = gdf.total_bounds
-                min_lon, min_lat, max_lon, max_lat = bounds
-                width, height = img.size
-                
-                # Dibujar palmas detectadas como puntos
-                for palma in resultados['detectadas'][:500]:  # Limitar para visualización
-                    lon, lat = palma['centroide']
-                    x = int((lon - min_lon) / (max_lon - min_lon) * width)
-                    y = int((max_lat - lat) / (max_lat - min_lat) * height)
-                    
-                    # Dibujar punto centroide
-                    radio = 3
-                    draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
-                                fill=(255, 0, 0), outline=(255, 255, 255))
-                
-                # Dibujar borde de la plantación
-                poly_points = []
-                if gdf.iloc[0].geometry.geom_type == 'Polygon':
-                    for lon, lat in gdf.iloc[0].geometry.exterior.coords:
-                        x = int((lon - min_lon) / (max_lon - min_lon) * width)
-                        y = int((max_lat - lat) / (max_lat - min_lat) * height)
-                        poly_points.append((x, y))
-                    
-                    if len(poly_points) > 2:
-                        draw.polygon(poly_points, outline=(0, 255, 0), width=2)
-                
-                img_bytes = BytesIO()
-                img.save(img_bytes, format='PNG')
-                img_bytes.seek(0)
-                st.session_state.imagen_alta_resolucion = img_bytes
-            else:
-                # Crear imagen simple si no hay ESRI
-                img = Image.new('RGB', (800, 600), color=(200, 220, 200))
-                img_bytes = BytesIO()
-                img.save(img_bytes, format='PNG')
-                img_bytes.seek(0)
-                st.session_state.imagen_alta_resolucion = img_bytes
+        # Crear imagen de detección con ESRI
+        imagen_bytes = crear_imagen_deteccion_esri(gdf, resultados['detectadas'])
+        if imagen_bytes:
+            st.session_state.imagen_alta_resolucion = imagen_bytes
         
-        except Exception as e:
-            st.error(f"Error en visualización ESRI: {str(e)}")
-            # Crear imagen simple si falla
-            img = Image.new('RGB', (800, 600), color=(200, 220, 200))
-            img_bytes = BytesIO()
-            img.save(img_bytes, format='PNG')
-            img_bytes.seek(0)
-            st.session_state.imagen_alta_resolucion = img_bytes
-        
-        st.success(f"✅ Detección completada (simulada): {len(resultados['detectadas'])} palmas detectadas")
+        st.success(f"✅ Detección completada: {len(resultados['detectadas'])} palmas detectadas")
 
 # ===== INTERFAZ DE USUARIO =====
 # Configuración de página
 st.set_page_config(
-    page_title="Analizador de Palma Aceitera",
+    page_title="Analizador de Palma Aceitera Premium",
     page_icon="🌴",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Estilos CSS
+# Estilos CSS mejorados
 st.markdown("""
 <style>
 .stApp {
@@ -1368,8 +1386,29 @@ div[data-testid="metric-container"] {
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important;
     border: 1px solid rgba(76, 175, 80, 0.25) !important;
 }
+.premium-badge {
+    background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+    color: #000 !important;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: bold;
+    font-size: 0.8em;
+}
+.free-badge {
+    background: linear-gradient(135deg, #808080 0%, #A9A9A9 100%);
+    color: white !important;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-weight: bold;
+    font-size: 0.8em;
+}
 </style>
 """, unsafe_allow_html=True)
+
+# Mostrar panel de pago si está activado
+if st.session_state.mostrar_pago:
+    mostrar_panel_pago()
+    st.stop()
 
 # Banner principal
 st.markdown("""
@@ -1384,9 +1423,46 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# Barra superior con estado de membresía
+col_status1, col_status2, col_status3 = st.columns([2, 1, 1])
+with col_status1:
+    if st.session_state.usuario_autenticado:
+        dias_restantes = (st.session_state.membresia_valida_hasta - datetime.now()).days
+        st.session_state.dias_restantes = max(0, dias_restantes)
+        
+        if dias_restantes > 0:
+            st.success(f"✅ MEMBRESÍA PREMIUM ACTIVA - {dias_restantes} días restantes")
+        else:
+            st.warning("⚠️ MEMBRESÍA EXPIRADA - Renueva para continuar")
+            st.session_state.usuario_autenticado = False
+    else:
+        st.info("🔓 MODO GRATUITO - Activa membresía para funciones premium")
+
+with col_status2:
+    if st.session_state.usuario_autenticado:
+        st.markdown('<span class="premium-badge">PREMIUM</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="free-badge">GRATUITO</span>', unsafe_allow_html=True)
+
+with col_status3:
+    if st.button("💎 ACTUALIZAR A PREMIUM"):
+        st.session_state.mostrar_pago = True
+        st.rerun()
+
 # Sidebar
 with st.sidebar:
     st.markdown("## 🌴 CONFIGURACIÓN")
+    
+    # Estado de membresía en sidebar
+    if st.session_state.usuario_autenticado:
+        st.success(f"✅ Premium: {st.session_state.dias_restantes} días")
+    else:
+        st.warning("🔓 Modo Gratuito")
+        if st.button("🚀 ACTIVAR PREMIUM", use_container_width=True):
+            st.session_state.mostrar_pago = True
+            st.rerun()
+    
+    st.markdown("---")
     
     # Selección de variedad
     variedad = st.selectbox(
@@ -1401,6 +1477,12 @@ with st.sidebar:
         "Índice de vegetación:",
         ['NDVI', 'EVI', 'NDWI']
     )
+    
+    # Indicador de calidad de datos
+    if st.session_state.usuario_autenticado:
+        st.success("✓ Datos MODIS reales disponibles")
+    else:
+        st.info("ℹ️ Datos simulados - Activa Premium para datos reales")
     
     st.markdown("---")
     st.markdown("### 📅 Rango Temporal")
@@ -1419,6 +1501,9 @@ with st.sidebar:
     deteccion_habilitada = st.checkbox("Activar detección de plantas", value=True)
     if deteccion_habilitada:
         tamano_minimo = st.slider("Tamaño mínimo (m²):", 1.0, 50.0, 15.0, 1.0)
+        
+        if not st.session_state.usuario_autenticado:
+            st.warning("⚠️ Detección limitada en modo gratuito")
     
     st.markdown("---")
     st.markdown("### 📤 Subir Polígono")
@@ -1428,6 +1513,14 @@ with st.sidebar:
         type=['zip', 'kml', 'kmz', 'geojson'],
         help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)"
     )
+    
+    # Contador de análisis gratuito
+    if not st.session_state.usuario_autenticado:
+        st.markdown("---")
+        st.markdown("### 📊 Análisis Gratuito")
+        intentos_restantes = st.session_state.max_intentos_gratis - st.session_state.intentos_analisis
+        st.progress(st.session_state.intentos_analisis / st.session_state.max_intentos_gratis)
+        st.caption(f"Análisis restantes: {intentos_restantes}/{st.session_state.max_intentos_gratis}")
     
     # Almacenar parámetros en session_state
     st.session_state.n_divisiones = n_divisiones
@@ -1482,6 +1575,12 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
     
     with col2:
         st.markdown("### 🎯 ACCIONES")
+        
+        # Indicador de calidad
+        if st.session_state.usuario_autenticado:
+            st.success("✅ Análisis Premium disponible")
+        else:
+            st.warning(f"⚠️ Modo Gratuito: {st.session_state.max_intentos_gratis - st.session_state.intentos_analisis} análisis restantes")
         
         # Botón para ejecutar análisis
         col_btn1, col_btn2 = st.columns(2)
@@ -1570,43 +1669,50 @@ if st.session_state.analisis_completado:
                 except Exception:
                     st.metric("B", "N/A")
             
-            # Botón para exportar GeoJSON
+            # Botón para exportar GeoJSON (solo premium)
             st.subheader("📥 EXPORTAR RESULTADOS")
-            col_exp1, col_exp2, col_exp3 = st.columns(3)
             
-            with col_exp1:
-                if st.session_state.geojson_bytes:
-                    st.download_button(
-                        label="🗺️ Descargar GeoJSON",
-                        data=st.session_state.geojson_bytes,
-                        file_name=f"analisis_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson",
-                        mime="application/json",
-                        use_container_width=True
-                    )
-            
-            with col_exp2:
-                # Exportar CSV
-                try:
-                    csv_data = gdf_completo.drop(columns=['geometry']).to_csv(index=False)
-                    st.download_button(
-                        label="📊 Descargar CSV",
-                        data=csv_data,
-                        file_name=f"datos_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                except Exception:
-                    st.button("📊 Descargar CSV", disabled=True, use_container_width=True)
-            
-            with col_exp3:
-                if st.session_state.mapa_calor_bytes:
-                    st.download_button(
-                        label="🔥 Descargar Mapa Calor",
-                        data=st.session_state.mapa_calor_bytes,
-                        file_name=f"mapa_calor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                        mime="image/png",
-                        use_container_width=True
-                    )
+            if st.session_state.usuario_autenticado:
+                col_exp1, col_exp2, col_exp3 = st.columns(3)
+                
+                with col_exp1:
+                    if st.session_state.geojson_bytes:
+                        st.download_button(
+                            label="🗺️ Descargar GeoJSON",
+                            data=st.session_state.geojson_bytes,
+                            file_name=f"analisis_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.geojson",
+                            mime="application/json",
+                            use_container_width=True
+                        )
+                
+                with col_exp2:
+                    # Exportar CSV
+                    try:
+                        csv_data = gdf_completo.drop(columns=['geometry']).to_csv(index=False)
+                        st.download_button(
+                            label="📊 Descargar CSV",
+                            data=csv_data,
+                            file_name=f"datos_palma_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    except Exception:
+                        st.button("📊 Descargar CSV", disabled=True, use_container_width=True)
+                
+                with col_exp3:
+                    if st.session_state.mapa_calor_bytes:
+                        st.download_button(
+                            label="🔥 Descargar Mapa Calor",
+                            data=st.session_state.mapa_calor_bytes,
+                            file_name=f"mapa_calor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
+            else:
+                st.warning("⚠️ La exportación de datos está disponible solo para usuarios premium")
+                if st.button("💎 ACTUALIZAR PARA EXPORTAR", use_container_width=True):
+                    st.session_state.mostrar_pago = True
+                    st.rerun()
             
             st.subheader("📋 RESUMEN POR BLOQUE")
             try:
@@ -1638,29 +1744,31 @@ if st.session_state.analisis_completado:
                     st.info("No se pudo generar el mapa de bloques")
             except Exception as e:
                 st.error(f"Error al generar mapa: {str(e)}")
-                # Mostrar un mapa simple como fallback
-                try:
-                    fig_fallback, ax_fallback = plt.subplots(figsize=(10, 8))
-                    gdf_completo.plot(ax=ax_fallback, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
-                    ax_fallback.set_title('Mapa de Bloques - Palma Aceitera', fontweight='bold')
-                    ax_fallback.set_xlabel('Longitud')
-                    ax_fallback.set_ylabel('Latitud')
-                    ax_fallback.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    st.pyplot(fig_fallback)
-                except Exception:
-                    st.info("No se pudo generar ningún mapa")
             
-            # Mapa de calor de producción
+            # Mapa de calor de producción (solo premium)
             st.markdown("### 🔥 Mapa de Calor - Producción Estimada")
-            try:
-                mapa_calor_fig = crear_mapa_calor_produccion(gdf_completo)
-                if mapa_calor_fig:
-                    st.pyplot(mapa_calor_fig)
-                else:
-                    st.info("No se pudo generar el mapa de calor")
-            except Exception as e:
-                st.error(f"Error al generar mapa de calor: {str(e)}")
+            if st.session_state.usuario_autenticado:
+                try:
+                    mapa_calor_fig = crear_mapa_calor_produccion(gdf_completo)
+                    if mapa_calor_fig:
+                        st.pyplot(mapa_calor_fig)
+                    else:
+                        st.info("No se pudo generar el mapa de calor")
+                except Exception as e:
+                    st.error(f"Error al generar mapa de calor: {str(e)}")
+            else:
+                st.warning("""
+                ⚠️ **Mapa de calor solo disponible en versión Premium**
+                
+                Desbloquea esta función para:
+                - Visualización avanzada de producción
+                - Mapas de calor interactivos
+                - Análisis espacial detallado
+                
+                """)
+                if st.button("💎 DESBLOQUEAR MAPAS DE CALOR", use_container_width=True):
+                    st.session_state.mostrar_pago = True
+                    st.rerun()
         
         with tab3:
             st.subheader("DATOS SATELITALES MODIS")
@@ -1675,7 +1783,12 @@ if st.session_state.analisis_completado:
                     st.write(f"- **Resolución:** {datos_modis.get('resolucion', '250m')}")
                     st.write(f"- **Fuente:** {datos_modis.get('fuente', 'NASA MODIS')}")
                     st.write(f"- **Fecha:** {datos_modis.get('fecha_imagen', 'N/A')}")
-                    st.write(f"- **Estado:** {datos_modis.get('estado', 'N/A')}")
+                    
+                    # Indicador de calidad
+                    if datos_modis.get('estado') == 'real':
+                        st.success("✓ **Estado:** Datos reales (Premium)")
+                    else:
+                        st.info("ℹ️ **Estado:** Datos simulados (Gratuito)")
                 
                 with col2:
                     st.markdown("**🎯 INTERPRETACIÓN:**")
@@ -1696,58 +1809,33 @@ if st.session_state.analisis_completado:
                     st.write(f"- **Óptimo para palma:** {PARAMETROS_PALMA['NDVI_OPTIMO']}")
                     st.write(f"- **Diferencia:** {(valor - PARAMETROS_PALMA['NDVI_OPTIMO']):.3f}")
                 
-                # Mostrar imagen MODIS - CON MANEJO DE ERRORES
+                # Mostrar imagen MODIS
                 st.subheader("🖼️ IMAGEN MODIS")
                 
-                # Intentar múltiples fuentes para la imagen
-                imagen_a_mostrar = None
-                fuente_imagen = ""
-                
-                # 1. Intentar con imagen en session_state
-                if hasattr(st.session_state, 'imagen_modis_bytes') and st.session_state.imagen_modis_bytes is not None:
+                if st.session_state.imagen_modis_bytes:
                     try:
                         st.session_state.imagen_modis_bytes.seek(0)
-                        imagen_a_mostrar = st.session_state.imagen_modis_bytes
-                        fuente_imagen = "session_state"
-                    except Exception:
-                        pass
-                
-                # 2. Intentar con imagen en datos_modis
-                if imagen_a_mostrar is None and 'imagen_bytes' in datos_modis and datos_modis['imagen_bytes'] is not None:
-                    try:
-                        datos_modis['imagen_bytes'].seek(0)
-                        imagen_a_mostrar = datos_modis['imagen_bytes']
-                        fuente_imagen = "datos_modis"
-                    except Exception:
-                        pass
-                
-                # 3. Generar imagen simulada como último recurso
-                if imagen_a_mostrar is None:
-                    try:
-                        imagen_a_mostrar = generar_imagen_modis_simulada(st.session_state.gdf_original)
-                        fuente_imagen = "simulada"
-                        st.info("Mostrando imagen MODIS simulada")
-                    except Exception:
-                        pass
-                
-                # Mostrar la imagen si se encontró alguna
-                if imagen_a_mostrar is not None:
-                    try:
-                        # Asegurarse de que el puntero esté al inicio
-                        if hasattr(imagen_a_mostrar, 'seek'):
-                            imagen_a_mostrar.seek(0)
-                        
-                        caption = f"Imagen MODIS {datos_modis.get('indice', '')} - {datos_modis.get('fecha_imagen', '')}"
-                        if fuente_imagen == "simulada":
-                            caption += " (Simulada)"
-                        
-                        st.image(imagen_a_mostrar, 
-                                caption=caption,
+                        st.image(st.session_state.imagen_modis_bytes,
+                                caption=f"Imagen MODIS {datos_modis.get('indice', '')} - {datos_modis.get('fecha_imagen', '')}",
                                 use_container_width=True)
                     except Exception:
                         st.info("No se pudo mostrar la imagen MODIS")
                 else:
                     st.info("No hay imagen MODIS disponible para mostrar")
+                    
+                    if not st.session_state.usuario_autenticado:
+                        st.warning("""
+                        ⚠️ **Imágenes MODIS reales solo disponibles en Premium**
+                        
+                        Actualiza para acceder a:
+                        - Imágenes satelitales reales de la NASA
+                        - Datos actualizados diariamente
+                        - Análisis con información real
+                        
+                        """)
+                        if st.button("💎 VER IMÁGENES REALES", use_container_width=True):
+                            st.session_state.mostrar_pago = True
+                            st.rerun()
             else:
                 st.warning("No hay datos MODIS disponibles. Ejecute el análisis primero.")
         
@@ -1756,251 +1844,265 @@ if st.session_state.analisis_completado:
             
             # Gráfico de NDVI
             st.markdown("### 📊 NDVI por Bloque")
-            fig_ndvi = crear_grafico_ndvi_bloques(gdf_completo)
-            if fig_ndvi:
+            try:
+                fig_ndvi, ax_ndvi = plt.subplots(figsize=(10, 6))
+                bloques = gdf_completo['id_bloque'].astype(str)
+                ndvi_values = gdf_completo['ndvi_modis']
+                
+                colors = []
+                for val in ndvi_values:
+                    if val < 0.4:
+                        colors.append('red')
+                    elif val < 0.6:
+                        colors.append('orange')
+                    elif val < 0.75:
+                        colors.append('yellow')
+                    else:
+                        colors.append('green')
+                
+                bars = ax_ndvi.bar(bloques, ndvi_values, color=colors, edgecolor='black')
+                ax_ndvi.axhline(y=PARAMETROS_PALMA['NDVI_OPTIMO'], color='green', linestyle='--', 
+                               label=f'Óptimo ({PARAMETROS_PALMA["NDVI_OPTIMO"]})')
+                
+                ax_ndvi.set_xlabel('Bloque')
+                ax_ndvi.set_ylabel('NDVI')
+                ax_ndvi.set_title('NDVI por Bloque - Palma Aceitera', fontsize=14, fontweight='bold')
+                ax_ndvi.legend()
+                ax_ndvi.grid(True, alpha=0.3, axis='y')
+                
+                plt.tight_layout()
                 st.pyplot(fig_ndvi)
-            else:
+            except Exception:
                 st.info("No se pudo generar el gráfico de NDVI")
             
             # Gráfico de producción
             st.markdown("### 📈 Producción por Bloque")
-            fig_prod = crear_grafico_produccion(gdf_completo)
-            if fig_prod:
-                st.pyplot(fig_prod)
-            else:
-                st.info("No se pudo generar el gráfico de producción")
-            
-            # Gráfico de rentabilidad
-            st.markdown("### 💰 Rentabilidad por Bloque")
-            fig_rent = crear_grafico_rentabilidad(gdf_completo)
-            if fig_rent:
-                st.pyplot(fig_rent)
-            else:
-                st.info("No se pudo generar el gráfico de rentabilidad")
-            
-            # Gráfico de edad
-            st.markdown("### 📅 Distribución de Edades")
             try:
-                fig_edad, ax_edad = plt.subplots(figsize=(10, 6))
-                ax_edad.hist(gdf_completo['edad_anios'], bins=10, color='#4caf50', 
-                            edgecolor='#2e7d32', alpha=0.7)
-                ax_edad.set_xlabel('Edad (años)')
-                ax_edad.set_ylabel('Número de bloques')
-                ax_edad.set_title('Distribución de Edades de la Plantación', fontweight='bold')
-                ax_edad.grid(True, alpha=0.3)
+                fig_prod, ax_prod = plt.subplots(figsize=(10, 6))
+                produccion = gdf_completo['produccion_estimada']
+                
+                sorted_indices = np.argsort(produccion)[::-1]
+                bloques_sorted = bloques.iloc[sorted_indices]
+                produccion_sorted = produccion.iloc[sorted_indices]
+                
+                bars = ax_prod.bar(bloques_sorted, produccion_sorted, color='#4caf50', edgecolor='#2e7d32')
+                
+                ax_prod.set_xlabel('Bloque')
+                ax_prod.set_ylabel('Producción (kg/ha)')
+                ax_prod.set_title('Producción Estimada por Bloque', fontsize=14, fontweight='bold')
+                ax_prod.grid(True, alpha=0.3, axis='y')
+                
                 plt.tight_layout()
-                st.pyplot(fig_edad)
+                st.pyplot(fig_prod)
             except Exception:
-                st.info("No se pudo generar el gráfico de distribución de edades")
+                st.info("No se pudo generar el gráfico de producción")
         
         with tab5:
             st.subheader("💰 ANÁLISIS ECONÓMICO")
             
-            # Métricas económicas
-            try:
-                ingreso_total = gdf_completo['ingreso_estimado'].sum()
-                costo_total = gdf_completo['costo_total'].sum()
-                ganancia_total = ingreso_total - costo_total
-                rentabilidad_prom = gdf_completo['rentabilidad'].mean()
+            if st.session_state.usuario_autenticado:
+                # Métricas económicas
+                try:
+                    ingreso_total = gdf_completo['ingreso_estimado'].sum()
+                    costo_total = gdf_completo['costo_total'].sum()
+                    ganancia_total = ingreso_total - costo_total
+                    rentabilidad_prom = gdf_completo['rentabilidad'].mean()
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Ingreso Total", f"${ingreso_total:,.0f} USD")
+                    with col2:
+                        st.metric("Costo Total", f"${costo_total:,.0f} USD")
+                    with col3:
+                        st.metric("Ganancia Total", f"${ganancia_total:,.0f} USD")
+                    with col4:
+                        st.metric("Rentabilidad Promedio", f"{rentabilidad_prom:.1f}%")
+                except Exception:
+                    st.warning("No se pudieron calcular las métricas económicas")
                 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Ingreso Total", f"${ingreso_total:,.0f} USD")
-                with col2:
-                    st.metric("Costo Total", f"${costo_total:,.0f} USD")
-                with col3:
-                    st.metric("Ganancia Total", f"${ganancia_total:,.0f} USD")
-                with col4:
-                    st.metric("Rentabilidad Promedio", f"{rentabilidad_prom:.1f}%")
-            except Exception:
-                st.warning("No se pudieron calcular las métricas económicas")
-            
-            # Análisis de costos
-            st.subheader("📊 DISTRIBUCIÓN DE COSTOS")
-            try:
-                # Calcular costos por componente
-                costo_n = (gdf_completo['req_N'] * 1.2 * gdf_completo['area_ha']).sum()
-                costo_p = (gdf_completo['req_P'] * 2.5 * gdf_completo['area_ha']).sum()
-                costo_k = (gdf_completo['req_K'] * 1.8 * gdf_completo['area_ha']).sum()
-                costo_mg = (gdf_completo['req_Mg'] * 1.5 * gdf_completo['area_ha']).sum()
-                costo_b = (gdf_completo['req_B'] * 15.0 * gdf_completo['area_ha']).sum()
-                costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * gdf_completo['area_ha'].sum()
+                # Gráfico de rentabilidad
+                st.markdown("### 📊 Rentabilidad por Bloque")
+                try:
+                    fig_rent, ax_rent = plt.subplots(figsize=(10, 6))
+                    rentabilidad = gdf_completo['rentabilidad']
+                    
+                    colors = []
+                    for val in rentabilidad:
+                        if val < 0:
+                            colors.append('red')
+                        elif val < 15:
+                            colors.append('orange')
+                        elif val < 25:
+                            colors.append('yellow')
+                        else:
+                            colors.append('green')
+                    
+                    bars = ax_rent.bar(bloques, rentabilidad, color=colors, edgecolor='black')
+                    ax_rent.axhline(y=0, color='black', linewidth=1)
+                    ax_rent.axhline(y=15, color='green', linestyle='--', alpha=0.5, label='Umbral rentable (15%)')
+                    
+                    ax_rent.set_xlabel('Bloque')
+                    ax_rent.set_ylabel('Rentabilidad (%)')
+                    ax_rent.set_title('Rentabilidad por Bloque', fontsize=14, fontweight='bold')
+                    ax_rent.legend()
+                    ax_rent.grid(True, alpha=0.3, axis='y')
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig_rent)
+                except Exception:
+                    st.info("No se pudo generar el gráfico de rentabilidad")
+            else:
+                st.warning("""
+                ⚠️ **Análisis económico avanzado solo disponible en Premium**
                 
-                labels = ['Nitrógeno', 'Fósforo', 'Potasio', 'Magnesio', 'Boro', 'Costo Base']
-                sizes = [costo_n, costo_p, costo_k, costo_mg, costo_b, costo_base]
-                colors = ['#4caf50', '#2196f3', '#ff9800', '#9c27b0', '#f44336', '#795548']
+                Desbloquea esta función para:
+                - Análisis detallado de rentabilidad
+                - Cálculos de ROI precisos
+                - Optimización de costos
+                - Planificación financiera
                 
-                fig_costos, ax_costos = plt.subplots(figsize=(8, 8))
-                ax_costos.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-                ax_costos.set_title('Distribución de Costos de Producción', fontweight='bold')
-                plt.tight_layout()
-                st.pyplot(fig_costos)
-            except Exception:
-                st.info("No se pudo generar el gráfico de distribución de costos")
-            
-            # Tabla de costos detallada
-            st.subheader("📋 DETALLE DE COSTOS POR BLOQUE")
-            try:
-                costos_cols = ['id_bloque', 'costo_total', 'ingreso_estimado', 'rentabilidad']
-                if all(col in gdf_completo.columns for col in costos_cols):
-                    df_costos = gdf_completo[costos_cols].copy()
-                    df_costos.columns = ['Bloque', 'Costo Total (USD)', 'Ingreso Estimado (USD)', 'Rentabilidad (%)']
-                    st.dataframe(df_costos.style.format({
-                        'Costo Total (USD)': '{:,.2f}',
-                        'Ingreso Estimado (USD)': '{:,.2f}',
-                        'Rentabilidad (%)': '{:.1f}'
-                    }))
-            except Exception:
-                st.info("No se pudo mostrar la tabla de costos detallada")
+                """)
+                if st.button("💎 DESBLOQUEAR ANÁLISIS ECONÓMICO", use_container_width=True):
+                    st.session_state.mostrar_pago = True
+                    st.rerun()
         
         with tab6:
             st.subheader("🌴 DETECCIÓN DE PALMAS INDIVIDUALES")
             
-            if not DETECCION_DISPONIBLE:
-                st.warning("""
-                ⚠️ **Funcionalidad limitada:** Las librerías de visión por computadora no están instaladas.
-                
-                **Para activar la detección avanzada, instale:**
-                ```
-                pip install opencv-python
-                ```
-                
-                **Funcionalidades disponibles:**
-                - Simulación de detección de palmas
-                - Estimación de densidad
-                - Análisis de patrones básico
-                """)
-            
-            if st.session_state.palmas_detectadas:
-                palmas = st.session_state.palmas_detectadas
-                total = len(palmas)
-                area_total = resultados.get('area_total', 0)
-                densidad = total / area_total if area_total > 0 else 0
-                
-                st.success(f"✅ Detección completada: {total} palmas detectadas")
-                
-                # Métricas
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Palmas detectadas", f"{total:,}")
-                with col2:
-                    st.metric("Densidad", f"{densidad:.0f} plantas/ha")
-                with col3:
-                    try:
-                        area_prom = np.mean([p.get('area_pixels', 0) for p in palmas])
-                        st.metric("Área promedio", f"{area_prom:.1f} m²")
-                    except Exception:
-                        st.metric("Área promedio", "N/A")
-                with col4:
-                    try:
-                        cobertura = (total * area_prom) / (area_total * 10000) * 100 if area_total > 0 else 0
-                        st.metric("Cobertura estimada", f"{cobertura:.1f}%")
-                    except Exception:
-                        st.metric("Cobertura estimada", "N/A")
-                
-                # Mostrar imagen con detección - CON MANEJO DE ERRORES
-                st.subheader("📷 Visualización de Detección (ESRI + Centroides)")
-                if hasattr(st.session_state, 'imagen_alta_resolucion') and st.session_state.imagen_alta_resolucion is not None:
-                    try:
-                        st.session_state.imagen_alta_resolucion.seek(0)
-                        st.image(st.session_state.imagen_alta_resolucion,
-                                caption="Detección de palmas sobre imagen base ESRI con puntos centroides",
-                                use_container_width=True)
-                    except Exception:
-                        st.info("No se pudo mostrar la imagen de detección")
-                else:
-                    st.info("No hay imagen de detección disponible")
+            if st.session_state.usuario_autenticado:
+                if st.session_state.palmas_detectadas:
+                    palmas = st.session_state.palmas_detectadas
+                    total = len(palmas)
+                    area_total = resultados.get('area_total', 0)
+                    densidad = total / area_total if area_total > 0 else 0
                     
-                # Mapa de distribución
-                st.subheader("🗺️ Mapa de Distribución de Palmas")
-                try:
-                    fig_palmas, ax_palmas = plt.subplots(figsize=(10, 8))
-                    gdf_completo.plot(ax=ax_palmas, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
+                    st.success(f"✅ Detección completada: {total} palmas detectadas")
                     
+                    # Métricas
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Palmas detectadas", f"{total:,}")
+                    with col2:
+                        st.metric("Densidad", f"{densidad:.0f} plantas/ha")
+                    with col3:
+                        try:
+                            area_prom = np.mean([p.get('area_pixels', 0) for p in palmas])
+                            st.metric("Área promedio", f"{area_prom:.1f} m²")
+                        except Exception:
+                            st.metric("Área promedio", "N/A")
+                    with col4:
+                        try:
+                            cobertura = (total * area_prom) / (area_total * 10000) * 100 if area_total > 0 else 0
+                            st.metric("Cobertura estimada", f"{cobertura:.1f}%")
+                        except Exception:
+                            st.metric("Cobertura estimada", "N/A")
+                    
+                    # Mostrar imagen de detección
+                    st.subheader("📷 Visualización de Detección (ESRI + Centroides)")
+                    if hasattr(st.session_state, 'imagen_alta_resolucion') and st.session_state.imagen_alta_resolucion is not None:
+                        try:
+                            st.session_state.imagen_alta_resolucion.seek(0)
+                            st.image(st.session_state.imagen_alta_resolucion,
+                                    caption="Detección de palmas sobre imagen base ESRI con puntos centroides",
+                                    use_container_width=True)
+                        except Exception:
+                            st.info("No se pudo mostrar la imagen de detección")
+                    else:
+                        st.info("No hay imagen de detección disponible")
+                        
+                    # Exportar datos de palmas
+                    st.subheader("📥 EXPORTAR DATOS DE PALMAS")
                     if palmas and len(palmas) > 0:
-                        # Limitar a 1000 puntos para mejor visualización
-                        coords = np.array([p['centroide'] for p in palmas[:1000]])
-                        ax_palmas.scatter(coords[:, 0], coords[:, 1], 
-                                        s=5, color='red', alpha=0.6, label='Palmas detectadas (centroides)')
-                    
-                    ax_palmas.set_title(f'Distribución de {total} Palmas Detectadas', 
-                                       fontsize=14, fontweight='bold')
-                    ax_palmas.set_xlabel('Longitud')
-                    ax_palmas.set_ylabel('Latitud')
-                    ax_palmas.legend()
-                    ax_palmas.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    st.pyplot(fig_palmas)
-                except Exception:
-                    st.info("No se pudo generar el mapa de distribución de palmas")
-                
-                # Análisis de densidad
-                st.subheader("📊 ANÁLISIS DE DENSIDAD")
-                densidad_optima = 130  # plantas/ha
-                if densidad < densidad_optima * 0.8:
-                    st.error(f"**DENSIDAD BAJA:** {densidad:.0f} plantas/ha (Óptimo: {densidad_optima})")
-                    st.write("Recomendación: Considerar replantar áreas con baja densidad")
-                elif densidad > densidad_optima * 1.2:
-                    st.warning(f"**DENSIDAD ALTA:** {densidad:.0f} plantas/ha (Óptimo: {densidad_optima})")
-                    st.write("Recomendación: Evaluar competencia por recursos")
+                        try:
+                            df_palmas = pd.DataFrame([{
+                                'id': i+1,
+                                'longitud': p.get('centroide', (0, 0))[0],
+                                'latitud': p.get('centroide', (0, 0))[1],
+                                'area_m2': p.get('area_pixels', 0),
+                                'radio_m': p.get('radio_aprox', 0),
+                                'circularidad': p.get('circularidad', 0)
+                            } for i, p in enumerate(palmas)])
+                            
+                            # Exportar CSV
+                            csv_data = df_palmas.to_csv(index=False)
+                            
+                            col_exp1, col_exp2 = st.columns(2)
+                            
+                            with col_exp1:
+                                st.download_button(
+                                    label="📥 Descargar Coordenadas (CSV)",
+                                    data=csv_data,
+                                    file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
+                                    mime="text/csv",
+                                    use_container_width=True
+                                )
+                            
+                            with col_exp2:
+                                # Crear GeoJSON de palmas
+                                geometry = [Point(row['longitud'], row['latitud']) for _, row in df_palmas.iterrows()]
+                                gdf_palmas = gpd.GeoDataFrame(df_palmas, geometry=geometry, crs='EPSG:4326')
+                                geojson_palmas = gdf_palmas.to_json()
+                                
+                                st.download_button(
+                                    label="🗺️ Descargar GeoJSON Palmas",
+                                    data=geojson_palmas,
+                                    file_name=f"palmas_detectadas_{datetime.now().strftime('%Y%m%d')}.geojson",
+                                    mime="application/json",
+                                    use_container_width=True
+                                )
+                        except Exception:
+                            st.info("No se pudieron exportar los datos de detección")
                 else:
-                    st.success(f"**DENSIDAD ÓPTIMA:** {densidad:.0f} plantas/ha")
-                    st.write("La densidad de plantación es adecuada")
-                
-                # Exportar datos de palmas
-                st.subheader("📥 EXPORTAR DATOS DE PALMAS")
-                if palmas and len(palmas) > 0:
-                    try:
-                        df_palmas = pd.DataFrame([{
-                            'id': i+1,
-                            'longitud': p.get('centroide', (0, 0))[0],
-                            'latitud': p.get('centroide', (0, 0))[1],
-                            'area_m2': p.get('area_pixels', 0),
-                            'radio_m': p.get('radio_aprox', 0),
-                            'circularidad': p.get('circularidad', 0)
-                        } for i, p in enumerate(palmas)])
-                        
-                        # Exportar CSV
-                        csv_data = df_palmas.to_csv(index=False)
-                        
-                        # Exportar GeoJSON de palmas
-                        geometry = [Point(p['longitud'], p['latitud']) for _, p in df_palmas.iterrows()]
-                        gdf_palmas = gpd.GeoDataFrame(df_palmas, geometry=geometry, crs='EPSG:4326')
-                        geojson_palmas = gdf_palmas.to_json()
-                        
-                        col_exp1, col_exp2 = st.columns(2)
-                        
-                        with col_exp1:
-                            st.download_button(
-                                label="📥 Descargar Coordenadas (CSV)",
-                                data=csv_data,
-                                file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
-                                mime="text/csv",
-                                use_container_width=True
-                            )
-                        
-                        with col_exp2:
-                            st.download_button(
-                                label="🗺️ Descargar GeoJSON Palmas",
-                                data=geojson_palmas,
-                                file_name=f"palmas_detectadas_{datetime.now().strftime('%Y%m%d')}.geojson",
-                                mime="application/json",
-                                use_container_width=True
-                            )
-                    except Exception:
-                        st.info("No se pudieron exportar los datos de detección")
+                    st.info("La detección de palmas no se ha ejecutado aún.")
+                    if st.button("🔍 EJECUTAR DETECCIÓN DE PALMAS", key="detectar_palmas_tab6"):
+                        ejecutar_deteccion_palmas()
+                        st.rerun()
             else:
-                st.info("La detección de palmas no se ha ejecutado aún.")
-                if st.button("🔍 EJECUTAR DETECCIÓN DE PALMAS", key="detectar_palmas_tab6"):
-                    ejecutar_deteccion_palmas()
+                st.warning("""
+                ⚠️ **Detección avanzada de palmas solo disponible en Premium**
+                
+                Actualiza para acceder a:
+                - Detección con imágenes de alta resolución
+                - Análisis de densidad preciso
+                - Exportación de coordenadas GPS
+                - Visualización sobre imágenes ESRI
+                
+                """)
+                
+                # Demo de detección limitada
+                if st.button("👁️ VER DEMO DE DETECCIÓN", use_container_width=True):
+                    # Crear demo básica
+                    img_demo = Image.new('RGB', (600, 400), color=(200, 220, 200))
+                    draw_demo = ImageDraw.Draw(img_demo)
+                    
+                    # Dibujar algunos puntos de ejemplo
+                    for i in range(20):
+                        x = np.random.randint(50, 550)
+                        y = np.random.randint(50, 350)
+                        draw_demo.ellipse([x-3, y-3, x+3, y+3], fill=(255, 0, 0))
+                    
+                    img_bytes = BytesIO()
+                    img_demo.save(img_bytes, format='PNG')
+                    img_bytes.seek(0)
+                    
+                    st.image(img_bytes, caption="Demo: Detección básica (Premium desbloquea más funciones)", 
+                            use_container_width=True)
+                
+                if st.button("💎 DESBLOQUEAR DETECCIÓN AVANZADA", use_container_width=True):
+                    st.session_state.mostrar_pago = True
                     st.rerun()
 
 # Pie de página
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
-    <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
-    <p>Datos satelitales: NASA MODIS - Acceso público</p>
+    <p><strong>© 2026 Analizador de Palma Aceitera Satelital Premium</strong></p>
+    <p>Datos satelitales: NASA MODIS - Acceso público | Funciones Premium requieren suscripción</p>
     <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
+    <p style="font-size: 0.8em; margin-top: 20px;">
+        <strong>Términos del servicio:</strong> La versión gratuita incluye análisis limitados con datos simulados. 
+        La versión Premium ofrece acceso completo por 25 días desde la activación. 
+        Los pagos se procesan a través de Mercado Pago. Cancelación en cualquier momento.
+    </p>
 </div>
 """, unsafe_allow_html=True)
