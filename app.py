@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
+from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.collections import PatchCollection
 import io
 from shapely.geometry import Polygon, Point
 import math
@@ -17,18 +19,14 @@ import warnings
 from io import BytesIO
 import requests
 import re
-import folium
-from streamlit_folium import folium_static
-from branca.colormap import LinearColormap
+from PIL import Image, ImageDraw
+import json
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
     import cv2
-    from skimage import filters, morphology, feature, measure
-    from sklearn.cluster import DBSCAN, KMeans
-    from scipy import ndimage
     DETECCION_DISPONIBLE = True
-except ImportError as e:
+except ImportError:
     DETECCION_DISPONIBLE = False
     if 'deteccion_advertencia_mostrada' not in st.session_state:
         st.session_state.deteccion_advertencia_mostrada = True
@@ -53,8 +51,8 @@ def init_session_state():
         'datos_modis': {},
         'datos_climaticos': {},
         'deteccion_ejecutada': False,
-        'mapa_folium': None,
-        'imagen_modis_bytes': None
+        'imagen_modis_bytes': None,
+        'mapa_generado': False
     }
     
     for key, value in defaults.items():
@@ -312,7 +310,7 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE ANÁLISIS CON MODIS REAL =====
+# ===== FUNCIONES DE ANÁLISIS CON MODIS =====
 def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
     """Obtiene imagen MODIS real de NASA GIBS"""
     try:
@@ -352,44 +350,45 @@ def obtener_imagen_modis_real(gdf, fecha, indice='NDVI'):
             return BytesIO(response.content)
         else:
             st.warning(f"No se pudo obtener imagen MODIS real. Código: {response.status_code}")
-            return None
+            return generar_imagen_modis_simulada(gdf)
     except Exception as e:
         st.warning(f"Error obteniendo imagen MODIS: {str(e)}")
-        return None
+        return generar_imagen_modis_simulada(gdf)
 
 def generar_imagen_modis_simulada(gdf):
     """Genera una imagen MODIS simulada con patrones de vegetación"""
-    from PIL import Image, ImageDraw
-    import random
-    
     width, height = 1024, 768
     img = Image.new('RGB', (width, height), color=(200, 200, 200))
     draw = ImageDraw.Draw(img)
     
-    # Patrón de vegetación
-    for i in range(1000):
-        x = random.randint(0, width)
-        y = random.randint(0, height)
-        size = random.randint(5, 20)
-        
-        # Verde para vegetación
-        green_intensity = random.randint(100, 200)
-        color = (50, green_intensity, 50)
-        
-        draw.ellipse([x-size, y-size, x+size, y+size], fill=color, outline=(40, 180, 40))
+    # Patrón de vegetación simulando campos
+    bounds = gdf.total_bounds
+    min_lon, min_lat, max_lon, max_lat = bounds
     
-    # Agregar algunas áreas con diferente intensidad
+    # Convertir coordenadas a píxeles
+    def coord_to_pixel(lon, lat):
+        x = int((lon - min_lon) / (max_lon - min_lon) * width)
+        y = int((max_lat - lat) / (max_lat - min_lat) * height)
+        return x, y
+    
+    # Dibujar áreas verdes (vegetación)
+    for i in range(0, width, 50):
+        for j in range(0, height, 50):
+            if (i // 100 + j // 100) % 2 == 0:
+                green_intensity = np.random.randint(100, 200)
+                draw.rectangle([i, j, i+49, j+49], 
+                             fill=(50, green_intensity, 50))
+    
+    # Añadir algunos patrones de cultivo
     for i in range(5):
-        x_center = random.randint(200, width-200)
-        y_center = random.randint(200, height-200)
-        radius = random.randint(50, 150)
+        center_x = np.random.randint(100, width-100)
+        center_y = np.random.randint(100, height-100)
+        radius = np.random.randint(50, 150)
         
-        for j in range(radius//5):
-            r = j * 5
-            green = max(50, min(200, 150 - j*10))
-            color = (50, green, 50)
-            draw.ellipse([x_center-r, y_center-r, x_center+r, y_center+r], 
-                        outline=color, width=2)
+        for r in range(0, radius, 10):
+            green = max(50, min(200, 150 - r//5))
+            draw.ellipse([center_x-r, center_y-r, center_x+r, center_y+r], 
+                        outline=(50, green, 50), width=2)
     
     img_bytes = BytesIO()
     img.save(img_bytes, format='PNG')
@@ -629,92 +628,70 @@ def analizar_requerimientos_nutricionales(ndvi_values, edades, datos_climaticos)
     return requerimientos_n, requerimientos_p, requerimientos_k, requerimientos_mg, requerimientos_b
 
 # ===== FUNCIONES DE VISUALIZACIÓN =====
-def crear_mapa_folium(gdf, palmas_detectadas=None, datos_modis=None):
-    """Crea un mapa interactivo con Folium"""
+def crear_mapa_bloques(gdf, palmas_detectadas=None):
+    """Crea un mapa de los bloques con matplotlib"""
     if gdf is None or len(gdf) == 0:
         return None
     
-    # Obtener centroide para centrar el mapa
-    centroide = gdf.geometry.unary_union.centroid
-    mapa = folium.Map(location=[centroide.y, centroide.x], zoom_start=14, control_scale=True)
+    fig, ax = plt.subplots(figsize=(12, 10))
     
-    # Añadir capa de polígonos de bloques
+    # Configurar colores basados en NDVI si está disponible
     if 'ndvi_modis' in gdf.columns:
-        # Crear colormap para NDVI
-        colormap = LinearColormap(
-            colors=['red', 'yellow', 'green'],
-            vmin=gdf['ndvi_modis'].min(),
-            vmax=gdf['ndvi_modis'].max()
-        )
+        # Normalizar NDVI para colores
+        ndvi_values = gdf['ndvi_modis'].values
+        norm = plt.Normalize(vmin=min(ndvi_values), vmax=max(ndvi_values))
+        cmap = plt.cm.RdYlGn
+        
+        # Dibujar cada polígono con color basado en NDVI
+        patches = []
+        colors = []
         
         for idx, row in gdf.iterrows():
-            # Crear popup con información
-            popup_text = f"""
-            <b>Bloque {row['id_bloque']}</b><br>
-            Área: {row.get('area_ha', 0):.2f} ha<br>
-            NDVI: {row.get('ndvi_modis', 0):.3f}<br>
-            Edad: {row.get('edad_anios', 0):.1f} años<br>
-            Producción: {row.get('produccion_estimada', 0):,.0f} kg/ha
-            """
-            
-            # Obtener color basado en NDVI
-            if 'ndvi_modis' in row:
-                color = colormap(row['ndvi_modis'])
-            else:
-                color = 'green'
-            
-            # Añadir polígono al mapa
-            geojson = folium.GeoJson(
-                row.geometry,
-                style_function=lambda x, color=color: {
-                    'fillColor': color,
-                    'color': 'black',
-                    'weight': 1,
-                    'fillOpacity': 0.6
-                },
-                popup=folium.Popup(popup_text, max_width=300)
-            ).add_to(mapa)
+            if row.geometry.geom_type == 'Polygon':
+                poly_coords = list(row.geometry.exterior.coords)
+                polygon = MplPolygon(poly_coords, closed=True)
+                patches.append(polygon)
+                colors.append(cmap(norm(row['ndvi_modis'])))
+            elif row.geometry.geom_type == 'MultiPolygon':
+                for poly in row.geometry.geoms:
+                    poly_coords = list(poly.exterior.coords)
+                    polygon = MplPolygon(poly_coords, closed=True)
+                    patches.append(polygon)
+                    colors.append(cmap(norm(row['ndvi_modis'])))
+        
+        # Crear colección de polígonos
+        collection = PatchCollection(patches, alpha=0.6, edgecolor='black', linewidth=1)
+        collection.set_array(np.array(colors))
+        ax.add_collection(collection)
+        
+        # Añadir barra de color
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax, label='NDVI')
+        
+        # Añadir etiquetas de bloques
+        for idx, row in gdf.iterrows():
+            centroid = row.geometry.centroid
+            ax.text(centroid.x, centroid.y, str(int(row['id_bloque'])), 
+                   fontsize=9, ha='center', va='center',
+                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7))
     else:
-        # Polígono simple si no hay NDVI
-        geojson = folium.GeoJson(
-            gdf.__geo_interface__,
-            style_function=lambda x: {
-                'fillColor': 'green',
-                'color': 'darkgreen',
-                'weight': 2,
-                'fillOpacity': 0.4
-            }
-        ).add_to(mapa)
+        # Dibujar polígonos simples
+        gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
     
     # Añadir palmas detectadas si existen
     if palmas_detectadas and len(palmas_detectadas) > 0:
-        for palma in palmas_detectadas:
-            lon, lat = palma['centroide']
-            folium.CircleMarker(
-                location=[lat, lon],
-                radius=3,
-                color='blue',
-                fill=True,
-                fill_color='blue',
-                fill_opacity=0.7,
-                popup=f"Área: {palma.get('area_pixels', 0):.1f} m²"
-            ).add_to(mapa)
+        coords = np.array([p['centroide'] for p in palmas_detectadas])
+        ax.scatter(coords[:, 0], coords[:, 1], 
+                  s=20, color='blue', alpha=0.7, label='Palmas detectadas')
     
-    # Añadir capa de MODIS si hay datos
-    if datos_modis and 'imagen_bytes' in datos_modis:
-        bounds = gdf.total_bounds
-        imagen_overlay = folium.raster_layers.ImageOverlay(
-            image=datos_modis['imagen_bytes'].getvalue() if hasattr(datos_modis['imagen_bytes'], 'getvalue') else datos_modis['imagen_bytes'],
-            bounds=[[bounds[1], bounds[0]], [bounds[3], bounds[2]]],
-            opacity=0.6,
-            name=f"MODIS {datos_modis.get('indice', 'NDVI')}"
-        )
-        imagen_overlay.add_to(mapa)
+    ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=16, fontweight='bold')
+    ax.set_xlabel('Longitud')
+    ax.set_ylabel('Latitud')
+    ax.grid(True, alpha=0.3)
+    ax.legend()
     
-    # Añadir control de capas
-    folium.LayerControl().add_to(mapa)
-    
-    return mapa
+    return fig
 
 def crear_grafico_ndvi_bloques(gdf):
     """Crea gráfico de barras de NDVI por bloque"""
@@ -745,7 +722,7 @@ def crear_grafico_ndvi_bloques(gdf):
     
     ax.set_xlabel('Bloque')
     ax.set_ylabel('NDVI')
-    ax.set_title('NDVI por Bloque - Palma Aceitera')
+    ax.set_title('NDVI por Bloque - Palma Aceitera', fontsize=14, fontweight='bold')
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
     
@@ -753,7 +730,8 @@ def crear_grafico_ndvi_bloques(gdf):
     for bar, val in zip(bars, ndvi_values):
         height = bar.get_height()
         ax.text(bar.get_x() + bar.get_width()/2., height,
-               f'{val:.3f}', ha='center', va='bottom' if height > 0 else 'top')
+               f'{val:.3f}', ha='center', va='bottom' if height > 0 else 'top',
+               fontsize=9)
     
     return fig
 
@@ -776,7 +754,7 @@ def crear_grafico_produccion(gdf):
     
     ax.set_xlabel('Bloque')
     ax.set_ylabel('Producción (kg/ha)')
-    ax.set_title('Producción Estimada por Bloque')
+    ax.set_title('Producción Estimada por Bloque', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='y')
     
     # Añadir valores
@@ -815,7 +793,7 @@ def crear_grafico_rentabilidad(gdf):
     
     ax.set_xlabel('Bloque')
     ax.set_ylabel('Rentabilidad (%)')
-    ax.set_title('Rentabilidad por Bloque')
+    ax.set_title('Rentabilidad por Bloque', fontsize=14, fontweight='bold')
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
     
@@ -942,8 +920,8 @@ def ejecutar_analisis_completo():
         
         gdf_dividido['rentabilidad'] = rentabilidades
         
-        # 12. Crear mapa Folium
-        st.session_state.mapa_folium = crear_mapa_folium(gdf_dividido, None, datos_modis)
+        # Marcar que el mapa ha sido generado
+        st.session_state.mapa_generado = True
         
         # Almacenar resultados
         st.session_state.resultados_todos = {
@@ -1014,12 +992,11 @@ def ejecutar_deteccion_palmas():
         gdf = st.session_state.gdf_original
         tamano_minimo = st.session_state.get('tamano_minimo', 15.0)
         
-        # Usar simulación (ya que la detección real requiere librerías adicionales)
+        # Usar simulación
         resultados = simular_deteccion_palmas(gdf)
         st.session_state.palmas_detectadas = resultados['detectadas']
         
         # Crear imagen simulada para mostrar
-        from PIL import Image, ImageDraw
         width, height = 800, 600
         img = Image.new('RGB', (width, height), color=(240, 240, 240))
         draw = ImageDraw.Draw(img)
@@ -1032,7 +1009,7 @@ def ejecutar_deteccion_palmas():
             lon, lat = palma['centroide']
             x = int((lon - min_lon) / (max_lon - min_lon) * width)
             y = int((max_lat - lat) / (max_lat - min_lat) * height)
-            radio = int(palma['radio_aprox'])
+            radio = int(palma['radio_aprox'] * 2)  # Aumentar para visualización
             
             draw.ellipse([x-radio, y-radio, x+radio, y+radio], 
                         fill=(50, 200, 50), outline=(30, 150, 30))
@@ -1041,12 +1018,6 @@ def ejecutar_deteccion_palmas():
         img.save(img_bytes, format='PNG')
         img_bytes.seek(0)
         st.session_state.imagen_alta_resolucion = img_bytes
-        
-        # Actualizar mapa con palmas detectadas
-        if st.session_state.analisis_completado:
-            gdf_completo = st.session_state.resultados_todos.get('gdf_completo')
-            datos_modis = st.session_state.datos_modis
-            st.session_state.mapa_folium = crear_mapa_folium(gdf_completo, resultados['detectadas'], datos_modis)
         
         st.success(f"✅ Detección completada (simulada): {len(resultados['detectadas'])} palmas detectadas")
 
@@ -1073,6 +1044,8 @@ st.markdown("""
     padding: 0.8em 1.5em !important;
     border-radius: 12px !important;
     font-weight: 700 !important;
+    font-size: 1em !important;
+    margin: 5px 0 !important;
 }
 .stTabs [data-baseweb="tab-list"] {
     background: rgba(30, 41, 59, 0.7) !important;
@@ -1118,16 +1091,6 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown("### 🛰️ Fuente de Datos")
-    
-    fuente_seleccionada = st.selectbox(
-        "Fuente satelital:",
-        ['MODIS_NDVI', 'SENTINEL2', 'DATOS_SIMULADOS'],
-        format_func=lambda x: {
-            'MODIS_NDVI': 'MODIS NASA',
-            'SENTINEL2': 'Sentinel-2 ESA',
-            'DATOS_SIMULADOS': 'Datos Simulados'
-        }[x]
-    )
     
     indice_seleccionado = st.selectbox(
         "Índice de vegetación:",
@@ -1199,7 +1162,7 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
         # Mostrar mapa básico
         fig, ax = plt.subplots(figsize=(8, 6))
         gdf.plot(ax=ax, color='#8bc34a', edgecolor='#4caf50', alpha=0.7)
-        ax.set_title("Plantación de Palma Aceitera")
+        ax.set_title("Plantación de Palma Aceitera", fontweight='bold')
         ax.set_xlabel("Longitud")
         ax.set_ylabel("Latitud")
         ax.grid(True, alpha=0.3)
@@ -1209,23 +1172,24 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
         st.markdown("### 🎯 ACCIONES")
         
         # Botón para ejecutar análisis
-        if not st.session_state.analisis_completado:
-            if st.button("🚀 EJECUTAR ANÁLISIS COMPLETO", use_container_width=True):
-                ejecutar_analisis_completo()
-                st.rerun()
-        else:
-            st.success("✅ Análisis ya completado")
-            
-            if st.button("🔄 RE-EJECUTAR ANÁLISIS", use_container_width=True):
-                st.session_state.analisis_completado = False
-                ejecutar_analisis_completo()
-                st.rerun()
+        col_btn1, col_btn2 = st.columns(2)
         
-        # Botón para detección de palmas
-        if deteccion_habilitada:
-            if st.button("🔍 EJECUTAR DETECCIÓN DE PALMAS", use_container_width=True):
-                ejecutar_deteccion_palmas()
-                st.rerun()
+        with col_btn1:
+            if not st.session_state.analisis_completado:
+                if st.button("🚀 EJECUTAR ANÁLISIS", use_container_width=True):
+                    ejecutar_analisis_completo()
+                    st.rerun()
+            else:
+                if st.button("🔄 RE-EJECUTAR", use_container_width=True):
+                    st.session_state.analisis_completado = False
+                    ejecutar_analisis_completo()
+                    st.rerun()
+        
+        with col_btn2:
+            if deteccion_habilitada:
+                if st.button("🔍 DETECTAR PALMAS", use_container_width=True):
+                    ejecutar_deteccion_palmas()
+                    st.rerun()
 
 # Mostrar resultados del análisis
 if st.session_state.analisis_completado:
@@ -1235,13 +1199,14 @@ if st.session_state.analisis_completado:
     if gdf_completo is not None:
         # Crear pestañas
         tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "📊 Resumen", "🗺️ Mapa Interactivo", "🛰️ MODIS", 
-            "📈 Gráficos", "💰 Rentabilidad", "🌴 Detección"
+            "📊 Resumen", "🗺️ Mapas", "🛰️ MODIS", 
+            "📈 Gráficos", "💰 Económico", "🌴 Detección"
         ])
         
         with tab1:
             st.subheader("RESUMEN GENERAL")
             
+            # Métricas principales
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Área Total", f"{resultados['area_total']:.1f} ha")
@@ -1284,26 +1249,30 @@ if st.session_state.analisis_completado:
             }))
         
         with tab2:
-            st.subheader("🗺️ MAPA INTERACTIVO")
+            st.subheader("🗺️ MAPAS Y VISUALIZACIONES")
             
-            if st.session_state.mapa_folium:
-                folium_static(st.session_state.mapa_folium, width=1200, height=600)
-            else:
-                st.info("Generando mapa interactivo...")
-                datos_modis = st.session_state.datos_modis
-                mapa = crear_mapa_folium(gdf_completo, None, datos_modis)
-                if mapa:
-                    folium_static(mapa, width=1200, height=600)
-                else:
-                    st.error("No se pudo generar el mapa interactivo")
+            # Mapa de bloques con NDVI
+            st.markdown("### 🗺️ Mapa de Bloques (Coloreado por NDVI)")
+            mapa_fig = crear_mapa_bloques(gdf_completo, st.session_state.palmas_detectadas)
+            if mapa_fig:
+                st.pyplot(mapa_fig)
             
-            st.markdown("**Leyenda del mapa:**")
-            st.markdown("""
-            - **Áreas verdes:** Bloques de plantación
-            - **Colores de bloques:** Intensidad de NDVI (rojo=bajo, verde=alto)
-            - **Círculos azules:** Palmas detectadas (si se ejecutó detección)
-            - **Capa semitransparente:** Imagen MODIS superpuesta
-            """)
+            # Mapa simple de la plantación original
+            st.markdown("### 📍 Mapa de la Plantación Original")
+            fig_original, ax_original = plt.subplots(figsize=(10, 8))
+            gdf_completo.plot(ax=ax_original, color='lightgreen', edgecolor='darkgreen', alpha=0.5)
+            
+            # Marcar centroides de los bloques
+            centroides = gdf_completo.geometry.centroid
+            ax_original.scatter(centroides.x, centroides.y, 
+                               s=50, color='red', alpha=0.7, label='Centroides de bloques')
+            
+            ax_original.set_title('Plantación Original con Bloques', fontsize=14, fontweight='bold')
+            ax_original.set_xlabel('Longitud')
+            ax_original.set_ylabel('Latitud')
+            ax_original.legend()
+            ax_original.grid(True, alpha=0.3)
+            st.pyplot(fig_original)
         
         with tab3:
             st.subheader("DATOS SATELITALES MODIS")
@@ -1377,10 +1346,11 @@ if st.session_state.analisis_completado:
             # Gráfico de edad
             st.markdown("### 📅 Distribución de Edades")
             fig_edad, ax_edad = plt.subplots(figsize=(10, 6))
-            ax_edad.hist(gdf_completo['edad_anios'], bins=10, color='#4caf50', edgecolor='#2e7d32', alpha=0.7)
+            ax_edad.hist(gdf_completo['edad_anios'], bins=10, color='#4caf50', 
+                        edgecolor='#2e7d32', alpha=0.7)
             ax_edad.set_xlabel('Edad (años)')
             ax_edad.set_ylabel('Número de bloques')
-            ax_edad.set_title('Distribución de Edades de la Plantación')
+            ax_edad.set_title('Distribución de Edades de la Plantación', fontweight='bold')
             ax_edad.grid(True, alpha=0.3)
             st.pyplot(fig_edad)
         
@@ -1406,39 +1376,30 @@ if st.session_state.analisis_completado:
             # Análisis de costos
             st.subheader("📊 DISTRIBUCIÓN DE COSTOS")
             
-            costos_detalle = {
-                'Fertilizantes': gdf_completo[['costo_N', 'costo_P', 'costo_K', 'costo_Mg', 'costo_B']].sum().sum(),
-                'Costo Base': PARAMETROS_PALMA['COSTO_FERTILIZACION'] * gdf_completo['area_ha'].sum()
-            }
+            # Calcular costos por componente
+            costo_fertilizantes = gdf_completo[['costo_N', 'costo_P', 'costo_K', 'costo_Mg', 'costo_B']].sum().sum()
+            costo_base = PARAMETROS_PALMA['COSTO_FERTILIZACION'] * gdf_completo['area_ha'].sum()
             
-            fig_costos, ax_costos = plt.subplots(figsize=(10, 6))
-            labels = list(costos_detalle.keys())
-            valores = list(costos_detalle.values())
-            colors = ['#4caf50', '#2196f3', '#ff9800', '#9c27b0']
+            labels = ['Fertilizantes', 'Costo Base']
+            sizes = [costo_fertilizantes, costo_base]
+            colors = ['#4caf50', '#2196f3']
             
-            ax_costos.pie(valores, labels=labels, colors=colors[:len(labels)], 
-                         autopct='%1.1f%%', startangle=90)
-            ax_costos.set_title('Distribución de Costos de Producción')
+            fig_costos, ax_costos = plt.subplots(figsize=(8, 8))
+            ax_costos.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+            ax_costos.set_title('Distribución de Costos de Producción', fontweight='bold')
             st.pyplot(fig_costos)
             
-            # Recomendaciones económicas
-            st.subheader("🎯 RECOMENDACIONES ECONÓMICAS")
-            
-            if rentabilidad_prom < 10:
-                st.error("**ALERTA:** Rentabilidad baja. Considerar:")
-                st.write("1. Revisar costos de fertilización")
-                st.write("2. Optimizar prácticas de manejo")
-                st.write("3. Evaluar precios de venta")
-            elif rentabilidad_prom < 20:
-                st.warning("**ATENCIÓN:** Rentabilidad moderada. Sugerencias:")
-                st.write("1. Mejorar eficiencia en fertilización")
-                st.write("2. Reducir costos operativos")
-                st.write("3. Incrementar productividad")
-            else:
-                st.success("**EXCELENTE:** Rentabilidad óptima. Mantener:")
-                st.write("1. Prácticas actuales de manejo")
-                st.write("2. Programa de fertilización")
-                st.write("3. Monitoreo continuo")
+            # Tabla de costos detallada
+            st.subheader("📋 DETALLE DE COSTOS POR BLOQUE")
+            costos_cols = ['id_bloque', 'costo_total', 'ingreso_estimado', 'rentabilidad']
+            if all(col in gdf_completo.columns for col in costos_cols):
+                df_costos = gdf_completo[costos_cols].copy()
+                df_costos.columns = ['Bloque', 'Costo Total (USD)', 'Ingreso Estimado (USD)', 'Rentabilidad (%)']
+                st.dataframe(df_costos.style.format({
+                    'Costo Total (USD)': '{:,.2f}',
+                    'Ingreso Estimado (USD)': '{:,.2f}',
+                    'Rentabilidad (%)': '{:.1f}'
+                }))
         
         with tab6:
             st.subheader("🌴 DETECCIÓN DE PALMAS INDIVIDUALES")
@@ -1449,7 +1410,7 @@ if st.session_state.analisis_completado:
                 
                 **Para activar la detección avanzada, instale:**
                 ```
-                pip install opencv-python scikit-image scikit-learn scipy
+                pip install opencv-python
                 ```
                 
                 **Funcionalidades disponibles:**
@@ -1488,15 +1449,23 @@ if st.session_state.analisis_completado:
                             use_container_width=True)
                 
                 # Mapa de distribución
-                st.subheader("🗺️ Mapa de Distribución")
+                st.subheader("🗺️ Mapa de Distribución de Palmas")
                 
-                if st.session_state.mapa_folium:
-                    folium_static(st.session_state.mapa_folium, width=1200, height=500)
-                else:
-                    # Crear mapa solo para detección
-                    mapa_deteccion = crear_mapa_folium(gdf_completo, palmas, st.session_state.datos_modis)
-                    if mapa_deteccion:
-                        folium_static(mapa_deteccion, width=1200, height=500)
+                fig_palmas, ax_palmas = plt.subplots(figsize=(12, 8))
+                gdf_completo.plot(ax=ax_palmas, color='lightgreen', alpha=0.3, edgecolor='darkgreen')
+                
+                if palmas and len(palmas) > 0:
+                    coords = np.array([p['centroide'] for p in palmas])
+                    ax_palmas.scatter(coords[:, 0], coords[:, 1], 
+                                    s=10, color='blue', alpha=0.6, label='Palmas detectadas')
+                
+                ax_palmas.set_title(f'Distribución de {total} Palmas Detectadas', 
+                                   fontsize=14, fontweight='bold')
+                ax_palmas.set_xlabel('Longitud')
+                ax_palmas.set_ylabel('Latitud')
+                ax_palmas.legend()
+                ax_palmas.grid(True, alpha=0.3)
+                st.pyplot(fig_palmas)
                 
                 # Análisis de densidad
                 st.subheader("📊 ANÁLISIS DE DENSIDAD")
