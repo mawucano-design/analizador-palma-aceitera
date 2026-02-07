@@ -29,38 +29,7 @@ except ImportError:
     DETECCION_DISPONIBLE = False
     if 'deteccion_advertencia_mostrada' not in st.session_state:
         st.session_state.deteccion_advertencia_mostrada = True
-# ===== OCULTAR MENÚ GITHUB =====
-st.markdown("""
-<style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
 
-.stApp {
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    color: #ffffff;
-}
-
-.hero-banner {
-    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
-    padding: 1.5em;
-    border-radius: 15px;
-    margin-bottom: 1em;
-    border: 1px solid rgba(76, 175, 80, 0.3);
-    text-align: center;
-}
-
-.hero-title {
-    color: #ffffff;
-    font-size: 2em;
-    font-weight: 800;
-    margin-bottom: 0.5em;
-    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-</style>
-""", unsafe_allow_html=True)
 
 # ===== CONFIGURACIÓN =====
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'
