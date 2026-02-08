@@ -1247,14 +1247,28 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📅 Rango Temporal")
     
-    fecha_fin = st.date_input("Fecha fin", datetime.now())
-    fecha_inicio = st.date_input("Fecha inicio", datetime.now() - timedelta(days=60))
+    # Usar datetime.now() para los valores por defecto
+    fecha_fin_default = datetime.now()
+    fecha_inicio_default = datetime.now() - timedelta(days=60)
     
-    # Convertir a datetime si son date
-    if isinstance(fecha_inicio, datetime.date):
-        fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
-    if isinstance(fecha_fin, datetime.date):
-        fecha_fin = datetime.combine(fecha_fin, datetime.min.time())
+    fecha_fin = st.date_input("Fecha fin", fecha_fin_default)
+    fecha_inicio = st.date_input("Fecha inicio", fecha_inicio_default)
+    
+    # Convertir a datetime (st.date_input devuelve date, no datetime)
+    try:
+        # Si es date, convertirlo a datetime
+        if hasattr(fecha_inicio, 'year') and hasattr(fecha_inicio, 'month') and hasattr(fecha_inicio, 'day'):
+            if not hasattr(fecha_inicio, 'hour'):  # Es date, no datetime
+                fecha_inicio = datetime.combine(fecha_inicio, datetime.min.time())
+    except Exception:
+        pass
+    
+    try:
+        if hasattr(fecha_fin, 'year') and hasattr(fecha_fin, 'month') and hasattr(fecha_fin, 'day'):
+            if not hasattr(fecha_fin, 'hour'):  # Es date, no datetime
+                fecha_fin = datetime.combine(fecha_fin, datetime.min.time())
+    except Exception:
+        pass
     
     st.session_state.fecha_inicio = fecha_inicio
     st.session_state.fecha_fin = fecha_fin
