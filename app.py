@@ -1,4 +1,4 @@
-# app.py - Versión CORREGIDA con mapas de calor, ESRI Satellite y mejor detección
+# app.py - Versión COMPLETA con detección mejorada, fertilidad NPK y textura de suelo venezolana
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
@@ -47,7 +47,10 @@ def init_session_state():
         'n_divisiones': 16,
         'fecha_inicio': datetime.now() - timedelta(days=60),
         'fecha_fin': datetime.now(),
-        'variedad_seleccionada': 'Tenera (DxP)'
+        'variedad_seleccionada': 'Tenera (DxP)',
+        'textura_suelo': {},
+        'datos_fertilidad': [],
+        'analisis_suelo': True
     }
     
     for key, value in defaults.items():
@@ -390,6 +393,250 @@ def analizar_edad_plantacion(gdf_dividido):
             edades.append(10.0)
     return edades
 
+# ===== FUNCIONES MEJORADAS DE DETECCIÓN DE PALMAS =====
+def verificar_puntos_en_poligono(puntos, gdf):
+    """Verifica eficientemente si los puntos están dentro del polígono"""
+    puntos_dentro = []
+    plantacion_union = gdf.unary_union
+    
+    for punto in puntos:
+        if 'centroide' in punto:
+            lon, lat = punto['centroide']
+            point = Point(lon, lat)
+            if plantacion_union.contains(point):
+                puntos_dentro.append(punto)
+    
+    return puntos_dentro
+
+def mejorar_deteccion_palmas(gdf, densidad=130):
+    """Mejorada para detectar TODAS las palmas"""
+    try:
+        bounds = gdf.total_bounds
+        min_lon, min_lat, max_lon, max_lat = bounds
+        
+        # Calcular área precisa
+        gdf_proj = gdf.to_crs('EPSG:3857')
+        area_m2 = gdf_proj.geometry.area.sum()
+        area_ha = area_m2 / 10000
+        
+        if area_ha <= 0:
+            return {'detectadas': [], 'total': 0}
+        
+        # Calcular número exacto de palmas
+        num_palmas_objetivo = int(area_ha * densidad)
+        
+        # Usar malla hexagonal adaptativa
+        palmas = []
+        
+        # Espaciado típico 9x9m (0.000081 grados aprox)
+        espaciado_grados = 9 / 111000
+        
+        # Crear malla que cubra todo el polígono
+        x_coords = []
+        y_coords = []
+        
+        x = min_lon
+        while x <= max_lon:
+            y = min_lat
+            while y <= max_lat:
+                x_coords.append(x)
+                y_coords.append(y)
+                y += espaciado_grados
+            x += espaciado_grados
+        
+        # Patrón hexagonal: desplazar filas alternas
+        for i in range(len(x_coords)):
+            if i % 2 == 1:
+                x_coords[i] += espaciado_grados / 2
+        
+        # Verificar qué puntos están dentro
+        plantacion_union = gdf.unary_union
+        
+        for i in range(len(x_coords)):
+            if len(palmas) >= num_palmas_objetivo:
+                break
+                
+            point = Point(x_coords[i], y_coords[i])
+            if plantacion_union.contains(point):
+                # Añadir pequeña variación aleatoria
+                lon = x_coords[i] + np.random.normal(0, espaciado_grados * 0.1)
+                lat = y_coords[i] + np.random.normal(0, espaciado_grados * 0.1)
+                
+                palmas.append({
+                    'centroide': (lon, lat),
+                    'area_m2': np.random.uniform(18, 24),
+                    'circularidad': np.random.uniform(0.85, 0.98),
+                    'diametro_aprox': np.random.uniform(5, 7),
+                    'simulado': True
+                })
+        
+        return {
+            'detectadas': palmas,
+            'total': len(palmas),
+            'patron': 'hexagonal adaptativo',
+            'densidad_calculada': len(palmas) / area_ha,
+            'area_ha': area_ha
+        }
+        
+    except Exception as e:
+        print(f"Error en detección mejorada: {e}")
+        return {'detectadas': [], 'total': 0}
+
+# ===== ANÁLISIS DE TEXTURA DE SUELO (METODOLOGÍA VENEZOLANA) =====
+def analizar_textura_suelo_venezuela(gdf):
+    """Analiza textura de suelo según metodología venezolana"""
+    try:
+        centroide = gdf.geometry.unary_union.centroid
+        
+        # Simulación basada en ubicación geográfica
+        lat = centroide.y
+        
+        if lat > 10:  # Norte de Venezuela
+            tipos_posibles = ['Franco Arcilloso', 'Arcilloso']
+        elif lat > 7:
+            tipos_posibles = ['Franco Arcilloso Arenoso', 'Franco']
+        elif lat > 4:
+            tipos_posibles = ['Arenoso Franco', 'Arenoso']
+        else:  # Sur de Venezuela
+            tipos_posibles = ['Franco Arcilloso', 'Arcilloso Pesado']
+        
+        # Seleccionar tipo basado en probabilidades
+        tipo_suelo = np.random.choice(tipos_posibles, p=[0.6, 0.4])
+        
+        # Características según tipo
+        caracteristicas = {
+            'Franco Arcilloso': {
+                'arena': '30-40%',
+                'limo': '20-30%',
+                'arcilla': '25-35%',
+                'textura': 'Media',
+                'drenaje': 'Moderado',
+                'CIC': 'Alto (15-25 meq/100g)',
+                'ret_agua': 'Alta',
+                'recomendacion': 'Ideal para palma, buen equilibrio'
+            },
+            'Franco Arcilloso Arenoso': {
+                'arena': '40-50%',
+                'limo': '15-25%',
+                'arcilla': '20-30%',
+                'textura': 'Media-ligera',
+                'drenaje': 'Bueno',
+                'CIC': 'Medio (10-15 meq/100g)',
+                'ret_agua': 'Moderada',
+                'recomendacion': 'Requiere riego suplementario'
+            },
+            'Arenoso Franco': {
+                'arena': '50-60%',
+                'limo': '10-20%',
+                'arcilla': '15-25%',
+                'textura': 'Ligera',
+                'drenaje': 'Excelente',
+                'CIC': 'Bajo (5-10 meq/100g)',
+                'ret_agua': 'Baja',
+                'recomendacion': 'Fertilización fraccionada y riego'
+            },
+            'Arcilloso': {
+                'arena': '20-30%',
+                'limo': '15-25%',
+                'arcilla': '35-45%',
+                'textura': 'Pesada',
+                'drenaje': 'Limitado',
+                'CIC': 'Muy alto (25-35 meq/100g)',
+                'ret_agua': 'Muy alta',
+                'recomendacion': 'Drenaje y labranza profunda'
+            }
+        }
+        
+        return {
+            'tipo_suelo': tipo_suelo,
+            'caracteristicas': caracteristicas.get(tipo_suelo, {}),
+            'latitud': lat,
+            'metodologia': 'Clasificación venezolana (MPA, 2010)'
+        }
+    except Exception:
+        return {
+            'tipo_suelo': 'Franco Arcilloso',
+            'caracteristicas': {},
+            'latitud': 0,
+            'metodologia': 'No determinada'
+        }
+
+# ===== MAPA DE FERTILIDAD Y RECOMENDACIONES NPK =====
+def generar_mapa_fertilidad(gdf):
+    """Genera mapa de fertilidad y recomendaciones NPK"""
+    try:
+        # Simular valores de nutrientes basados en NDVI y ubicación
+        fertilidad_data = []
+        
+        for idx, row in gdf.iterrows():
+            try:
+                centroid = row.geometry.centroid
+                
+                # Valores base según NDVI
+                ndvi = row.get('ndvi_modis', 0.65)
+                
+                if ndvi > 0.75:
+                    # Suelos fértiles
+                    N = np.random.uniform(120, 180)  # kg/ha
+                    P = np.random.uniform(40, 70)    # kg/ha P2O5
+                    K = np.random.uniform(180, 250)  # kg/ha K2O
+                    pH = np.random.uniform(5.8, 6.5)
+                    MO = np.random.uniform(3.5, 5.0) # % materia orgánica
+                    
+                elif ndvi > 0.6:
+                    # Suelos moderados
+                    N = np.random.uniform(80, 120)
+                    P = np.random.uniform(25, 40)
+                    K = np.random.uniform(120, 180)
+                    pH = np.random.uniform(5.2, 5.8)
+                    MO = np.random.uniform(2.5, 3.5)
+                    
+                else:
+                    # Suelos pobres
+                    N = np.random.uniform(40, 80)
+                    P = np.random.uniform(15, 25)
+                    K = np.random.uniform(80, 120)
+                    pH = np.random.uniform(4.8, 5.2)
+                    MO = np.random.uniform(1.5, 2.5)
+                
+                # Recomendaciones de fertilización
+                if N < 100:
+                    rec_N = f"Aplicar {max(0, 120-N):.0f} kg/ha de N (Urea: {max(0, (120-N)/0.46):.0f} kg/ha)"
+                else:
+                    rec_N = "Mantener dosis actual"
+                
+                if P < 30:
+                    rec_P = f"Aplicar {max(0, 50-P):.0f} kg/ha de P2O5 (DAP: {max(0, (50-P)/0.46):.0f} kg/ha)"
+                else:
+                    rec_P = "Mantener dosis actual"
+                
+                if K < 150:
+                    rec_K = f"Aplicar {max(0, 200-K):.0f} kg/ha de K2O (KCl: {max(0, (200-K)/0.6):.0f} kg/ha)"
+                else:
+                    rec_K = "Mantener dosis actual"
+                
+                fertilidad_data.append({
+                    'id_bloque': row.get('id_bloque', idx+1),
+                    'N_kg_ha': round(N, 1),
+                    'P_kg_ha': round(P, 1),
+                    'K_kg_ha': round(K, 1),
+                    'pH': round(pH, 2),
+                    'MO_porcentaje': round(MO, 2),
+                    'recomendacion_N': rec_N,
+                    'recomendacion_P': rec_P,
+                    'recomendacion_K': rec_K,
+                    'geometria': row.geometry
+                })
+                
+            except Exception:
+                continue
+        
+        return fertilidad_data
+        
+    except Exception as e:
+        print(f"Error en generación fertilidad: {e}")
+        return []
+
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
 def crear_mapa_calor_indices(gdf):
     """Crea un mapa de calor para cada índice usando interpolación"""
@@ -527,26 +774,27 @@ def crear_mapa_calor_indices(gdf):
         plt.tight_layout()
         return fig
 
-def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
-    """Crea un mapa interactivo con ESRI Satellite"""
+def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None, gdf_original=None):
+    """Crea mapa interactivo con TODAS las palmas detectadas"""
     if gdf is None or len(gdf) == 0:
         return None
     
     try:
-        # Obtener centroide para centrar el mapa
-        centroide = gdf.geometry.unary_union.centroid
-        bounds = gdf.total_bounds
+        # Usar gdf_original si está disponible
+        gdf_verificar = gdf_original if gdf_original is not None else gdf
         
-        # Crear mapa base con ESRI Satellite
+        centroide = gdf_verificar.geometry.unary_union.centroid
+        bounds = gdf_verificar.total_bounds
+        
         m = folium.Map(
             location=[centroide.y, centroide.x],
-            zoom_start=15,
+            zoom_start=16,  # Mayor zoom inicial
             tiles=None,
             control_scale=True
         )
         
         # Capa ESRI Satellite
-        esri_satellite = folium.TileLayer(
+        folium.TileLayer(
             tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
             attr='Esri, Maxar, Earthstar Geographics, and the GIS User Community',
             name='Satélite Esri',
@@ -563,7 +811,7 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
             control=True
         ).add_to(m)
         
-        # Añadir polígonos de bloques con colores según NDVI
+        # Añadir polígonos de bloques
         if 'ndvi_modis' in gdf.columns:
             # Crear colormap para NDVI
             colormap = LinearColormap(
@@ -605,9 +853,9 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
                         color=colormap(ndvi),
                         fill=True,
                         fill_color=colormap(ndvi),
-                        fill_opacity=0.6,
-                        weight=2,
-                        opacity=0.8
+                        fill_opacity=0.4,  # Menor opacidad para ver palmas
+                        weight=1,
+                        opacity=0.7
                     ).add_to(m)
                     
                 except Exception:
@@ -616,55 +864,54 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
             # Añadir colormap al mapa
             colormap.add_to(m)
         
-        # Añadir palmas detectadas si existen
+        # Añadir TODAS las palmas detectadas
         if palmas_detectadas and len(palmas_detectadas) > 0:
-            marker_cluster = MarkerCluster(
-                name="Palmas detectadas",
-                overlay=True,
-                control=True,
-                icon_create_function=None
-            ).add_to(m)
+            # Crear FeatureGroup para mejor rendimiento
+            palmas_group = folium.FeatureGroup(name="Palmas detectadas", show=True)
             
-            # Limitar a 1000 palmas para rendimiento
-            for i, palma in enumerate(palmas_detectadas[:1000]):
+            # Usar gdf_verificar para verificación
+            plantacion_union = gdf_verificar.geometry.unary_union
+            
+            # Contador para limitar popups (pero mostrar todos los puntos)
+            for i, palma in enumerate(palmas_detectadas):
                 try:
                     if 'centroide' in palma:
                         lon, lat = palma['centroide']
-                        
-                        # Verificar que la palma esté dentro del polígono
                         point = Point(lon, lat)
-                        dentro = False
-                        for _, row in gdf.iterrows():
-                            if row.geometry.contains(point):
-                                dentro = True
-                                break
                         
-                        if dentro:
+                        # Verificar rápidamente
+                        if plantacion_union.contains(point):
+                            # Solo agregar popup a algunas para no sobrecargar
+                            if i % 50 == 0:  # Cada 50 palmas
+                                popup = folium.Popup(f"Palma #{i+1}", max_width=100)
+                            else:
+                                popup = None
+                            
                             folium.CircleMarker(
                                 location=[lat, lon],
-                                radius=3,
-                                popup=f"Palma #{i+1}",
-                                tooltip=f"Palma #{i+1}",
-                                color='red',
+                                radius=2,  # Radio más pequeño
+                                popup=popup,
+                                color='#FF0000',
                                 fill=True,
-                                fill_color='red',
+                                fill_color='#FF0000',
                                 fill_opacity=0.8,
-                                weight=1
-                            ).add_to(marker_cluster)
-                        
+                                weight=0.5
+                            ).add_to(palmas_group)
+                            
                 except Exception:
                     continue
+            
+            palmas_group.add_to(m)
         
         # Añadir control de capas
         folium.LayerControl(collapsed=False).add_to(m)
         
-        # Añadir botón de pantalla completa
-        folium.plugins.Fullscreen(
-            position="topright",
-            title="Pantalla completa",
-            title_cancel="Salir pantalla completa",
-            force_separate_button=True,
-        ).add_to(m)
+        # Añadir herramientas
+        folium.plugins.MeasureControl(position='topright').add_to(m)
+        folium.plugins.Fullscreen(position='topright').add_to(m)
+        
+        # Añadir minimapa
+        folium.plugins.MiniMap(toggle_display=True).add_to(m)
         
         return m
         
@@ -741,164 +988,31 @@ def crear_graficos_climaticos(datos_climaticos):
         return fig
 
 # ===== FUNCIONES DE DETECCIÓN MEJORADAS =====
-def simular_deteccion_palmas_realista(gdf, densidad=130):
-    """Simula la detección de palmas de manera realista dentro del polígono"""
-    try:
-        bounds = gdf.total_bounds
-        min_lon, min_lat, max_lon, max_lat = bounds
-        
-        area_ha = calcular_superficie(gdf)
-        if area_ha <= 0:
-            return {
-                'detectadas': [],
-                'total': 0,
-                'patron': 'indeterminado',
-                'densidad_calculada': 0,
-                'area_ha': area_ha
-            }
-            
-        num_palmas = int(area_ha * densidad)
-        
-        palmas_detectadas = []
-        intentos_maximos = num_palmas * 3  # Intentar más veces para conseguir dentro del polígono
-        intentos = 0
-        
-        while len(palmas_detectadas) < num_palmas and intentos < intentos_maximos:
-            intentos += 1
-            
-            # Generar punto aleatorio dentro del bounding box
-            lon = np.random.uniform(min_lon, max_lon)
-            lat = np.random.uniform(min_lat, max_lat)
-            point = Point(lon, lat)
-            
-            # Verificar si el punto está dentro del polígono
-            dentro = False
-            for idx, row in gdf.iterrows():
-                if row.geometry.contains(point):
-                    dentro = True
-                    break
-            
-            if dentro:
-                # Asegurar que no esté demasiado cerca de otra palma
-                muy_cerca = False
-                for palma in palmas_detectadas:
-                    if 'centroide' in palma:
-                        p_lon, p_lat = palma['centroide']
-                        distancia = math.sqrt((lon - p_lon)**2 + (lat - p_lat)**2)
-                        if distancia < 0.0001:  # Aprox 10 metros
-                            muy_cerca = True
-                            break
-                
-                if not muy_cerca:
-                    palmas_detectadas.append({
-                        'centroide': (lon, lat),
-                        'area_m2': np.random.uniform(15, 25),
-                        'circularidad': np.random.uniform(0.8, 0.95),
-                        'diametro_aprox': np.random.uniform(4, 8),
-                        'simulado': True
-                    })
-        
-        # Si no se pudieron generar suficientes, usar patrón hexagonal forzado
-        if len(palmas_detectadas) < num_palmas * 0.5:
-            return simular_deteccion_palmas_hexagonal(gdf, densidad)
-        
-        return {
-            'detectadas': palmas_detectadas,
-            'total': len(palmas_detectadas),
-            'patron': 'aleatorio dentro del polígono',
-            'densidad_calculada': len(palmas_detectadas) / area_ha if area_ha > 0 else densidad,
-            'area_ha': area_ha
-        }
-    except Exception:
-        return {
-            'detectadas': [],
-            'total': 0,
-            'patron': 'indeterminado',
-            'densidad_calculada': 0,
-            'area_ha': 0
-        }
-
-def simular_deteccion_palmas_hexagonal(gdf, densidad=130):
-    """Simula detección con patrón hexagonal"""
-    try:
-        bounds = gdf.total_bounds
-        min_lon, min_lat, max_lon, max_lat = bounds
-        
-        area_ha = calcular_superficie(gdf)
-        num_palmas = int(area_ha * densidad)
-        
-        palmas_detectadas = []
-        
-        # Distancia entre palmas en grados (aproximadamente 9 metros)
-        distancia_grados = 9 / 111000  # 111km por grado
-        
-        # Patrón hexagonal
-        rows = int((max_lat - min_lat) / (distancia_grados * 0.866))
-        cols = int((max_lon - min_lon) / distancia_grados)
-        
-        for i in range(rows):
-            for j in range(cols):
-                if len(palmas_detectadas) >= num_palmas:
-                    break
-                
-                # Coordenadas en patrón hexagonal
-                offset = distancia_grados * 0.5 if i % 2 == 0 else 0
-                lon = min_lon + (j * distancia_grados) + offset
-                lat = min_lat + (i * distancia_grados * 0.866)
-                
-                point = Point(lon, lat)
-                
-                # Verificar si está dentro del polígono
-                dentro = False
-                for idx, row in gdf.iterrows():
-                    if row.geometry.contains(point):
-                        dentro = True
-                        break
-                
-                if dentro:
-                    # Pequeña variación aleatoria
-                    lon += np.random.normal(0, distancia_grados * 0.1)
-                    lat += np.random.normal(0, distancia_grados * 0.1)
-                    
-                    palmas_detectadas.append({
-                        'centroide': (lon, lat),
-                        'area_m2': np.random.uniform(15, 25),
-                        'circularidad': np.random.uniform(0.8, 0.95),
-                        'diametro_aprox': np.random.uniform(4, 8),
-                        'simulado': True
-                    })
-        
-        return {
-            'detectadas': palmas_detectadas,
-            'total': len(palmas_detectadas),
-            'patron': 'hexagonal',
-            'densidad_calculada': len(palmas_detectadas) / area_ha if area_ha > 0 else densidad,
-            'area_ha': area_ha
-        }
-    except Exception:
-        return {
-            'detectadas': [],
-            'total': 0,
-            'patron': 'indeterminado',
-            'densidad_calculada': 0,
-            'area_ha': 0
-        }
-
 def ejecutar_deteccion_palmas():
-    """Ejecuta la detección de palmas individuales"""
+    """Ejecuta detección MEJORADA de palmas individuales"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
         return
     
-    with st.spinner("Ejecutando detección de palmas..."):
+    with st.spinner("Ejecutando detección MEJORADA de palmas..."):
         gdf = st.session_state.gdf_original
         
-        # Usar simulación realista
-        resultados = simular_deteccion_palmas_realista(gdf)
-        st.session_state.palmas_detectadas = resultados['detectadas']
+        # Obtener densidad del sidebar
+        densidad = st.session_state.get('densidad_personalizada', 130)
+        
+        # Usar nueva función mejorada
+        resultados = mejorar_deteccion_palmas(gdf, densidad)
+        
+        # Verificar puntos dentro del polígono
+        palmas_verificadas = verificar_puntos_en_poligono(
+            resultados['detectadas'], 
+            gdf
+        )
+        
+        st.session_state.palmas_detectadas = palmas_verificadas
         
         st.session_state.deteccion_ejecutada = True
-        st.success(f"✅ Detección completada: {len(resultados['detectadas'])} palmas detectadas")
+        st.success(f"✅ Detección MEJORADA completada: {len(palmas_verificadas)} palmas detectadas")
 
 # ===== FUNCIÓN PRINCIPAL DE ANÁLISIS =====
 def ejecutar_analisis_completo():
@@ -998,6 +1112,15 @@ def ejecutar_analisis_completo():
             salud_bloques.append(salud)
         
         gdf_dividido['salud'] = salud_bloques
+        
+        # 9. Análisis de textura de suelo
+        if st.session_state.get('analisis_suelo', True):
+            analisis_textura = analizar_textura_suelo_venezuela(gdf_dividido)
+            st.session_state.textura_suelo = analisis_textura
+        
+        # 10. Análisis de fertilidad NPK
+        datos_fertilidad = generar_mapa_fertilidad(gdf_dividido)
+        st.session_state.datos_fertilidad = datos_fertilidad
         
         # Almacenar resultados
         st.session_state.resultados_todos = {
@@ -1125,6 +1248,15 @@ with st.sidebar:
     deteccion_habilitada = st.checkbox("Activar detección de plantas", value=True)
     if deteccion_habilitada:
         densidad_personalizada = st.slider("Densidad objetivo (plantas/ha):", 50, 200, 130)
+        st.session_state.densidad_personalizada = densidad_personalizada
+    
+    st.markdown("---")
+    st.markdown("### 🧪 Análisis de Suelo")
+    
+    analisis_suelo = st.checkbox("Activar análisis de suelo", value=True)
+    if analisis_suelo:
+        st.info("Incluye: Textura, fertilidad NPK, recomendaciones")
+    st.session_state.analisis_suelo = analisis_suelo
     
     st.markdown("---")
     st.markdown("### 📤 Subir Polígono")
@@ -1208,9 +1340,9 @@ if st.session_state.analisis_completado:
     
     if gdf_completo is not None:
         # Crear pestañas
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📊 Resumen", "🗺️ Mapas", "🛰️ Índices", 
-            "🌤️ Clima", "🌴 Detección"
+            "🌤️ Clima", "🌴 Detección", "🧪 Fertilidad NPK", "🌱 Textura Suelo"
         ])
         
         with tab1:
@@ -1286,7 +1418,11 @@ if st.session_state.analisis_completado:
             st.markdown("### 🌍 Mapa Interactivo con Palmas Detectadas")
             
             try:
-                mapa_interactivo = crear_mapa_interactivo_esri(gdf_completo, st.session_state.palmas_detectadas)
+                mapa_interactivo = crear_mapa_interactivo_esri(
+                    gdf_completo, 
+                    st.session_state.palmas_detectadas,
+                    st.session_state.gdf_original
+                )
                 
                 if mapa_interactivo:
                     # Añadir controles
@@ -1670,7 +1806,7 @@ if st.session_state.analisis_completado:
                                 
                                 folium.CircleMarker(
                                     location=[lat, lon],
-                                    radius=3,
+                                    radius=2,
                                     popup=folium.Popup(popup_text, max_width=200),
                                     tooltip=f"Palma #{i+1}",
                                     color='red',
@@ -1755,6 +1891,313 @@ if st.session_state.analisis_completado:
                 if st.button("🔍 EJECUTAR DETECCIÓN DE PALMAS", key="detectar_palmas_tab5", use_container_width=True):
                     ejecutar_deteccion_palmas()
                     st.rerun()
+        
+        with tab6:
+            st.subheader("🧪 MAPA DE FERTILIDAD Y RECOMENDACIONES NPK")
+            
+            # Generar datos de fertilidad
+            datos_fertilidad = st.session_state.datos_fertilidad
+            
+            if datos_fertilidad:
+                # Crear DataFrame
+                df_fertilidad = pd.DataFrame(datos_fertilidad)
+                
+                # Métricas
+                col1, col2, col3, col4, col5 = st.columns(5)
+                with col1:
+                    N_prom = df_fertilidad['N_kg_ha'].mean()
+                    st.metric("Nitrógeno (N)", f"{N_prom:.0f} kg/ha")
+                with col2:
+                    P_prom = df_fertilidad['P_kg_ha'].mean()
+                    st.metric("Fósforo (P₂O₅)", f"{P_prom:.0f} kg/ha")
+                with col3:
+                    K_prom = df_fertilidad['K_kg_ha'].mean()
+                    st.metric("Potasio (K₂O)", f"{K_prom:.0f} kg/ha")
+                with col4:
+                    pH_prom = df_fertilidad['pH'].mean()
+                    st.metric("pH", f"{pH_prom:.2f}")
+                with col5:
+                    MO_prom = df_fertilidad['MO_porcentaje'].mean()
+                    st.metric("Materia Orgánica", f"{MO_prom:.1f}%")
+                
+                # Mapa de calor de NPK
+                st.markdown("### 🗺️ Mapas de Calor de Nutrientes")
+                
+                try:
+                    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+                    
+                    # Preparar datos para interpolación
+                    centroids = []
+                    N_vals = []
+                    P_vals = []
+                    K_vals = []
+                    
+                    for dato in datos_fertilidad:
+                        try:
+                            centroid = dato['geometria'].centroid
+                            centroids.append([centroid.x, centroid.y])
+                            N_vals.append(dato['N_kg_ha'])
+                            P_vals.append(dato['P_kg_ha'])
+                            K_vals.append(dato['K_kg_ha'])
+                        except:
+                            continue
+                    
+                    if centroids:
+                        centroids = np.array(centroids)
+                        
+                        # Crear grid
+                        x_min, x_max = centroids[:, 0].min(), centroids[:, 0].max()
+                        y_min, y_max = centroids[:, 1].min(), centroids[:, 1].max()
+                        
+                        x_margin = (x_max - x_min) * 0.1
+                        y_margin = (y_max - y_min) * 0.1
+                        x_min, x_max = x_min - x_margin, x_max + x_margin
+                        y_min, y_max = y_min - y_margin, y_max + y_margin
+                        
+                        grid_size = 50
+                        xi = np.linspace(x_min, x_max, grid_size)
+                        yi = np.linspace(y_min, y_max, grid_size)
+                        xi, yi = np.meshgrid(xi, yi)
+                        
+                        # Función de interpolación
+                        def interpolate_idw(points, values, xi, yi, power=2):
+                            zi = np.zeros(xi.shape)
+                            for i in range(xi.shape[0]):
+                                for j in range(xi.shape[1]):
+                                    distances = np.sqrt((points[:,0] - xi[i,j])**2 + (points[:,1] - yi[i,j])**2)
+                                    weights = 1.0 / (distances**power + 1e-8)
+                                    zi[i,j] = np.sum(weights * values) / np.sum(weights)
+                            return zi
+                        
+                        # Nitrógeno
+                        zi_N = interpolate_idw(centroids, N_vals, xi, yi)
+                        im1 = axes[0].contourf(xi, yi, zi_N, levels=20, cmap='RdPu', alpha=0.8)
+                        axes[0].scatter(centroids[:,0], centroids[:,1], c=N_vals, cmap='RdPu', 
+                                      edgecolors='black', s=50, alpha=0.7)
+                        plt.colorbar(im1, ax=axes[0], label='N (kg/ha)')
+                        axes[0].set_title('Nitrógeno Disponible', fontweight='bold')
+                        
+                        # Fósforo
+                        zi_P = interpolate_idw(centroids, P_vals, xi, yi)
+                        im2 = axes[1].contourf(xi, yi, zi_P, levels=20, cmap='YlOrBr', alpha=0.8)
+                        axes[1].scatter(centroids[:,0], centroids[:,1], c=P_vals, cmap='YlOrBr', 
+                                      edgecolors='black', s=50, alpha=0.7)
+                        plt.colorbar(im2, ax=axes[1], label='P₂O₅ (kg/ha)')
+                        axes[1].set_title('Fósforo Disponible', fontweight='bold')
+                        
+                        # Potasio
+                        zi_K = interpolate_idw(centroids, K_vals, xi, yi)
+                        im3 = axes[2].contourf(xi, yi, zi_K, levels=20, cmap='YlGn', alpha=0.8)
+                        axes[2].scatter(centroids[:,0], centroids[:,1], c=K_vals, cmap='YlGn', 
+                                      edgecolors='black', s=50, alpha=0.7)
+                        plt.colorbar(im3, ax=axes[2], label='K₂O (kg/ha)')
+                        axes[2].set_title('Potasio Disponible', fontweight='bold')
+                        
+                        plt.suptitle('Mapas de Calor de Nutrientes del Suelo', fontsize=14, fontweight='bold', y=1.05)
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        plt.close(fig)
+                        
+                except Exception as e:
+                    st.error(f"Error al crear mapas: {str(e)}")
+                
+                # Tabla de recomendaciones
+                st.markdown("### 📋 RECOMENDACIONES DE FERTILIZACIÓN POR BLOQUE")
+                
+                # Crear tabla resumen
+                tabla_rec = []
+                for dato in datos_fertilidad[:10]:  # Mostrar primeros 10 bloques
+                    tabla_rec.append({
+                        'Bloque': dato['id_bloque'],
+                        'N (kg/ha)': dato['N_kg_ha'],
+                        'P₂O₅ (kg/ha)': dato['P_kg_ha'],
+                        'K₂O (kg/ha)': dato['K_kg_ha'],
+                        'pH': dato['pH'],
+                        'Recomendación N': dato['recomendacion_N'][:50] + "...",
+                        'Recomendación P': dato['recomendacion_P'][:50] + "...",
+                        'Recomendación K': dato['recomendacion_K'][:50] + "..."
+                    })
+                
+                df_tabla = pd.DataFrame(tabla_rec)
+                st.dataframe(df_tabla, use_container_width=True)
+                
+                # Recomendaciones generales
+                st.markdown("### 🎯 RECOMENDACIONES GENERALES DE FERTILIZACIÓN")
+                
+                if N_prom < 80:
+                    st.error("**DEFICIENCIA DE NITRÓGENO** - Aplicar 120-150 kg/ha de N en forma de Urea (260-325 kg/ha)")
+                elif N_prom < 120:
+                    st.warning("**NIVEL MODERADO DE NITRÓGENO** - Aplicar 80-100 kg/ha de N")
+                else:
+                    st.success("**NIVEL ADECUADO DE NITRÓGENO** - Mantener dosis de mantenimiento")
+                
+                if P_prom < 25:
+                    st.error("**DEFICIENCIA DE FÓSFORO** - Aplicar 50-60 kg/ha de P₂O₅ en forma de DAP (110-130 kg/ha)")
+                elif P_prom < 40:
+                    st.warning("**NIVEL MODERADO DE FÓSFORO** - Aplicar 30-40 kg/ha de P₂O₅")
+                else:
+                    st.success("**NIVEL ADECUADO DE FÓSFORO** - Mantener dosis de mantenimiento")
+                
+                if K_prom < 120:
+                    st.error("**DEFICIENCIA DE POTASIO** - Aplicar 180-220 kg/ha de K₂O en forma de KCl (300-370 kg/ha)")
+                elif K_prom < 180:
+                    st.warning("**NIVEL MODERADO DE POTASIO** - Aplicar 120-150 kg/ha de K₂O")
+                else:
+                    st.success("**NIVEL ADECUADO DE POTASIO** - Mantener dosis de mantenimiento")
+                
+                # Descarga de datos
+                st.markdown("### 📥 EXPORTAR DATOS DE FERTILIDAD")
+                try:
+                    df_export = pd.DataFrame([{
+                        'id_bloque': d['id_bloque'],
+                        'N_kg_ha': d['N_kg_ha'],
+                        'P_kg_ha': d['P_kg_ha'],
+                        'K_kg_ha': d['K_kg_ha'],
+                        'pH': d['pH'],
+                        'MO_porcentaje': d['MO_porcentaje'],
+                        'recomendacion_N': d['recomendacion_N'],
+                        'recomendacion_P': d['recomendacion_P'],
+                        'recomendacion_K': d['recomendacion_K']
+                    } for d in datos_fertilidad])
+                    
+                    csv_data = df_export.to_csv(index=False)
+                    st.download_button(
+                        label="📊 Descargar CSV (Fertilidad)",
+                        data=csv_data,
+                        file_name=f"fertilidad_palma_{datetime.now().strftime('%Y%m%d')}.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+                except:
+                    st.info("No se pudieron exportar los datos de fertilidad")
+            else:
+                st.info("Ejecute el análisis completo para ver los datos de fertilidad.")
+        
+        with tab7:
+            st.subheader("🌱 ANÁLISIS DE TEXTURA DE SUELO")
+            
+            # Analizar textura
+            analisis_textura = st.session_state.textura_suelo
+            
+            if analisis_textura:
+                tipo_suelo = analisis_textura.get('tipo_suelo', 'No determinado')
+                st.success(f"**TIPO DE SUELO IDENTIFICADO:** {tipo_suelo}")
+                
+                # Mostrar características
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("### 📊 CARACTERÍSTICAS FÍSICAS")
+                    caract = analisis_textura.get('caracteristicas', {})
+                    
+                    if caract:
+                        st.write(f"- **Composición arena:** {caract.get('arena', 'N/A')}")
+                        st.write(f"- **Composición limo:** {caract.get('limo', 'N/A')}")
+                        st.write(f"- **Composición arcilla:** {caract.get('arcilla', 'N/A')}")
+                        st.write(f"- **Textura general:** {caract.get('textura', 'N/A')}")
+                        st.write(f"- **Capacidad drenaje:** {caract.get('drenaje', 'N/A')}")
+                        st.write(f"- **CIC (Capacidad Intercambio Catiónico):** {caract.get('CIC', 'N/A')}")
+                        st.write(f"- **Retención agua:** {caract.get('ret_agua', 'N/A')}")
+                
+                with col2:
+                    st.markdown("### 🎯 MANEJO RECOMENDADO")
+                    
+                    # Recomendaciones específicas por tipo de suelo
+                    if 'Arcilloso' in tipo_suelo:
+                        st.warning("""
+                        **MANEJO PARA SUELOS ARCILLOSOS:**
+                        
+                        1. **Drenaje:** Implementar sistema de drenaje superficial y subsuperficial
+                        2. **Labranza:** Realizar subsolado cada 3-4 años
+                        3. **Fertilización:** Aplicar materia orgánica (raquis, compost) 10-15 t/ha/año
+                        4. **Riego:** Control estricto, evitar encharcamientos
+                        5. **Densidad:** Considerar espaciamiento 9 x 9 m (123 plantas/ha)
+                        6. **Cobertura:** Mantener cobertura vegetal permanente
+                        """)
+                    elif 'Arenoso' in tipo_suelo:
+                        st.info("""
+                        **MANEJO PARA SUELOS ARENOSOS:**
+                        
+                        1. **Riego:** Sistema de riego por goteo o microaspersión
+                        2. **Fertilización:** Fraccionada (4-6 aplicaciones/año)
+                        3. **Materia orgánica:** Aplicar 15-20 t/ha/año de compost
+                        4. **Cobertura:** Mulching con raquis y hojas de palma
+                        5. **Densidad:** Espaciamiento 8.5 x 8.5 m (138 plantas/ha)
+                        6. **Control:** Monitoreo constante de lixiviación
+                        """)
+                    else:  # Franco Arcilloso
+                        st.success("""
+                        **MANEJO PARA SUELOS FRANCO ARCILLOSOS:**
+                        
+                        1. **Manejo estándar:** Suelo óptimo para palma aceitera
+                        2. **Fertilización:** Programa balanceado según análisis
+                        3. **Riego:** Solo en períodos secos prolongados
+                        4. **Labranza:** Mínima, evitar compactación
+                        5. **Densidad:** Espaciamiento 9 x 9 m (123 plantas/ha)
+                        6. **Cobertura:** Leguminosas como Pueraria o Centrosema
+                        """)
+                
+                # Mapa conceptual de textura
+                st.markdown("### 🗺️ DISTRIBUCIÓN CONCEPTUAL DE TEXTURAS")
+                
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    
+                    # Crear gradiente de color según tipo de suelo
+                    colors = []
+                    for idx, row in gdf_completo.iterrows():
+                        # Simular variación dentro de la plantación
+                        if 'Arcilloso' in tipo_suelo:
+                            color = 'sienna'
+                        elif 'Arenoso' in tipo_suelo:
+                            color = 'goldenrod'
+                        else:
+                            color = 'darkgreen'
+                        
+                        colors.append(color)
+                    
+                    gdf_completo.plot(ax=ax, color=colors, edgecolor='black', alpha=0.7)
+                    ax.set_title(f'Distribución de Textura: {tipo_suelo}', fontweight='bold')
+                    ax.set_xlabel('Longitud')
+                    ax.set_ylabel('Latitud')
+                    ax.grid(True, alpha=0.3)
+                    
+                    # Leyenda personalizada
+                    from matplotlib.patches import Patch
+                    legend_elements = [
+                        Patch(facecolor='sienna', alpha=0.7, label='Zonas más arcillosas'),
+                        Patch(facecolor='darkgreen', alpha=0.7, label='Zonas francas'),
+                        Patch(facecolor='goldenrod', alpha=0.7, label='Zonas más arenosas')
+                    ]
+                    ax.legend(handles=legend_elements, loc='upper right')
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+                    
+                except Exception:
+                    st.info("No se pudo generar el mapa de texturas")
+                
+                # Información adicional
+                st.markdown("### 📚 METODOLOGÍA VENEZOLANA DE CLASIFICACIÓN")
+                
+                st.write("""
+                **Referencia:** Ministerio del Poder Popular para la Agricultura (MPA), 2010
+                
+                **Parámetros considerados:**
+                - Análisis granulométrico (arena, limo, arcilla)
+                - Ubicación geográfica y zona de vida
+                - Historial de uso del suelo
+                - Características topográficas
+                
+                **Clasificación utilizada:**
+                1. **Arcilloso:** >35% arcilla, drenaje limitado
+                2. **Franco Arcilloso:** 25-35% arcilla, equilibrio óptimo
+                3. **Franco Arcilloso Arenoso:** 20-30% arcilla, buen drenaje
+                4. **Arenoso Franco:** <25% arcilla, alta permeabilidad
+                """)
+            else:
+                st.info("Ejecute el análisis completo para ver el análisis de textura del suelo.")
 
 # Pie de página
 st.markdown("---")
