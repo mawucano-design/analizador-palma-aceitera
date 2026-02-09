@@ -527,15 +527,15 @@ def crear_mapa_calor_indices(gdf):
         plt.tight_layout()
         return fig
 
+# REEMPLAZAR la función crear_mapa_interactivo_esri por esta versión mejorada:
 def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
-    """Crea un mapa interactivo con ESRI Satellite"""
+    """Crea un mapa interactivo con ESRI Satellite y TODAS las palmas"""
     if gdf is None or len(gdf) == 0:
         return None
     
     try:
         # Obtener centroide para centrar el mapa
         centroide = gdf.geometry.unary_union.centroid
-        bounds = gdf.total_bounds
         
         # Crear mapa base con ESRI Satellite
         m = folium.Map(
@@ -616,17 +616,31 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
             # Añadir colormap al mapa
             colormap.add_to(m)
         
-        # Añadir palmas detectadas si existen
+        # Añadir TODAS las palmas detectadas usando MarkerCluster optimizado
         if palmas_detectadas and len(palmas_detectadas) > 0:
+            # Crear un FeatureGroup para palmas
+            palmas_group = folium.FeatureGroup(name="Palmas detectadas", show=True)
+            
+            # Usar CircleMarkers optimizados (sin popup individual para mejorar rendimiento)
+            # Agrupar palmas en clusters para mejor rendimiento
             marker_cluster = MarkerCluster(
-                name="Palmas detectadas",
+                name="Palmas",
                 overlay=True,
                 control=True,
-                icon_create_function=None
-            ).add_to(m)
+                options={
+                    'maxClusterRadius': 50,
+                    'disableClusteringAtZoom': 18,
+                    'spiderfyOnMaxZoom': True,
+                    'showCoverageOnHover': False,
+                    'zoomToBoundsOnClick': True
+                }
+            ).add_to(palmas_group)
             
-            # Limitar a 1000 palmas para rendimiento
-            for i, palma in enumerate(palmas_detectadas[:1000]):
+            # CONTADOR para mostrar progreso
+            total_palmas = len(palmas_detectadas)
+            
+            # Añadir TODAS las palmas (sin límite)
+            for i, palma in enumerate(palmas_detectadas):
                 try:
                     if 'centroide' in palma:
                         lon, lat = palma['centroide']
@@ -640,23 +654,50 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
                                 break
                         
                         if dentro:
+                            # Usar CircleMarker pequeño sin popup para mejor rendimiento
                             folium.CircleMarker(
                                 location=[lat, lon],
-                                radius=3,
-                                popup=f"Palma #{i+1}",
-                                tooltip=f"Palma #{i+1}",
+                                radius=2,  # Más pequeño para mejor rendimiento
                                 color='red',
                                 fill=True,
                                 fill_color='red',
-                                fill_opacity=0.8,
-                                weight=1
+                                fill_opacity=0.7,
+                                weight=0.5
                             ).add_to(marker_cluster)
                         
                 except Exception:
                     continue
+            
+            # Añadir el grupo al mapa
+            palmas_group.add_to(m)
+            
+            # Añadir capa de calor como alternativa para muchas palmas
+            if total_palmas > 10000:
+                try:
+                    from folium.plugins import HeatMap
+                    
+                    # Crear datos para heatmap
+                    heat_data = []
+                    for palma in palmas_detectadas:
+                        if 'centroide' in palma:
+                            lon, lat = palma['centroide']
+                            heat_data.append([lat, lon])
+                    
+                    if heat_data:
+                        HeatMap(
+                            heat_data,
+                            name="Densidad de palmas (Heatmap)",
+                            min_opacity=0.3,
+                            max_zoom=18,
+                            radius=15,
+                            blur=10,
+                            gradient={0.4: 'blue', 0.65: 'lime', 1: 'red'}
+                        ).add_to(m)
+                except ImportError:
+                    pass
         
         # Añadir control de capas
-        folium.LayerControl(collapsed=False).add_to(m)
+        folium.LayerControl(collapsed=True).add_to(m)
         
         # Añadir botón de pantalla completa
         folium.plugins.Fullscreen(
@@ -666,11 +707,231 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None):
             force_separate_button=True,
         ).add_to(m)
         
+        # Añadir medida de área/distancia
+        folium.plugins.MeasureControl(
+            position='topleft',
+            primary_length_unit='meters',
+            secondary_length_unit='kilometers',
+            primary_area_unit='hectares',
+            secondary_area_unit='sqmeters'
+        ).add_to(m)
+        
         return m
         
     except Exception as e:
         print(f"Error en crear_mapa_interactivo_esri: {str(e)}")
         return None
+
+# Y REEMPLAZAR la sección del mapa de palmas en la pestaña 5 con esta versión mejorada:
+# (En la pestaña 5, dentro del bloque if st.session_state.deteccion_ejecutada)
+# Buscar la sección que dice "Mapa de distribución en ESRI Satellite" y reemplazarla con:
+
+# Mapa de distribución en ESRI Satellite con TODAS las palmas
+st.markdown("### 🗺️ Mapa de Distribución (ESRI Satellite)")
+
+try:
+    # Crear mapa específico para palmas con opción de ver TODAS
+    centroide = gdf_completo.geometry.unary_union.centroid
+    
+    # Opciones de visualización
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        mostrar_todas = st.checkbox("Mostrar TODAS las palmas", value=False, 
+                                  help="Puede ralentizar el navegador con muchas palmas")
+    with col_opt2:
+        usar_heatmap = st.checkbox("Usar mapa de calor", value=len(palmas) > 5000,
+                                 help="Recomendado para más de 5000 palmas")
+    
+    m_palmas = folium.Map(
+        location=[centroide.y, centroide.x],
+        zoom_start=16,
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri Satellite',
+        control_scale=True
+    )
+    
+    # Añadir polígono de la plantación
+    for idx, row in gdf_completo.iterrows():
+        try:
+            if row.geometry.geom_type == 'Polygon':
+                coords = [(lat, lon) for lon, lat in row.geometry.exterior.coords]
+            elif row.geometry.geom_type == 'MultiPolygon':
+                poly = list(row.geometry.geoms)[0]
+                coords = [(lat, lon) for lon, lat in poly.exterior.coords]
+            else:
+                continue
+            
+            folium.Polygon(
+                locations=coords,
+                color='blue',
+                fill=True,
+                fill_color='blue',
+                fill_opacity=0.2,
+                weight=2,
+                opacity=0.8
+            ).add_to(m_palmas)
+        except Exception:
+            continue
+    
+    # Opción 1: Mapa de calor (para muchas palmas)
+    if usar_heatmap and len(palmas) > 100:
+        try:
+            from folium.plugins import HeatMap
+            
+            # Preparar datos para heatmap
+            heat_data = []
+            for palma in palmas:
+                if 'centroide' in palma:
+                    lon, lat = palma['centroide']
+                    heat_data.append([lat, lon, 1])  # Peso 1 para cada palma
+            
+            if heat_data:
+                HeatMap(
+                    heat_data,
+                    name="Densidad de palmas",
+                    min_opacity=0.3,
+                    max_zoom=18,
+                    radius=20,
+                    blur=15,
+                    gradient={0.4: 'blue', 0.6: 'cyan', 0.7: 'lime', 0.8: 'yellow', 1.0: 'red'}
+                ).add_to(m_palmas)
+                
+                st.success(f"✅ Mapa de calor generado con {len(palmas)} palmas")
+        except ImportError:
+            st.warning("No se pudo cargar el módulo de heatmap. Mostrando puntos individuales.")
+            usar_heatmap = False
+    
+    # Opción 2: Puntos individuales (con o sin límite)
+    if not usar_heatmap:
+        if mostrar_todas or len(palmas) <= 10000:
+            # Mostrar TODAS las palmas con MarkerCluster
+            marker_cluster = MarkerCluster(
+                name=f"Palmas ({len(palmas)})",
+                options={
+                    'maxClusterRadius': 40,
+                    'disableClusteringAtZoom': 19,
+                    'showCoverageOnHover': True
+                }
+            ).add_to(m_palmas)
+            
+            # Mostrar progreso
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Añadir palmas con barra de progreso
+            for i, palma in enumerate(palmas):
+                try:
+                    if 'centroide' in palma:
+                        lon, lat = palma['centroide']
+                        
+                        # Actualizar progreso cada 100 palmas
+                        if i % 100 == 0:
+                            progress = (i + 1) / len(palmas)
+                            progress_bar.progress(progress)
+                            status_text.text(f"Cargando palmas: {i+1}/{len(palmas)}")
+                        
+                        folium.CircleMarker(
+                            location=[lat, lon],
+                            radius=1.5,  # Muy pequeño para muchas palmas
+                            color='red',
+                            fill=True,
+                            fill_color='red',
+                            fill_opacity=0.8,
+                            weight=0.5
+                        ).add_to(marker_cluster)
+                except Exception:
+                    continue
+            
+            # Completar barra de progreso
+            progress_bar.progress(1.0)
+            status_text.text(f"✅ {len(palmas)} palmas cargadas")
+            
+        else:
+            # Mostrar solo una muestra representativa
+            muestra = min(5000, len(palmas))
+            st.info(f"Mostrando {muestra} de {len(palmas)} palmas para mejor rendimiento. Active 'Mostrar TODAS las palmas' para ver todas.")
+            
+            marker_cluster = MarkerCluster(name=f"Palmas (muestra de {muestra})").add_to(m_palmas)
+            
+            # Tomar muestra aleatoria pero representativa
+            import random
+            if len(palmas) > muestra:
+                indices_muestra = random.sample(range(len(palmas)), muestra)
+                palmas_muestra = [palmas[i] for i in indices_muestra]
+            else:
+                palmas_muestra = palmas
+            
+            for palma in palmas_muestra:
+                try:
+                    if 'centroide' in palma:
+                        lon, lat = palma['centroide']
+                        folium.CircleMarker(
+                            location=[lat, lon],
+                            radius=2,
+                            color='red',
+                            fill=True,
+                            fill_color='red',
+                            fill_opacity=0.8,
+                            weight=0.5
+                        ).add_to(marker_cluster)
+                except Exception:
+                    continue
+    
+    # Añadir controles
+    folium.LayerControl().add_to(m_palmas)
+    folium.plugins.Fullscreen().add_to(m_palmas)
+    
+    # Mostrar mapa
+    folium_static(m_palmas, width=1000, height=600)
+    
+    # Información sobre las palmas mostradas
+    if not mostrar_todas and len(palmas) > 10000 and not usar_heatmap:
+        st.warning(f"""
+        **Nota de rendimiento:**
+        - Palmas detectadas: {len(palmas):,}
+        - Palmas mostradas: {muestra:,} (muestra representativa)
+        - Para ver TODAS las palmas, active la opción "Mostrar TODAS las palmas"
+        - Para mejor rendimiento con muchas palmas, use la opción "Usar mapa de calor"
+        """)
+    
+except Exception as e:
+    st.error(f"Error al mostrar mapa de palmas: {str(e)[:100]}")
+    st.info("Mostrando visualización alternativa...")
+    
+    # Visualización alternativa con matplotlib
+    try:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        
+        # Dibujar polígonos
+        gdf_completo.plot(ax=ax, color='lightgreen', alpha=0.3, edgecolor='darkgreen', linewidth=2)
+        
+        # Dibujar palmas (muestra de 1000 máximo)
+        muestra_palmas = min(1000, len(palmas))
+        coords = []
+        for i in range(muestra_palmas):
+            if 'centroide' in palmas[i]:
+                lon, lat = palmas[i]['centroide']
+                coords.append([lon, lat])
+        
+        if coords:
+            coords_array = np.array(coords)
+            ax.scatter(coords_array[:, 0], coords_array[:, 1], 
+                      s=1, color='red', alpha=0.5, 
+                      label=f'Palmas detectadas ({len(palmas)})')
+        
+        ax.set_title(f'Distribución de Palmas Detectadas\n(Total: {len(palmas):,} palmas)', 
+                   fontsize=14, fontweight='bold')
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+        
+        st.info(f"Visualización simplificada. Se muestran {muestra_palmas} de {len(palmas)} palmas.")
+    except Exception:
+        st.error("No se pudo generar ninguna visualización de palmas.")
 
 def crear_graficos_climaticos(datos_climaticos):
     """Crea gráficos de datos climáticos"""
