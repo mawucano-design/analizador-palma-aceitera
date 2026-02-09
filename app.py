@@ -1,4 +1,4 @@
-# app.py - Versión completa corregida para PALMA ACEITERA con detección de plantas individuales
+# app.py - Versión CORREGIDA para PALMA ACEITERA con detección de plantas individuales
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
@@ -21,13 +21,7 @@ import re
 from PIL import Image, ImageDraw
 
 # ===== DEPENDENCIAS PARA MAPAS INTERACTIVOS =====
-try:
-    import folium
-    from streamlit_folium import folium_static
-    from folium.plugins import MarkerCluster
-    FOLIUM_DISPONIBLE = True
-except ImportError:
-    FOLIUM_DISPONIBLE = False
+FOLIUM_DISPONIBLE = False  # Desactivado temporalmente para evitar errores
 
 # ===== DEPENDENCIAS PARA DETECCIÓN DE PALMAS =====
 try:
@@ -489,17 +483,24 @@ def analizar_requerimientos_nutricionales(ndvi_values, edades, datos_climaticos)
     
     return requerimientos_n, requerimientos_p, requerimientos_k, requerimientos_mg, requerimientos_b
 
-# ===== FUNCIONES DE VISUALIZACIÓN =====
+# ===== FUNCIONES DE VISUALIZACIÓN CORREGIDAS =====
 def crear_mapa_bloques(gdf, palmas_detectadas=None):
-    """Crea un mapa de los bloques con matplotlib"""
+    """Crea un mapa de los bloques con matplotlib - CORREGIDA"""
     if gdf is None or len(gdf) == 0:
-        return None
+        # Crear una figura vacía en lugar de devolver None
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.text(0.5, 0.5, "No hay datos para mostrar", 
+                ha='center', va='center', fontsize=12)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
     
     try:
-        fig, ax = plt.subplots(figsize=(14, 10))
+        fig, ax = plt.subplots(figsize=(12, 10))
         
         # Configurar colores basados en NDVI
-        if 'ndvi_modis' in gdf.columns:
+        if 'ndvi_modis' in gdf.columns and not gdf['ndvi_modis'].isna().all():
             ndvi_values = gdf['ndvi_modis'].values
             if len(ndvi_values) > 0:
                 min_ndvi, max_ndvi = ndvi_values.min(), ndvi_values.max()
@@ -523,7 +524,7 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
                             polygon = MplPolygon(poly_coords, closed=True, 
                                                facecolor=color, 
                                                edgecolor='black', 
-                                               linewidth=2,
+                                               linewidth=1,
                                                alpha=0.6)
                             ax.add_patch(polygon)
                         elif row.geometry.geom_type == 'MultiPolygon':
@@ -532,7 +533,7 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
                                 polygon = MplPolygon(poly_coords, closed=True,
                                                    facecolor=color,
                                                    edgecolor='black',
-                                                   linewidth=2,
+                                                   linewidth=1,
                                                    alpha=0.6)
                                 ax.add_patch(polygon)
                     except Exception:
@@ -543,391 +544,325 @@ def crear_mapa_bloques(gdf, palmas_detectadas=None):
                     try:
                         centroid = row.geometry.centroid
                         ax.text(centroid.x, centroid.y, str(int(row['id_bloque'])), 
-                               fontsize=10, ha='center', va='center',
-                               bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+                               fontsize=8, ha='center', va='center',
+                               bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.7))
                     except Exception:
                         continue
             else:
-                gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6, linewidth=2)
+                # Sin datos NDVI, dibujar polígonos simples
+                gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
         else:
-            gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6, linewidth=2)
+            # Sin columna NDVI, dibujar polígonos simples
+            gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
         
-        # Añadir palmas detectadas si existen - CORREGIDO
+        # Añadir palmas detectadas si existen
         if palmas_detectadas and len(palmas_detectadas) > 0:
             try:
-                valid_palmas = []
-                for p in palmas_detectadas:
+                coords = []
+                for p in palmas_detectadas[:500]:  # Limitar a 500 para rendimiento
                     if isinstance(p, dict) and 'centroide' in p:
                         centroide = p['centroide']
                         if isinstance(centroide, (tuple, list)) and len(centroide) == 2:
-                            valid_palmas.append(centroide)
+                            lon, lat = centroide
+                            if not np.isnan(lon) and not np.isnan(lat):
+                                coords.append((lon, lat))
                 
-                if valid_palmas:
-                    coords_array = np.array(valid_palmas)
-                    valid_mask = ~np.isnan(coords_array).any(axis=1)
-                    coords_array = coords_array[valid_mask]
-                    
-                    if len(coords_array) > 0:
-                        bounds = gdf.total_bounds
-                        in_bounds = (
-                            (coords_array[:, 0] >= bounds[0]) & 
-                            (coords_array[:, 0] <= bounds[2]) & 
-                            (coords_array[:, 1] >= bounds[1]) & 
-                            (coords_array[:, 1] <= bounds[3])
-                        )
-                        coords_array = coords_array[in_bounds]
-                        
-                        ax.scatter(coords_array[:, 0], coords_array[:, 1], 
-                                  s=50, color='blue', alpha=0.8, 
-                                  label=f'Palmas detectadas ({len(coords_array)})',
-                                  edgecolors='white', linewidth=1.5, zorder=5)
+                if coords:
+                    coords_array = np.array(coords)
+                    ax.scatter(coords_array[:, 0], coords_array[:, 1], 
+                              s=20, color='blue', alpha=0.7, 
+                              label=f'Palmas detectadas ({len(coords)})',
+                              edgecolors='white', linewidth=0.5)
             except Exception:
                 pass
         
-        ax.set_title('Mapa de Bloques con Palmas Detectadas', fontsize=16, fontweight='bold')
-        ax.set_xlabel('Longitud', fontsize=12)
-        ax.set_ylabel('Latitud', fontsize=12)
+        ax.set_title('Mapa de Bloques - Palma Aceitera', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Longitud')
+        ax.set_ylabel('Latitud')
         ax.grid(True, alpha=0.3)
         
         if palmas_detectadas and len(palmas_detectadas) > 0:
-            ax.legend(loc='upper right', fontsize=10)
+            ax.legend(loc='upper right', fontsize=9)
         
         plt.tight_layout()
         return fig
     except Exception as e:
-        try:
-            fig, ax = plt.subplots(figsize=(12, 10))
-            gdf.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
-            ax.set_title('Mapa de Bloques', fontsize=16, fontweight='bold')
-            ax.set_xlabel('Longitud')
-            ax.set_ylabel('Latitud')
-            ax.grid(True, alpha=0.3)
-            plt.tight_layout()
-            return fig
-        except Exception:
-            return None
+        # Crear figura de error
+        fig, ax = plt.subplots(figsize=(10, 8))
+        ax.text(0.5, 0.5, f"Error al crear mapa: {str(e)[:50]}...", 
+                ha='center', va='center', fontsize=12, color='red')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
 
 def crear_mapa_indices(gdf):
-    """Crea un mapa de índices (NDVI, NDRE, NDWI)"""
+    """Crea un mapa de índices (NDVI, NDRE, NDWI) - CORREGIDA"""
     if gdf is None or len(gdf) == 0:
-        return None
+        # Crear figura vacía
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(0.5, 0.5, "No hay datos para mostrar", 
+                ha='center', va='center', fontsize=12)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
     
     try:
-        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
         
         # 1. NDVI
         ax1 = axes[0]
-        if 'ndvi_modis' in gdf.columns:
-            scatter1 = ax1.scatter(
-                gdf.geometry.centroid.x,
-                gdf.geometry.centroid.y,
-                c=gdf['ndvi_modis'],
-                cmap='RdYlGn',
-                s=150,
-                vmin=0.3,
-                vmax=0.9,
-                edgecolors='black',
-                linewidth=1
-            )
+        if 'ndvi_modis' in gdf.columns and not gdf['ndvi_modis'].isna().all():
+            # Obtener centroides
+            centroids_x = []
+            centroids_y = []
+            ndvi_values = []
             
-            cbar1 = plt.colorbar(scatter1, ax=ax1, orientation='vertical', pad=0.02)
-            cbar1.set_label('NDVI', fontsize=10)
+            for idx, row in gdf.iterrows():
+                try:
+                    centroid = row.geometry.centroid
+                    centroids_x.append(centroid.x)
+                    centroids_y.append(centroid.y)
+                    ndvi_values.append(row['ndvi_modis'])
+                except:
+                    continue
             
-            ndvi_avg = gdf['ndvi_modis'].mean()
-            ax1.text(0.02, 0.98, f'Promedio: {ndvi_avg:.3f}',
-                    transform=ax1.transAxes, 
-                    fontsize=10,
-                    verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+            if len(centroids_x) > 0:
+                scatter1 = ax1.scatter(
+                    centroids_x,
+                    centroids_y,
+                    c=ndvi_values,
+                    cmap='RdYlGn',
+                    s=100,
+                    vmin=0.3,
+                    vmax=0.9,
+                    edgecolors='black',
+                    linewidth=0.5
+                )
+                
+                cbar1 = plt.colorbar(scatter1, ax=ax1, orientation='vertical', pad=0.02)
+                cbar1.set_label('NDVI', fontsize=10)
+                
+                if ndvi_values:
+                    ndvi_avg = np.nanmean(ndvi_values)
+                    ax1.text(0.02, 0.98, f'Promedio: {ndvi_avg:.3f}',
+                            transform=ax1.transAxes, 
+                            fontsize=9,
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        ax1.set_title('NDVI - Índice de Vegetación', fontsize=14, fontweight='bold')
+        ax1.set_title('NDVI - Índice de Vegetación', fontsize=12, fontweight='bold')
         ax1.set_xlabel('Longitud')
         ax1.set_ylabel('Latitud')
         ax1.grid(True, alpha=0.3)
         
         # 2. NDRE (simulado)
         ax2 = axes[1]
-        if 'ndvi_modis' in gdf.columns:
-            ndre_values = gdf['ndvi_modis'] * 0.85 + np.random.normal(0, 0.03, len(gdf))
-            ndre_values = np.clip(ndre_values, 0.2, 0.8)
+        if 'ndvi_modis' in gdf.columns and not gdf['ndvi_modis'].isna().all():
+            # Calcular NDRE simulado
+            ndre_values = []
+            centroids_x2 = []
+            centroids_y2 = []
             
-            scatter2 = ax2.scatter(
-                gdf.geometry.centroid.x,
-                gdf.geometry.centroid.y,
-                c=ndre_values,
-                cmap='YlGn',
-                s=150,
-                vmin=0.2,
-                vmax=0.8,
-                edgecolors='black',
-                linewidth=1
-            )
+            for idx, row in gdf.iterrows():
+                try:
+                    centroid = row.geometry.centroid
+                    centroids_x2.append(centroid.x)
+                    centroids_y2.append(centroid.y)
+                    ndre = row['ndvi_modis'] * 0.85 + np.random.normal(0, 0.03)
+                    ndre = max(0.2, min(0.8, ndre))
+                    ndre_values.append(ndre)
+                except:
+                    continue
             
-            cbar2 = plt.colorbar(scatter2, ax=ax2, orientation='vertical', pad=0.02)
-            cbar2.set_label('NDRE', fontsize=10)
-            
-            ndre_avg = ndre_values.mean()
-            ax2.text(0.02, 0.98, f'Promedio: {ndre_avg:.3f}',
-                    transform=ax2.transAxes, 
-                    fontsize=10,
-                    verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+            if len(centroids_x2) > 0:
+                scatter2 = ax2.scatter(
+                    centroids_x2,
+                    centroids_y2,
+                    c=ndre_values,
+                    cmap='YlGn',
+                    s=100,
+                    vmin=0.2,
+                    vmax=0.8,
+                    edgecolors='black',
+                    linewidth=0.5
+                )
+                
+                cbar2 = plt.colorbar(scatter2, ax=ax2, orientation='vertical', pad=0.02)
+                cbar2.set_label('NDRE', fontsize=10)
+                
+                if ndre_values:
+                    ndre_avg = np.nanmean(ndre_values)
+                    ax2.text(0.02, 0.98, f'Promedio: {ndre_avg:.3f}',
+                            transform=ax2.transAxes, 
+                            fontsize=9,
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        ax2.set_title('NDRE - Índice de Borde Rojo', fontsize=14, fontweight='bold')
+        ax2.set_title('NDRE - Índice de Borde Rojo', fontsize=12, fontweight='bold')
         ax2.set_xlabel('Longitud')
         ax2.grid(True, alpha=0.3)
         
         # 3. NDWI (simulado)
         ax3 = axes[2]
-        if 'ndvi_modis' in gdf.columns:
-            ndwi_values = 0.6 - (gdf['ndvi_modis'] * 0.4) + np.random.normal(0, 0.05, len(gdf))
-            ndwi_values = np.clip(ndwi_values, 0.1, 0.7)
+        if 'ndvi_modis' in gdf.columns and not gdf['ndvi_modis'].isna().all():
+            # Calcular NDWI simulado
+            ndwi_values = []
+            centroids_x3 = []
+            centroids_y3 = []
             
-            scatter3 = ax3.scatter(
-                gdf.geometry.centroid.x,
-                gdf.geometry.centroid.y,
-                c=ndwi_values,
-                cmap='Blues',
-                s=150,
-                vmin=0.1,
-                vmax=0.7,
-                edgecolors='black',
-                linewidth=1
-            )
+            for idx, row in gdf.iterrows():
+                try:
+                    centroid = row.geometry.centroid
+                    centroids_x3.append(centroid.x)
+                    centroids_y3.append(centroid.y)
+                    ndwi = 0.6 - (row['ndvi_modis'] * 0.4) + np.random.normal(0, 0.05)
+                    ndwi = max(0.1, min(0.7, ndwi))
+                    ndwi_values.append(ndwi)
+                except:
+                    continue
             
-            cbar3 = plt.colorbar(scatter3, ax=ax3, orientation='vertical', pad=0.02)
-            cbar3.set_label('NDWI', fontsize=10)
-            
-            ndwi_avg = ndwi_values.mean()
-            ax3.text(0.02, 0.98, f'Promedio: {ndwi_avg:.3f}',
-                    transform=ax3.transAxes, 
-                    fontsize=10,
-                    verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+            if len(centroids_x3) > 0:
+                scatter3 = ax3.scatter(
+                    centroids_x3,
+                    centroids_y3,
+                    c=ndwi_values,
+                    cmap='Blues',
+                    s=100,
+                    vmin=0.1,
+                    vmax=0.7,
+                    edgecolors='black',
+                    linewidth=0.5
+                )
+                
+                cbar3 = plt.colorbar(scatter3, ax=ax3, orientation='vertical', pad=0.02)
+                cbar3.set_label('NDWI', fontsize=10)
+                
+                if ndwi_values:
+                    ndwi_avg = np.nanmean(ndwi_values)
+                    ax3.text(0.02, 0.98, f'Promedio: {ndwi_avg:.3f}',
+                            transform=ax3.transAxes, 
+                            fontsize=9,
+                            verticalalignment='top',
+                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        ax3.set_title('NDWI - Índice de Agua', fontsize=14, fontweight='bold')
+        ax3.set_title('NDWI - Índice de Agua', fontsize=12, fontweight='bold')
         ax3.set_xlabel('Longitud')
         ax3.grid(True, alpha=0.3)
         
-        plt.suptitle('Mapa de Índices de Vegetación por Bloque', fontsize=16, fontweight='bold', y=1.02)
+        plt.suptitle('Mapa de Índices de Vegetación', fontsize=14, fontweight='bold', y=1.02)
         plt.tight_layout()
         return fig
         
     except Exception as e:
-        return None
-
-def crear_mapa_interactivo(gdf, palmas_detectadas=None):
-    """Crea un mapa interactivo con Folium"""
-    if not FOLIUM_DISPONIBLE:
-        return None
-    
-    try:
-        if gdf is None or len(gdf) == 0:
-            return None
-        
-        # Obtener centroide
-        centroide = gdf.geometry.unary_union.centroid
-        
-        # Crear mapa base con Esri Satellite
-        m = folium.Map(
-            location=[centroide.y, centroide.x],
-            zoom_start=16,
-            tiles=None,
-            control_scale=True
-        )
-        
-        # Capa Esri Satellite
-        esri_satellite = folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri, Maxar, Earthstar Geographics, and the GIS User Community',
-            name='Satélite Esri',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        # Capa OpenStreetMap
-        folium.TileLayer(
-            tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-            attr='OpenStreetMap',
-            name='OpenStreetMap',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        # Capa CartoDB
-        folium.TileLayer(
-            tiles='https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-            attr='CartoDB',
-            name='CartoDB Light',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        # Añadir polígonos de bloques
-        for idx, row in gdf.iterrows():
-            try:
-                # Convertir geometría a coordenadas
-                if row.geometry.geom_type == 'Polygon':
-                    coords = list(row.geometry.exterior.coords)
-                elif row.geometry.geom_type == 'MultiPolygon':
-                    coords = list(row.geometry.geoms[0].exterior.coords)
-                else:
-                    continue
-                
-                # Información para popup
-                info_html = f"""
-                <div style="font-family: Arial, sans-serif;">
-                    <h4 style="color: #2e7d32; margin-bottom: 5px;">Bloque {int(row['id_bloque'])}</h4>
-                    <hr style="margin: 5px 0;">
-                    <p><b>Área:</b> {row.get('area_ha', 0):.2f} ha</p>
-                    <p><b>NDVI:</b> {row.get('ndvi_modis', 0):.3f}</p>
-                    <p><b>Producción:</b> {row.get('produccion_estimada', 0):,.0f} kg/ha</p>
-                    <p><b>Rentabilidad:</b> {row.get('rentabilidad', 0):.1f}%</p>
-                </div>
-                """
-                
-                # Color basado en NDVI
-                ndvi = row.get('ndvi_modis', 0.5)
-                if ndvi < 0.4:
-                    color = '#d73027'  # Rojo
-                elif ndvi < 0.6:
-                    color = '#fee08b'  # Amarillo
-                elif ndvi < 0.75:
-                    color = '#91cf60'  # Verde claro
-                else:
-                    color = '#1a9850'  # Verde oscuro
-                
-                # Crear polígono
-                folium.Polygon(
-                    locations=[[lat, lon] for lon, lat in coords],
-                    popup=folium.Popup(info_html, max_width=300),
-                    tooltip=f"Bloque {int(row['id_bloque'])} - NDVI: {ndvi:.3f}",
-                    color=color,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.4,
-                    weight=2,
-                    opacity=0.8
-                ).add_to(m)
-                
-            except Exception:
-                continue
-        
-        # Añadir palmas detectadas si existen
-        if palmas_detectadas and len(palmas_detectadas) > 0:
-            # Usar MarkerCluster para mejor rendimiento
-            marker_cluster = MarkerCluster(
-                name="Palmas detectadas",
-                overlay=True,
-                control=True,
-                icon_create_function=None
-            ).add_to(m)
-            
-            # Limitar a 500 palmas para rendimiento
-            for i, palma in enumerate(palmas_detectadas[:500]):
-                try:
-                    if 'centroide' in palma:
-                        lon, lat = palma['centroide']
-                        
-                        # Información de la palma
-                        palma_html = f"""
-                        <div style="font-family: Arial, sans-serif;">
-                            <h5 style="color: #2196f3; margin-bottom: 3px;">Palma #{i+1}</h5>
-                            <hr style="margin: 3px 0;">
-                            <p><b>Área:</b> {palma.get('area_pixels', 0):.0f} m²</p>
-                            <p><b>Radio:</b> {palma.get('radio_aprox', 0):.1f} m</p>
-                            <p><b>Circularidad:</b> {palma.get('circularidad', 0):.2f}</p>
-                        </div>
-                        """
-                        
-                        # Crear marcador circular
-                        folium.CircleMarker(
-                            location=[lat, lon],
-                            radius=4,
-                            popup=folium.Popup(palma_html, max_width=250),
-                            tooltip=f"Palma #{i+1}",
-                            color='#2196f3',
-                            fill=True,
-                            fill_color='#2196f3',
-                            fill_opacity=0.8,
-                            weight=1
-                        ).add_to(marker_cluster)
-                        
-                except Exception:
-                    continue
-        
-        # Añadir control de capas
-        folium.LayerControl(collapsed=False).add_to(m)
-        
-        # Añadir botón de pantalla completa
-        folium.plugins.Fullscreen(
-            position="topright",
-            title="Pantalla completa",
-            title_cancel="Salir pantalla completa",
-            force_separate_button=True,
-        ).add_to(m)
-        
-        return m
-        
-    except Exception as e:
-        print(f"Error en crear_mapa_interactivo: {str(e)}")
-        return None
+        # Crear figura de error
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.text(0.5, 0.5, f"Error al crear mapa de índices", 
+                ha='center', va='center', fontsize=12, color='red')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
 
 def crear_grafico_ndvi_bloques(gdf):
-    """Crea gráfico de barras de NDVI por bloque"""
-    if gdf is None or 'ndvi_modis' not in gdf.columns:
-        return None
+    """Crea gráfico de barras de NDVI por bloque - CORREGIDA"""
+    if gdf is None or 'ndvi_modis' not in gdf.columns or gdf['ndvi_modis'].isna().all():
+        # Crear gráfico vacío
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, "No hay datos NDVI para mostrar", 
+                ha='center', va='center', fontsize=12)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
     
     try:
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(12, 6))
         
-        bloques = gdf['id_bloque'].astype(str)
-        ndvi_values = gdf['ndvi_modis']
+        # Filtrar datos válidos
+        valid_data = gdf[['id_bloque', 'ndvi_modis']].dropna()
+        if len(valid_data) == 0:
+            ax.text(0.5, 0.5, "No hay datos NDVI válidos", 
+                    ha='center', va='center', fontsize=12)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
+            return fig
         
+        bloques = valid_data['id_bloque'].astype(str)
+        ndvi_values = valid_data['ndvi_modis']
+        
+        # Colores basados en valor NDVI
         colors = []
         for val in ndvi_values:
             if val < 0.4:
-                colors.append('#d73027')
+                colors.append('#d73027')  # Rojo
             elif val < 0.6:
-                colors.append('#fee08b')
+                colors.append('#fee08b')  # Amarillo
             elif val < 0.75:
-                colors.append('#91cf60')
+                colors.append('#91cf60')  # Verde claro
             else:
-                colors.append('#1a9850')
+                colors.append('#1a9850')  # Verde oscuro
         
         bars = ax.bar(bloques, ndvi_values, color=colors, edgecolor='black', linewidth=1)
         ax.axhline(y=PARAMETROS_PALMA['NDVI_OPTIMO'], color='green', linestyle='--', 
                    linewidth=2, label=f'Óptimo ({PARAMETROS_PALMA["NDVI_OPTIMO"]})')
         ax.axhline(y=0.5, color='orange', linestyle='--', alpha=0.5, label='Mínimo aceptable')
         
-        ax.set_xlabel('Bloque', fontsize=12)
-        ax.set_ylabel('NDVI', fontsize=12)
-        ax.set_title('NDVI por Bloque - Palma Aceitera', fontsize=14, fontweight='bold')
-        ax.legend(fontsize=10)
+        ax.set_xlabel('Bloque', fontsize=11)
+        ax.set_ylabel('NDVI', fontsize=11)
+        ax.set_title('NDVI por Bloque - Palma Aceitera', fontsize=13, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3, axis='y')
         
         # Añadir valores en las barras
         for bar, val in zip(bars, ndvi_values):
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                   f'{val:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+                   f'{val:.3f}', ha='center', va='bottom', fontsize=8)
         
         plt.tight_layout()
         return fig
-    except Exception:
-        return None
+    except Exception as e:
+        # Crear gráfico de error
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f"Error al crear gráfico NDVI", 
+                ha='center', va='center', fontsize=12, color='red')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
 
 def crear_grafico_produccion(gdf):
-    """Crea gráfico de producción por bloque"""
-    if gdf is None or 'produccion_estimada' not in gdf.columns:
-        return None
+    """Crea gráfico de producción por bloque - CORREGIDA"""
+    if gdf is None or 'produccion_estimada' not in gdf.columns or gdf['produccion_estimada'].isna().all():
+        # Crear gráfico vacío
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, "No hay datos de producción para mostrar", 
+                ha='center', va='center', fontsize=12)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
     
     try:
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(12, 6))
         
-        bloques = gdf['id_bloque'].astype(str)
-        produccion = gdf['produccion_estimada']
+        # Filtrar datos válidos
+        valid_data = gdf[['id_bloque', 'produccion_estimada']].dropna()
+        if len(valid_data) == 0:
+            ax.text(0.5, 0.5, "No hay datos de producción válidos", 
+                    ha='center', va='center', fontsize=12)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
+            return fig
         
+        bloques = valid_data['id_bloque'].astype(str)
+        produccion = valid_data['produccion_estimada']
+        
+        # Ordenar bloques por producción
         sorted_indices = np.argsort(produccion)[::-1]
         bloques_sorted = bloques.iloc[sorted_indices]
         produccion_sorted = produccion.iloc[sorted_indices]
@@ -935,33 +870,58 @@ def crear_grafico_produccion(gdf):
         bars = ax.bar(bloques_sorted, produccion_sorted, color='#4caf50', 
                      edgecolor='#2e7d32', linewidth=1)
         
-        ax.set_xlabel('Bloque', fontsize=12)
-        ax.set_ylabel('Producción (kg/ha)', fontsize=12)
-        ax.set_title('Producción Estimada por Bloque', fontsize=14, fontweight='bold')
+        ax.set_xlabel('Bloque', fontsize=11)
+        ax.set_ylabel('Producción (kg/ha)', fontsize=11)
+        ax.set_title('Producción Estimada por Bloque', fontsize=13, fontweight='bold')
         ax.grid(True, alpha=0.3, axis='y')
         
         # Añadir valores
         for bar, val in zip(bars, produccion_sorted):
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height + 50,
-                   f'{val:,.0f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+                   f'{val:,.0f}', ha='center', va='bottom', fontsize=8)
         
         plt.tight_layout()
         return fig
-    except Exception:
-        return None
+    except Exception as e:
+        # Crear gráfico de error
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f"Error al crear gráfico de producción", 
+                ha='center', va='center', fontsize=12, color='red')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
 
 def crear_grafico_rentabilidad(gdf):
-    """Crea gráfico de rentabilidad por bloque"""
-    if gdf is None or 'rentabilidad' not in gdf.columns:
-        return None
+    """Crea gráfico de rentabilidad por bloque - CORREGIDA"""
+    if gdf is None or 'rentabilidad' not in gdf.columns or gdf['rentabilidad'].isna().all():
+        # Crear gráfico vacío
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, "No hay datos de rentabilidad para mostrar", 
+                ha='center', va='center', fontsize=12)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
     
     try:
-        fig, ax = plt.subplots(figsize=(14, 6))
+        fig, ax = plt.subplots(figsize=(12, 6))
         
-        bloques = gdf['id_bloque'].astype(str)
-        rentabilidad = gdf['rentabilidad']
+        # Filtrar datos válidos
+        valid_data = gdf[['id_bloque', 'rentabilidad']].dropna()
+        if len(valid_data) == 0:
+            ax.text(0.5, 0.5, "No hay datos de rentabilidad válidos", 
+                    ha='center', va='center', fontsize=12)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
+            return fig
         
+        bloques = valid_data['id_bloque'].astype(str)
+        rentabilidad = valid_data['rentabilidad']
+        
+        # Colores basados en rentabilidad
         colors = []
         for val in rentabilidad:
             if val < 0:
@@ -977,10 +937,10 @@ def crear_grafico_rentabilidad(gdf):
         ax.axhline(y=0, color='black', linewidth=1)
         ax.axhline(y=15, color='green', linestyle='--', alpha=0.5, linewidth=2, label='Umbral rentable (15%)')
         
-        ax.set_xlabel('Bloque', fontsize=12)
-        ax.set_ylabel('Rentabilidad (%)', fontsize=12)
-        ax.set_title('Rentabilidad por Bloque', fontsize=14, fontweight='bold')
-        ax.legend(fontsize=10)
+        ax.set_xlabel('Bloque', fontsize=11)
+        ax.set_ylabel('Rentabilidad (%)', fontsize=11)
+        ax.set_title('Rentabilidad por Bloque', fontsize=13, fontweight='bold')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3, axis='y')
         
         # Añadir valores
@@ -988,12 +948,19 @@ def crear_grafico_rentabilidad(gdf):
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height + 0.5,
                    f'{val:.1f}%', ha='center', va='bottom' if val >= 0 else 'top',
-                   fontsize=9, fontweight='bold')
+                   fontsize=8, fontweight='bold')
         
         plt.tight_layout()
         return fig
-    except Exception:
-        return None
+    except Exception as e:
+        # Crear gráfico de error
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f"Error al crear gráfico de rentabilidad", 
+                ha='center', va='center', fontsize=12, color='red')
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.axis('off')
+        return fig
 
 # ===== FUNCIONES DE DETECCIÓN =====
 def simular_deteccion_palmas(gdf, densidad=130):
@@ -1561,71 +1528,28 @@ if st.session_state.analisis_completado:
         with tab2:
             st.subheader("🗺️ MAPAS Y VISUALIZACIONES")
             
-            # Selector de tipo de mapa
-            tipo_mapa = st.radio(
-                "Seleccionar tipo de mapa:",
-                ["Mapa Estático", "Mapa Interactivo"],
-                horizontal=True,
-                index=0
-            )
-            
-            if tipo_mapa == "Mapa Estático":
-                st.markdown("### 🗺️ Mapa de Bloques con Palmas Detectadas")
+            st.markdown("### 🗺️ Mapa de Bloques con Palmas Detectadas")
+            try:
                 mapa_fig = crear_mapa_bloques(gdf_completo, st.session_state.palmas_detectadas)
                 if mapa_fig:
                     st.pyplot(mapa_fig)
                     plt.close(mapa_fig)
                 else:
                     st.info("No se pudo generar el mapa de bloques")
-            
-            else:
-                st.markdown("### 🌍 Mapa Interactivo con Palmas Detectadas")
-                
-                if FOLIUM_DISPONIBLE:
-                    # Crear mapa interactivo
-                    mapa_interactivo = crear_mapa_interactivo(gdf_completo, st.session_state.palmas_detectadas)
-                    
-                    if mapa_interactivo:
-                        st.markdown("**Leyenda del mapa:**")
-                        col_legend1, col_legend2 = st.columns(2)
-                        
-                        with col_legend1:
-                            st.markdown("""
-                            - 🔵 **Puntos azules:** Palmas individuales detectadas
-                            - 🟢 **Áreas verdes:** Bloques con NDVI alto (>0.75)
-                            - 🟡 **Áreas amarillas:** Bloques con NDVI medio (0.6-0.75)
-                            """)
-                        
-                        with col_legend2:
-                            st.markdown("""
-                            - 🟠 **Áreas naranjas:** Bloques con NDVI bajo (0.4-0.6)
-                            - 🔴 **Áreas rojas:** Bloques con NDVI crítico (<0.4)
-                            - **Click** en cualquier elemento para ver detalles
-                            """)
-                        
-                        # Mostrar mapa
-                        folium_static(mapa_interactivo, width=1000, height=600)
-                        
-                        st.info("💡 **Consejo:** Use los controles en la esquina superior derecha para cambiar entre capas de mapa")
-                    else:
-                        st.warning("No se pudo generar el mapa interactivo. Mostrando mapa estático...")
-                        mapa_fig = crear_mapa_bloques(gdf_completo, st.session_state.palmas_detectadas)
-                        if mapa_fig:
-                            st.pyplot(mapa_fig)
-                            plt.close(mapa_fig)
-                else:
-                    st.warning("""
-                    ⚠️ **Para mapas interactivos, instale:**
-                    ```
-                    pip install folium streamlit-folium
-                    ```
-                    """)
-                    
-                    # Mostrar mapa estático como fallback
-                    mapa_fig = crear_mapa_bloques(gdf_completo, st.session_state.palmas_detectadas)
-                    if mapa_fig:
-                        st.pyplot(mapa_fig)
-                        plt.close(mapa_fig)
+            except Exception as e:
+                st.error(f"Error al mostrar el mapa: {str(e)[:100]}")
+                st.info("Mostrando mapa simplificado...")
+                try:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    gdf_completo.plot(ax=ax, color='lightgreen', edgecolor='darkgreen', alpha=0.6)
+                    ax.set_title('Mapa de Bloques - Palma Aceitera')
+                    ax.set_xlabel('Longitud')
+                    ax.set_ylabel('Latitud')
+                    ax.grid(True, alpha=0.3)
+                    st.pyplot(fig)
+                    plt.close(fig)
+                except Exception:
+                    st.info("No se pudo mostrar ningún mapa")
             
             # Estadísticas de palmas detectadas
             if st.session_state.palmas_detectadas:
@@ -1706,12 +1630,15 @@ if st.session_state.analisis_completado:
             
             # Mapa de índices
             st.markdown("### 🗺️ Mapas de Índices por Bloque")
-            mapa_indices = crear_mapa_indices(gdf_completo)
-            if mapa_indices:
-                st.pyplot(mapa_indices)
-                plt.close(mapa_indices)
-            else:
-                st.info("No se pudo generar el mapa de índices")
+            try:
+                mapa_indices = crear_mapa_indices(gdf_completo)
+                if mapa_indices:
+                    st.pyplot(mapa_indices)
+                    plt.close(mapa_indices)
+                else:
+                    st.info("No se pudo generar el mapa de índices")
+            except Exception as e:
+                st.error(f"Error al mostrar mapa de índices: {str(e)[:100]}")
             
             # Tabla de valores
             st.markdown("### 📋 VALORES POR BLOQUE")
@@ -1805,30 +1732,39 @@ if st.session_state.analisis_completado:
             
             # Gráfico de NDVI
             st.markdown("### 📊 NDVI por Bloque")
-            fig_ndvi = crear_grafico_ndvi_bloques(gdf_completo)
-            if fig_ndvi:
-                st.pyplot(fig_ndvi)
-                plt.close(fig_ndvi)
-            else:
-                st.info("No se pudo generar el gráfico de NDVI")
+            try:
+                fig_ndvi = crear_grafico_ndvi_bloques(gdf_completo)
+                if fig_ndvi:
+                    st.pyplot(fig_ndvi)
+                    plt.close(fig_ndvi)
+                else:
+                    st.info("No se pudo generar el gráfico de NDVI")
+            except Exception as e:
+                st.error(f"Error al mostrar gráfico NDVI: {str(e)[:100]}")
             
             # Gráfico de producción
             st.markdown("### 📈 Producción por Bloque")
-            fig_prod = crear_grafico_produccion(gdf_completo)
-            if fig_prod:
-                st.pyplot(fig_prod)
-                plt.close(fig_prod)
-            else:
-                st.info("No se pudo generar el gráfico de producción")
+            try:
+                fig_prod = crear_grafico_produccion(gdf_completo)
+                if fig_prod:
+                    st.pyplot(fig_prod)
+                    plt.close(fig_prod)
+                else:
+                    st.info("No se pudo generar el gráfico de producción")
+            except Exception as e:
+                st.error(f"Error al mostrar gráfico de producción: {str(e)[:100]}")
             
             # Gráfico de rentabilidad
             st.markdown("### 💰 Rentabilidad por Bloque")
-            fig_rent = crear_grafico_rentabilidad(gdf_completo)
-            if fig_rent:
-                st.pyplot(fig_rent)
-                plt.close(fig_rent)
-            else:
-                st.info("No se pudo generar el gráfico de rentabilidad")
+            try:
+                fig_rent = crear_grafico_rentabilidad(gdf_completo)
+                if fig_rent:
+                    st.pyplot(fig_rent)
+                    plt.close(fig_rent)
+                else:
+                    st.info("No se pudo generar el gráfico de rentabilidad")
+            except Exception as e:
+                st.error(f"Error al mostrar gráfico de rentabilidad: {str(e)[:100]}")
             
             # Gráfico de edad
             st.markdown("### 📅 Distribución de Edades")
