@@ -1,6 +1,5 @@
 # app.py - Versión COMPLETA con DATOS REALES DE NASA (MODIS ORNL + CHIRPS + earthaccess)
-# Autenticación: Earthdata Login (https://urs.earthdata.nasa.gov)
-# Primera ejecución pedirá usuario/contraseña y guardará credenciales en .netrc
+# Visualización mejorada: mapas coropléticos + histogramas + recomendaciones claras
 
 import streamlit as st
 import geopandas as gpd
@@ -795,134 +794,59 @@ def generar_mapa_fertilidad(gdf):
         return []
 
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
-def crear_mapa_calor_indices(gdf):
-    """Crea un mapa de calor para cada índice usando interpolación"""
-    if gdf is None or len(gdf) == 0:
-        fig, ax = plt.subplots(figsize=(10, 8))
-        ax.text(0.5, 0.5, "No hay datos para mostrar", 
+# -----------------------------------------------------------------
+# NUEVA: Mapa coroplético + histograma (reemplaza a la antigua interpolación)
+# -----------------------------------------------------------------
+def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn', 
+                              vmin=None, vmax=None, etiqueta='Valor'):
+    """
+    Crea un mapa simple donde cada bloque se colorea según el valor de 'columna'.
+    Incluye barra de color y histograma de distribución.
+    """
+    if gdf is None or len(gdf) == 0 or columna not in gdf.columns:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f"No hay datos para {titulo}", 
                 ha='center', va='center', fontsize=12)
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
         ax.axis('off')
         return fig
+
+    fig = plt.figure(figsize=(14, 6))
     
-    try:
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        fig.subplots_adjust(wspace=0.3)
-        
-        centroids = []
-        ndvi_vals = []
-        ndre_vals = []
-        ndwi_vals = []
-        
-        for idx, row in gdf.iterrows():
-            try:
-                centroid = row.geometry.centroid
-                centroids.append([centroid.x, centroid.y])
-                ndvi_vals.append(row.get('ndvi_modis', 0.5))
-                ndre_vals.append(row.get('ndre_modis', 0.4))
-                ndwi_vals.append(row.get('ndwi_modis', 0.3))
-            except Exception:
-                continue
-        
-        if not centroids:
-            for ax in axes:
-                ax.text(0.5, 0.5, "No hay datos", ha='center', va='center')
-                ax.axis('off')
-            return fig
-        
-        centroids = np.array(centroids)
-        
-        x_min, x_max = centroids[:, 0].min(), centroids[:, 0].max()
-        y_min, y_max = centroids[:, 1].min(), centroids[:, 1].max()
-        
-        x_margin = (x_max - x_min) * 0.1
-        y_margin = (y_max - y_min) * 0.1
-        x_min, x_max = x_min - x_margin, x_max + x_margin
-        y_min, y_max = y_min - y_margin, y_max + y_margin
-        
-        grid_size = 50
-        xi = np.linspace(x_min, x_max, grid_size)
-        yi = np.linspace(y_min, y_max, grid_size)
-        xi, yi = np.meshgrid(xi, yi)
-        
-        def interpolate_idw(points, values, xi, yi, power=2):
-            zi = np.zeros(xi.shape)
-            for i in range(xi.shape[0]):
-                for j in range(xi.shape[1]):
-                    distances = np.sqrt((points[:,0] - xi[i,j])**2 + (points[:,1] - yi[i,j])**2)
-                    weights = 1.0 / (distances**power + 1e-8)
-                    zi[i,j] = np.sum(weights * values) / np.sum(weights)
-            return zi
-        
-        if len(ndvi_vals) > 0:
-            zi_ndvi = interpolate_idw(centroids, ndvi_vals, xi, yi)
-            im1 = axes[0].contourf(xi, yi, zi_ndvi, levels=20, cmap='RdYlGn', alpha=0.8, vmin=0.3, vmax=0.9)
-            axes[0].scatter(centroids[:,0], centroids[:,1], c=ndvi_vals, cmap='RdYlGn', 
-                           edgecolors='black', s=50, alpha=0.7, vmin=0.3, vmax=0.9)
-            plt.colorbar(im1, ax=axes[0], orientation='vertical', label='NDVI')
-        
-        axes[0].set_title('NDVI - Índice de Vegetación', fontsize=12, fontweight='bold')
-        axes[0].set_xlabel('Longitud')
-        axes[0].set_ylabel('Latitud')
-        axes[0].grid(True, alpha=0.3)
-        
-        if len(ndre_vals) > 0:
-            zi_ndre = interpolate_idw(centroids, ndre_vals, xi, yi)
-            im2 = axes[1].contourf(xi, yi, zi_ndre, levels=20, cmap='YlGn', alpha=0.8, vmin=0.2, vmax=0.8)
-            axes[1].scatter(centroids[:,0], centroids[:,1], c=ndre_vals, cmap='YlGn', 
-                           edgecolors='black', s=50, alpha=0.7, vmin=0.2, vmax=0.8)
-            plt.colorbar(im2, ax=axes[1], orientation='vertical', label='NDRE')
-        
-        axes[1].set_title('NDRE - Índice de Borde Rojo', fontsize=12, fontweight='bold')
-        axes[1].set_xlabel('Longitud')
-        axes[1].grid(True, alpha=0.3)
-        
-        if len(ndwi_vals) > 0:
-            zi_ndwi = interpolate_idw(centroids, ndwi_vals, xi, yi)
-            im3 = axes[2].contourf(xi, yi, zi_ndwi, levels=20, cmap='Blues', alpha=0.8, vmin=0.1, vmax=0.7)
-            axes[2].scatter(centroids[:,0], centroids[:,1], c=ndwi_vals, cmap='Blues', 
-                           edgecolors='black', s=50, alpha=0.7, vmin=0.1, vmax=0.7)
-            plt.colorbar(im3, ax=axes[2], orientation='vertical', label='NDWI')
-        
-        axes[2].set_title('NDWI - Índice de Agua', fontsize=12, fontweight='bold')
-        axes[2].set_xlabel('Longitud')
-        axes[2].grid(True, alpha=0.3)
-        
-        plt.suptitle('Mapas de Calor de Índices de Vegetación', fontsize=14, fontweight='bold', y=1.02)
-        plt.tight_layout()
-        return fig
-        
-    except Exception as e:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.text(0.5, 0.5, "Error al crear mapa de calor\nMostrando puntos simples...", 
-                ha='center', va='center', fontsize=12, color='red')
-        
-        if 'ndvi_modis' in gdf.columns:
-            centroids = []
-            ndvi_vals = []
-            for idx, row in gdf.iterrows():
-                try:
-                    centroid = row.geometry.centroid
-                    centroids.append([centroid.x, centroid.y])
-                    ndvi_vals.append(row['ndvi_modis'])
-                except:
-                    continue
-            if centroids:
-                centroids = np.array(centroids)
-                sc = ax.scatter(centroids[:,0], centroids[:,1], c=ndvi_vals, cmap='RdYlGn', 
-                               s=100, alpha=0.7, vmin=0.3, vmax=0.9)
-                plt.colorbar(sc, ax=ax, label='NDVI')
-        
-        ax.set_xlabel('Longitud')
-        ax.set_ylabel('Latitud')
-        ax.set_title('NDVI por Bloque (fallback)', fontsize=12)
-        ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        return fig
+    # ---- Mapa principal (izquierda) ----
+    ax1 = plt.subplot(1, 2, 1)
+    gdf.plot(column=columna, ax=ax1, cmap=cmap, 
+             edgecolor='black', linewidth=0.5, 
+             legend=True, legend_kwds={
+                 'label': etiqueta,
+                 'orientation': 'horizontal',
+                 'shrink': 0.8,
+                 'pad': 0.05
+             },
+             vmin=vmin, vmax=vmax,
+             alpha=0.9)
+    
+    ax1.set_title(titulo, fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Longitud')
+    ax1.set_ylabel('Latitud')
+    ax1.grid(True, alpha=0.3)
+    
+    # ---- Histograma de distribución (derecha) ----
+    ax2 = plt.subplot(1, 2, 2)
+    valores = gdf[columna].dropna()
+    ax2.hist(valores, bins=15, color='steelblue', edgecolor='black', alpha=0.7)
+    ax2.axvline(valores.mean(), color='red', linestyle='--', 
+                linewidth=2, label=f'Promedio: {valores.mean():.3f}')
+    ax2.set_xlabel(etiqueta)
+    ax2.set_ylabel('Frecuencia (bloques)')
+    ax2.set_title(f'Distribución de {titulo}', fontsize=12, fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
 
 def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None, gdf_original=None):
-    """Crea mapa interactivo con TODAS las palmas detectadas"""
+    """Crea mapa interactivo con TODAS las palmas detectadas - LEYENDA MEJORADA"""
     if gdf is None or len(gdf) == 0:
         return None
     
@@ -955,11 +879,12 @@ def crear_mapa_interactivo_esri(gdf, palmas_detectadas=None, gdf_original=None):
         ).add_to(m)
         
         if 'ndvi_modis' in gdf.columns:
+            ndvi_promedio = gdf['ndvi_modis'].mean()
             colormap = LinearColormap(
                 colors=['red', 'orange', 'yellow', 'lightgreen', 'darkgreen'],
                 vmin=0.3,
                 vmax=0.9,
-                caption='NDVI'
+                caption=f'NDVI real (promedio: {ndvi_promedio:.3f})'
             )
             
             for idx, row in gdf.iterrows():
@@ -1588,56 +1513,82 @@ if st.session_state.analisis_completado:
                 except Exception:
                     st.info("No se pudo mostrar ningún mapa")
         
+        # ========== PESTAÑA ÍNDICES - TOTALMENTE RENOVADA ==========
         with tab3:
-            st.subheader("🛰️ MAPAS DE CALOR DE ÍNDICES")
+            st.subheader("🛰️ ÍNDICES DE VEGETACIÓN")
             st.caption(f"Fuente: {st.session_state.datos_modis.get('fuente', 'MODIS ORNL')}")
             
             col_info, col_legend = st.columns([2, 1])
-            
             with col_info:
-                st.markdown("### 📊 EXPLICACIÓN DE ÍNDICES")
-                st.write("""
-                **NDVI (Índice de Vegetación de Diferencia Normalizada):**
-                - Mide salud y densidad de vegetación
-                - Rango: -1 a 1 (0.7-0.8 óptimo para palma)
-                
-                **NDRE (Índice de Borde Rojo Normalizado):**
-                - Detecta estrés nutricional temprano
-                - *MODIS no tiene banda Red Edge; valor aproximado desde NDVI*
-                
-                **NDWI (Índice de Agua Normalizado):**
-                - Mide contenido de agua en vegetación
-                - Detecta estrés hídrico
-                """)
-            
-            with col_legend:
-                st.markdown("### 🎨 INTERPRETACIÓN NDVI")
                 st.markdown("""
-                <div style="background-color: #d73027; padding: 10px; border-radius: 5px; margin: 5px;">
-                <strong style="color: white;">🔴 CRÍTICO</strong> (NDVI < 0.4)
+                **📊 Interpretación rápida:**
+                - **NDVI**: Salud general de la palma. Verde oscuro = excelente.
+                - **NDRE**: Contenido de clorofila (estrés nutricional). Requiere Sentinel-2 para precisión.
+                - **NDWI**: Estrés hídrico. Azul oscuro = más agua.
+                """)
+            with col_legend:
+                st.markdown("""
+                <div style="background: linear-gradient(90deg, red, yellow, green); 
+                            height: 20px; border-radius: 10px; margin: 10px 0;"></div>
+                <div style="display: flex; justify-content: space-between;">
+                    <span>0.0</span><span>0.5</span><span>1.0</span>
                 </div>
-                <div style="background-color: #fee08b; padding: 10px; border-radius: 5px; margin: 5px;">
-                <strong>🟡 BAJO</strong> (NDVI 0.4-0.6)
-                </div>
-                <div style="background-color: #91cf60; padding: 10px; border-radius: 5px; margin: 5px;">
-                <strong style="color: white;">🟢 ADECUADO</strong> (NDVI 0.6-0.75)
-                </div>
-                <div style="background-color: #1a9850; padding: 10px; border-radius: 5px; margin: 5px;">
-                <strong style="color: white;">🔵 ÓPTIMO</strong> (NDVI > 0.75)
-                </div>
+                <p style="text-align: center; font-size: 0.9em;">Escala NDVI</p>
                 """, unsafe_allow_html=True)
             
-            st.markdown("### 🗺️ Mapas de Calor de Índices")
-            try:
-                mapa_calor = crear_mapa_calor_indices(gdf_completo)
-                if mapa_calor:
-                    st.pyplot(mapa_calor)
-                    plt.close(mapa_calor)
+            # ---- NDVI ----
+            st.markdown("### 🌿 NDVI - Índice de Vegetación")
+            if 'ndvi_modis' in gdf_completo.columns:
+                fig_ndvi = crear_mapa_bloques_simple(
+                    gdf_completo, 'ndvi_modis', 'NDVI por Bloque',
+                    cmap='RdYlGn', vmin=0.3, vmax=0.9, etiqueta='NDVI'
+                )
+                st.pyplot(fig_ndvi)
+                plt.close(fig_ndvi)
+                
+                # Recomendación automática
+                ndvi_prom = gdf_completo['ndvi_modis'].mean()
+                if ndvi_prom < 0.4:
+                    st.error(f"⚠️ **NDVI crítico** ({ndvi_prom:.2f}). Evalúe riego y fertilización urgente.")
+                elif ndvi_prom < 0.6:
+                    st.warning(f"⚠️ **NDVI moderado** ({ndvi_prom:.2f}). Ajuste manejo.")
                 else:
-                    st.info("No se pudo generar el mapa de calor")
-            except Exception as e:
-                st.error(f"Error al mostrar mapa de calor: {str(e)[:100]}")
+                    st.success(f"✅ **NDVI adecuado** ({ndvi_prom:.2f}). Buen estado general.")
+            else:
+                st.info("Datos NDVI no disponibles")
             
+            # ---- NDRE ----
+            st.markdown("### 🍂 NDRE - Borde Rojo (estimado)")
+            if 'ndre_modis' in gdf_completo.columns:
+                fig_ndre = crear_mapa_bloques_simple(
+                    gdf_completo, 'ndre_modis', 'NDRE por Bloque (aproximado)',
+                    cmap='YlGn', vmin=0.2, vmax=0.8, etiqueta='NDRE'
+                )
+                st.pyplot(fig_ndre)
+                plt.close(fig_ndre)
+                st.caption("⚠️ MODIS no tiene banda Red Edge. Valor estimado = NDVI × 0.85.")
+            else:
+                st.info("Datos NDRE no disponibles")
+            
+            # ---- NDWI ----
+            st.markdown("### 💧 NDWI - Índice de Agua")
+            if 'ndwi_modis' in gdf_completo.columns:
+                fig_ndwi = crear_mapa_bloques_simple(
+                    gdf_completo, 'ndwi_modis', 'NDWI por Bloque',
+                    cmap='Blues', vmin=0.1, vmax=0.7, etiqueta='NDWI'
+                )
+                st.pyplot(fig_ndwi)
+                plt.close(fig_ndwi)
+                
+                ndwi_prom = gdf_completo['ndwi_modis'].mean()
+                if ndwi_prom < 0.2:
+                    st.warning("💧 **Estrés hídrico detectado**. Considere riego.")
+                else:
+                    st.info("💧 **Nivel de agua adecuado**.")
+            else:
+                st.info("Datos NDWI no disponibles")
+            
+            # ---- Exportación ----
             st.markdown("### 📥 EXPORTAR DATOS DE ÍNDICES")
             try:
                 gdf_indices = gdf_completo[['id_bloque', 'ndvi_modis', 'ndre_modis', 'ndwi_modis', 'salud', 'geometry']].copy()
@@ -1664,20 +1615,6 @@ if st.session_state.analisis_completado:
                     )
             except Exception:
                 st.info("No se pudieron exportar los datos de índices")
-            
-            st.markdown("### 🎯 RECOMENDACIONES")
-            try:
-                ndvi_promedio = gdf_completo['ndvi_modis'].mean()
-                if ndvi_promedio < 0.4:
-                    st.error(f"**⚠️ ALERTA: NDVI CRÍTICO (Promedio: {ndvi_promedio:.3f})**")
-                elif ndvi_promedio < 0.6:
-                    st.warning(f"**⚠️ NDVI MODERADO (Promedio: {ndvi_promedio:.3f})**")
-                elif ndvi_promedio < 0.75:
-                    st.success(f"**✅ NDVI ADECUADO (Promedio: {ndvi_promedio:.3f})**")
-                else:
-                    st.success(f"**🌟 NDVI ÓPTIMO (Promedio: {ndvi_promedio:.3f})**")
-            except Exception:
-                st.info("No se pudieron generar recomendaciones específicas")
         
         with tab4:
             st.subheader("🌤️ DATOS CLIMÁTICOS")
@@ -1879,15 +1816,21 @@ if st.session_state.analisis_completado:
                     ejecutar_deteccion_palmas()
                     st.rerun()
         
+        # ========== PESTAÑA FERTILIDAD - TOTALMENTE RENOVADA ==========
         with tab6:
-            st.subheader("🧪 MAPA DE FERTILIDAD Y RECOMENDACIONES NPK")
+            st.subheader("🧪 FERTILIDAD DEL SUELO Y RECOMENDACIONES NPK")
+            st.caption("Basado en NDVI real y modelos de fertilidad típicos para palma aceitera.")
+            
             datos_fertilidad = st.session_state.datos_fertilidad
             if datos_fertilidad:
                 df_fertilidad = pd.DataFrame(datos_fertilidad)
+                
+                # ---- Métricas generales ----
                 col1, col2, col3, col4, col5 = st.columns(5)
                 with col1:
                     N_prom = df_fertilidad['N_kg_ha'].mean()
-                    st.metric("Nitrógeno (N)", f"{N_prom:.0f} kg/ha")
+                    st.metric("Nitrógeno (N)", f"{N_prom:.0f} kg/ha",
+                             delta="Bajo" if N_prom < 80 else "Óptimo" if N_prom > 120 else "Moderado")
                 with col2:
                     P_prom = df_fertilidad['P_kg_ha'].mean()
                     st.metric("Fósforo (P₂O₅)", f"{P_prom:.0f} kg/ha")
@@ -1901,130 +1844,93 @@ if st.session_state.analisis_completado:
                     MO_prom = df_fertilidad['MO_porcentaje'].mean()
                     st.metric("Materia Orgánica", f"{MO_prom:.1f}%")
                 
-                st.markdown("### 🗺️ Mapas de Calor de Nutrientes")
-                try:
-                    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-                    centroids = []
-                    N_vals = []
-                    P_vals = []
-                    K_vals = []
-                    for dato in datos_fertilidad:
-                        try:
-                            centroid = dato['geometria'].centroid
-                            centroids.append([centroid.x, centroid.y])
-                            N_vals.append(dato['N_kg_ha'])
-                            P_vals.append(dato['P_kg_ha'])
-                            K_vals.append(dato['K_kg_ha'])
-                        except:
-                            continue
-                    if centroids:
-                        centroids = np.array(centroids)
-                        x_min, x_max = centroids[:, 0].min(), centroids[:, 0].max()
-                        y_min, y_max = centroids[:, 1].min(), centroids[:, 1].max()
-                        x_margin = (x_max - x_min) * 0.1
-                        y_margin = (y_max - y_min) * 0.1
-                        x_min, x_max = x_min - x_margin, x_max + x_margin
-                        y_min, y_max = y_min - y_margin, y_max + y_margin
-                        grid_size = 50
-                        xi = np.linspace(x_min, x_max, grid_size)
-                        yi = np.linspace(y_min, y_max, grid_size)
-                        xi, yi = np.meshgrid(xi, yi)
-                        
-                        def interpolate_idw(points, values, xi, yi, power=2):
-                            zi = np.zeros(xi.shape)
-                            for i in range(xi.shape[0]):
-                                for j in range(xi.shape[1]):
-                                    distances = np.sqrt((points[:,0] - xi[i,j])**2 + (points[:,1] - yi[i,j])**2)
-                                    weights = 1.0 / (distances**power + 1e-8)
-                                    zi[i,j] = np.sum(weights * values) / np.sum(weights)
-                            return zi
-                        
-                        zi_N = interpolate_idw(centroids, N_vals, xi, yi)
-                        im1 = axes[0].contourf(xi, yi, zi_N, levels=20, cmap='RdPu', alpha=0.8)
-                        axes[0].scatter(centroids[:,0], centroids[:,1], c=N_vals, cmap='RdPu', edgecolors='black', s=50, alpha=0.7)
-                        plt.colorbar(im1, ax=axes[0], label='N (kg/ha)')
-                        axes[0].set_title('Nitrógeno Disponible', fontweight='bold')
-                        
-                        zi_P = interpolate_idw(centroids, P_vals, xi, yi)
-                        im2 = axes[1].contourf(xi, yi, zi_P, levels=20, cmap='YlOrBr', alpha=0.8)
-                        axes[1].scatter(centroids[:,0], centroids[:,1], c=P_vals, cmap='YlOrBr', edgecolors='black', s=50, alpha=0.7)
-                        plt.colorbar(im2, ax=axes[1], label='P₂O₅ (kg/ha)')
-                        axes[1].set_title('Fósforo Disponible', fontweight='bold')
-                        
-                        zi_K = interpolate_idw(centroids, K_vals, xi, yi)
-                        im3 = axes[2].contourf(xi, yi, zi_K, levels=20, cmap='YlGn', alpha=0.8)
-                        axes[2].scatter(centroids[:,0], centroids[:,1], c=K_vals, cmap='YlGn', edgecolors='black', s=50, alpha=0.7)
-                        plt.colorbar(im3, ax=axes[2], label='K₂O (kg/ha)')
-                        axes[2].set_title('Potasio Disponible', fontweight='bold')
-                        
-                        plt.suptitle('Mapas de Calor de Nutrientes del Suelo', fontsize=14, fontweight='bold', y=1.05)
-                        plt.tight_layout()
-                        st.pyplot(fig)
-                        plt.close(fig)
-                except Exception as e:
-                    st.error(f"Error al crear mapas: {str(e)}")
+                st.markdown("---")
+                st.markdown("### 🗺️ MAPAS DE NUTRIENTES POR BLOQUE")
                 
-                st.markdown("### 📋 RECOMENDACIONES DE FERTILIZACIÓN POR BLOQUE")
-                tabla_rec = []
-                for dato in datos_fertilidad[:10]:
-                    tabla_rec.append({
-                        'Bloque': dato['id_bloque'],
-                        'N (kg/ha)': dato['N_kg_ha'],
-                        'P₂O₅ (kg/ha)': dato['P_kg_ha'],
-                        'K₂O (kg/ha)': dato['K_kg_ha'],
-                        'pH': dato['pH'],
-                        'Recomendación N': dato['recomendacion_N'][:50] + "...",
-                        'Recomendación P': dato['recomendacion_P'][:50] + "...",
-                        'Recomendación K': dato['recomendacion_K'][:50] + "..."
-                    })
-                df_tabla = pd.DataFrame(tabla_rec)
-                st.dataframe(df_tabla, use_container_width=True)
+                # ---- Mapa de Nitrógeno ----
+                st.markdown("#### 🌱 Nitrógeno disponible (kg/ha)")
+                # Crear GeoDataFrame temporal con geometría y valor de N
+                gdf_n = gpd.GeoDataFrame(
+                    df_fertilidad[['id_bloque', 'N_kg_ha']],
+                    geometry=[d['geometria'] for d in datos_fertilidad],
+                    crs='EPSG:4326'
+                )
+                fig_n = crear_mapa_bloques_simple(
+                    gdf_n, 'N_kg_ha', 'Nitrógeno por Bloque',
+                    cmap='RdPu', etiqueta='N (kg/ha)'
+                )
+                st.pyplot(fig_n)
+                plt.close(fig_n)
                 
-                st.markdown("### 🎯 RECOMENDACIONES GENERALES DE FERTILIZACIÓN")
+                # Recomendación N
                 if N_prom < 80:
-                    st.error("**DEFICIENCIA DE NITRÓGENO** - Aplicar 120-150 kg/ha de N")
+                    st.error(f"**Deficiencia general de N**. Aplicar 120-150 kg/ha de N (Urea: {int((120-N_prom)/0.46)} kg/ha).")
                 elif N_prom < 120:
-                    st.warning("**NIVEL MODERADO DE NITRÓGENO** - Aplicar 80-100 kg/ha de N")
+                    st.warning(f"**Nivel moderado de N**. Aplicar 80-100 kg/ha de N.")
                 else:
-                    st.success("**NIVEL ADECUADO DE NITRÓGENO** - Mantener dosis")
+                    st.success("**Nivel adecuado de N**. Mantener dosis de mantenimiento.")
+                
+                # ---- Mapa de Fósforo ----
+                st.markdown("#### 🌿 Fósforo disponible (kg/ha P₂O₅)")
+                gdf_p = gpd.GeoDataFrame(
+                    df_fertilidad[['id_bloque', 'P_kg_ha']],
+                    geometry=[d['geometria'] for d in datos_fertilidad],
+                    crs='EPSG:4326'
+                )
+                fig_p = crear_mapa_bloques_simple(
+                    gdf_p, 'P_kg_ha', 'Fósforo por Bloque',
+                    cmap='YlOrBr', etiqueta='P₂O₅ (kg/ha)'
+                )
+                st.pyplot(fig_p)
+                plt.close(fig_p)
                 
                 if P_prom < 25:
-                    st.error("**DEFICIENCIA DE FÓSFORO** - Aplicar 50-60 kg/ha de P₂O₅")
+                    st.error(f"**Deficiencia general de P**. Aplicar 50-60 kg/ha de P₂O₅ (DAP: {int((50-P_prom)/0.46)} kg/ha).")
                 elif P_prom < 40:
-                    st.warning("**NIVEL MODERADO DE FÓSFORO** - Aplicar 30-40 kg/ha de P₂O₅")
+                    st.warning(f"**Nivel moderado de P**. Aplicar 30-40 kg/ha de P₂O₅.")
                 else:
-                    st.success("**NIVEL ADECUADO DE FÓSFORO** - Mantener dosis")
+                    st.success("**Nivel adecuado de P**. Mantener dosis.")
+                
+                # ---- Mapa de Potasio ----
+                st.markdown("#### 🍌 Potasio disponible (kg/ha K₂O)")
+                gdf_k = gpd.GeoDataFrame(
+                    df_fertilidad[['id_bloque', 'K_kg_ha']],
+                    geometry=[d['geometria'] for d in datos_fertilidad],
+                    crs='EPSG:4326'
+                )
+                fig_k = crear_mapa_bloques_simple(
+                    gdf_k, 'K_kg_ha', 'Potasio por Bloque',
+                    cmap='YlGn', etiqueta='K₂O (kg/ha)'
+                )
+                st.pyplot(fig_k)
+                plt.close(fig_k)
                 
                 if K_prom < 120:
-                    st.error("**DEFICIENCIA DE POTASIO** - Aplicar 180-220 kg/ha de K₂O")
+                    st.error(f"**Deficiencia general de K**. Aplicar 180-220 kg/ha de K₂O (KCl: {int((180-K_prom)/0.6)} kg/ha).")
                 elif K_prom < 180:
-                    st.warning("**NIVEL MODERADO DE POTASIO** - Aplicar 120-150 kg/ha de K₂O")
+                    st.warning(f"**Nivel moderado de K**. Aplicar 120-150 kg/ha de K₂O.")
                 else:
-                    st.success("**NIVEL ADECUADO DE POTASIO** - Mantener dosis")
+                    st.success("**Nivel adecuado de K**. Mantener dosis.")
                 
+                st.markdown("---")
+                st.markdown("### 📋 RECOMENDACIONES DETALLADAS POR BLOQUE")
+                
+                # Tabla resumida con las 3 recomendaciones principales
+                df_recom = df_fertilidad[['id_bloque', 'N_kg_ha', 'P_kg_ha', 'K_kg_ha', 'pH', 
+                                          'recomendacion_N', 'recomendacion_P', 'recomendacion_K']].copy()
+                df_recom.columns = ['Bloque', 'N', 'P₂O₅', 'K₂O', 'pH', 'Recomendación N', 'Recomendación P', 'Recomendación K']
+                st.dataframe(df_recom.head(15), use_container_width=True)
+                
+                # Exportar CSV
                 st.markdown("### 📥 EXPORTAR DATOS DE FERTILIDAD")
-                try:
-                    df_export = pd.DataFrame([{
-                        'id_bloque': d['id_bloque'],
-                        'N_kg_ha': d['N_kg_ha'],
-                        'P_kg_ha': d['P_kg_ha'],
-                        'K_kg_ha': d['K_kg_ha'],
-                        'pH': d['pH'],
-                        'MO_porcentaje': d['MO_porcentaje'],
-                        'recomendacion_N': d['recomendacion_N'],
-                        'recomendacion_P': d['recomendacion_P'],
-                        'recomendacion_K': d['recomendacion_K']
-                    } for d in datos_fertilidad])
-                    csv_data = df_export.to_csv(index=False)
-                    st.download_button(
-                        label="📊 Descargar CSV (Fertilidad)",
-                        data=csv_data,
-                        file_name=f"fertilidad_palma_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                except:
-                    st.info("No se pudieron exportar los datos de fertilidad")
+                csv_data = df_fertilidad.drop(columns=['geometria']).to_csv(index=False)
+                st.download_button(
+                    label="📊 Descargar CSV completo",
+                    data=csv_data,
+                    file_name=f"fertilidad_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
             else:
                 st.info("Ejecute el análisis completo para ver los datos de fertilidad.")
         
