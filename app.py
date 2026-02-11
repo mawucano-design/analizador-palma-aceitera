@@ -1,7 +1,7 @@
 # app.py - Versión COMPLETA con MODIS REAL (ORNL DAAC), clima Open-Meteo + NASA POWER,
 # curvas de nivel SRTM (reales o simuladas) y visualizaciones mejoradas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
-# CORREGIDO: semilla en textura, mapas de fertilidad interactivos con Esri Satélite.
+# CORREGIDO: error de ufunc 'isfinite' en gráficos climáticos.
 
 import streamlit as st
 import geopandas as gpd
@@ -344,7 +344,7 @@ def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
                 'promedio': round(np.nanmean(tmean), 1),
                 'maxima': round(np.nanmax(tmax), 1),
                 'minima': round(np.nanmin(tmin), 1),
-                'diaria': [round(t, 1) if not np.isnan(t) else None for t in tmean]
+                'diaria': [round(t, 1) if not np.isnan(t) else np.nan for t in tmean]
             },
             'periodo': f"{fecha_inicio.strftime('%d/%m/%Y')} - {fecha_fin.strftime('%d/%m/%Y')}",
             'fuente': 'Open-Meteo ERA5'
@@ -379,19 +379,19 @@ def obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin):
         fechas = sorted(radiacion.keys())
         rad_diaria = [radiacion[f] for f in fechas]
         wind_diaria = [viento[f] for f in fechas]
-        rad_diaria = [r if r != -999 else np.nan for r in rad_diaria]
-        wind_diaria = [w if w != -999 else np.nan for w in wind_diaria]
+        rad_diaria = [np.nan if r == -999 else r for r in rad_diaria]
+        wind_diaria = [np.nan if w == -999 else w for w in wind_diaria]
         return {
             'radiacion': {
                 'promedio': round(np.nanmean(rad_diaria), 1),
                 'maxima': round(np.nanmax(rad_diaria), 1),
                 'minima': round(np.nanmin(rad_diaria), 1),
-                'diaria': [round(r, 1) if not np.isnan(r) else None for r in rad_diaria]
+                'diaria': [round(r, 1) if not np.isnan(r) else np.nan for r in rad_diaria]
             },
             'viento': {
                 'promedio': round(np.nanmean(wind_diaria), 1),
                 'maxima': round(np.nanmax(wind_diaria), 1),
-                'diaria': [round(w, 1) if not np.isnan(w) else None for w in wind_diaria]
+                'diaria': [round(w, 1) if not np.isnan(w) else np.nan for w in wind_diaria]
             },
             'fuente': 'NASA POWER'
         }
@@ -761,6 +761,8 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
     if columna_color and colormap:
         def style_function(feature):
             valor = feature['properties'].get(columna_color, 0)
+            if np.isnan(valor):
+                valor = 0
             color = colormap(valor) if hasattr(colormap, '__call__') else '#3388ff'
             return {
                 'fillColor': color,
@@ -830,44 +832,76 @@ def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre=
     return m
 
 def crear_graficos_climaticos_completos(datos_climaticos):
+    """
+    Crea gráficos de temperatura, precipitación, radiación y viento.
+    Maneja correctamente valores NaN.
+    """
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     dias = list(range(1, len(datos_climaticos['precipitacion']['diaria']) + 1))
+    
+    # Radiación
     if 'radiacion' in datos_climaticos and datos_climaticos['radiacion']['diaria']:
         ax1 = axes[0, 0]
-        rad = datos_climaticos['radiacion']['diaria']
-        ax1.plot(dias, rad, 'o-', color='orange', linewidth=2, markersize=4)
-        ax1.fill_between(dias, rad, alpha=0.3, color='orange')
+        rad = np.array(datos_climaticos['radiacion']['diaria'], dtype=np.float64)
+        # Reemplazar NaN con el promedio de los valores válidos para visualización
+        mask_nan = np.isnan(rad)
+        if np.any(mask_nan):
+            rad_filled = rad.copy()
+            rad_filled[mask_nan] = np.nanmean(rad)
+        else:
+            rad_filled = rad
+        ax1.plot(dias, rad_filled, 'o-', color='orange', linewidth=2, markersize=4)
+        ax1.fill_between(dias, rad_filled, alpha=0.3, color='orange')
         ax1.axhline(y=datos_climaticos['radiacion']['promedio'], color='red', 
                    linestyle='--', label=f"Promedio: {datos_climaticos['radiacion']['promedio']} MJ/m²")
         ax1.set_xlabel('Día'); ax1.set_ylabel('Radiación (MJ/m²/día)')
         ax1.set_title('Radiación Solar', fontweight='bold'); ax1.legend(); ax1.grid(True, alpha=0.3)
     else:
         axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[0, 0].set_title('Radiación', fontweight='bold')
+    
+    # Precipitación (sin NaN)
     ax2 = axes[0, 1]
-    precip = datos_climaticos['precipitacion']['diaria']
+    precip = np.array(datos_climaticos['precipitacion']['diaria'], dtype=np.float64)
     ax2.bar(dias, precip, color='blue', alpha=0.7)
     ax2.set_xlabel('Día'); ax2.set_ylabel('Precipitación (mm)')
     ax2.set_title(f"Precipitación (Total: {datos_climaticos['precipitacion']['total']} mm)", fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
+    
+    # Viento
     if 'viento' in datos_climaticos and datos_climaticos['viento']['diaria']:
         ax3 = axes[1, 0]
-        wind = datos_climaticos['viento']['diaria']
-        ax3.plot(dias, wind, 's-', color='green', linewidth=2, markersize=4)
-        ax3.fill_between(dias, wind, alpha=0.3, color='green')
+        wind = np.array(datos_climaticos['viento']['diaria'], dtype=np.float64)
+        mask_nan = np.isnan(wind)
+        if np.any(mask_nan):
+            wind_filled = wind.copy()
+            wind_filled[mask_nan] = np.nanmean(wind)
+        else:
+            wind_filled = wind
+        ax3.plot(dias, wind_filled, 's-', color='green', linewidth=2, markersize=4)
+        ax3.fill_between(dias, wind_filled, alpha=0.3, color='green')
         ax3.axhline(y=datos_climaticos['viento']['promedio'], color='red', 
                    linestyle='--', label=f"Promedio: {datos_climaticos['viento']['promedio']} m/s")
         ax3.set_xlabel('Día'); ax3.set_ylabel('Viento (m/s)')
         ax3.set_title('Velocidad del Viento', fontweight='bold'); ax3.legend(); ax3.grid(True, alpha=0.3)
     else:
         axes[1, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[1, 0].set_title('Viento', fontweight='bold')
+    
+    # Temperatura
     ax4 = axes[1, 1]
-    temp = datos_climaticos['temperatura']['diaria']
-    ax4.plot(dias, temp, '^-', color='red', linewidth=2, markersize=4)
-    ax4.fill_between(dias, temp, alpha=0.3, color='red')
+    temp = np.array(datos_climaticos['temperatura']['diaria'], dtype=np.float64)
+    mask_nan = np.isnan(temp)
+    if np.any(mask_nan):
+        temp_filled = temp.copy()
+        temp_filled[mask_nan] = np.nanmean(temp)
+    else:
+        temp_filled = temp
+    ax4.plot(dias, temp_filled, '^-', color='red', linewidth=2, markersize=4)
+    ax4.fill_between(dias, temp_filled, alpha=0.3, color='red')
     ax4.axhline(y=datos_climaticos['temperatura']['promedio'], color='blue', 
                linestyle='--', label=f"Promedio: {datos_climaticos['temperatura']['promedio']}°C")
     ax4.set_xlabel('Día'); ax4.set_ylabel('Temperatura (°C)')
     ax4.set_title('Temperatura Diaria', fontweight='bold'); ax4.legend(); ax4.grid(True, alpha=0.3)
+    
     plt.suptitle(f"Datos Climáticos - {datos_climaticos.get('fuente', 'Desconocido')}", fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
     return fig
