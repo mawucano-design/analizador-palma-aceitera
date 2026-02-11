@@ -1,5 +1,6 @@
 # app.py - Versión COMPLETA con MODIS REAL (ORNL DAAC, sin autenticación)
-# Temperatura: Open-Meteo (ERA5) · Precipitación: CHIRPS (UCSB)
+# Temperatura + Precipitación: Open-Meteo (ERA5)
+# Curvas de nivel: OpenTopography (SRTM 30m) + simulación
 # Mapas coropléticos + histogramas · Sin dependencia de Earthdata Login
 
 import streamlit as st
@@ -15,7 +16,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib.patches import Polygon as MplPolygon
 import io
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon, Point, LineString
 import math
 import warnings
 from io import BytesIO
@@ -26,6 +27,17 @@ import folium
 from streamlit_folium import folium_static
 from folium.plugins import MarkerCluster
 from branca.colormap import LinearColormap
+
+# ===== LIBRERÍAS OPCIONALES PARA CURVAS DE NIVEL =====
+try:
+    import rasterio
+    from rasterio.mask import mask
+    from rasterio.warp import transform_geom, transform_bounds
+    from skimage import measure
+    CURVAS_OK = True
+except ImportError:
+    CURVAS_OK = False
+    st.warning("Para curvas de nivel reales instala: rasterio y scikit-image")
 
 # ===== LIBRERÍAS PARA DATOS CLIMÁTICOS =====
 try:
@@ -61,7 +73,8 @@ def init_session_state():
         'variedad_seleccionada': 'Tenera (DxP)',
         'textura_suelo': {},
         'datos_fertilidad': [],
-        'analisis_suelo': True
+        'analisis_suelo': True,
+        'curvas_nivel': None
     }
     
     for key, value in defaults.items():
@@ -283,8 +296,7 @@ def cargar_archivo_plantacion(uploaded_file):
 # ===== FUNCIONES DE ANÁLISIS CON DATOS REALES (SIN AUTENTICACIÓN) =====
 # ---------------------------------------------------------------------
 # 1. NDVI/NDWI/NDRE desde ORNL DAAC Web Service (MODIS MOD13Q1) - PÚBLICO
-# 2. Precipitación desde CHIRPS (servidor público UCSB) - PÚBLICO
-# 3. Temperatura desde Open-Meteo (ERA5) - PÚBLICO
+# 2. Clima (temperatura, precipitación) desde Open-Meteo ERA5 - PÚBLICO
 # ---------------------------------------------------------------------
 
 def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
@@ -353,72 +365,11 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         gdf_out["ndre_modis"] = 0.55
         return gdf_out
 
-def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
+# ===== FUNCIÓN UNIFICADA DE CLIMA (Open-Meteo ERA5) =====
+def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     """
-    Obtiene precipitación total desde CHIRPS pentadal global (servidor público UCSB).
-    No requiere autenticación.
-    """
-    try:
-        bounds = gdf.total_bounds
-        min_lon, min_lat, max_lon, max_lat = bounds
-        
-        fecha_actual = fecha_inicio
-        precip_total = 0.0
-        dias_lluvia = 0
-        dias_totales = (fecha_fin - fecha_inicio).days
-        if dias_totales <= 0:
-            dias_totales = 30
-        
-        # Iterar día a día (limitado a 10 días para no saturar)
-        contador = 0
-        while fecha_actual <= fecha_fin and contador < 10:
-            año = fecha_actual.strftime("%Y")
-            mes = fecha_actual.strftime("%m")
-            dia = fecha_actual.strftime("%d")
-            url = f"https://data.chc.ucsb.edu/products/CHIRPS-2.0/global_daily/netcdf/p05/{año}/chirps-v2.0.{año}{mes}{dia}.nc"
-            
-            try:
-                ds = xr.open_dataset(url, engine="netcdf4")
-                subset = ds.sel(latitude=slice(min_lat, max_lat),
-                               longitude=slice(min_lon, max_lon))
-                precip_dia = float(subset.precip.mean().values)
-                precip_total += precip_dia
-                if precip_dia > 0.1:
-                    dias_lluvia += 1
-            except:
-                pass
-            
-            fecha_actual += timedelta(days=1)
-            contador += 1
-        
-        # Escalar a todo el período (aproximación)
-        factor_escala = dias_totales / max(1, contador)
-        precip_total = precip_total * factor_escala
-        dias_lluvia = int(dias_lluvia * factor_escala)
-        
-        return {
-            'total': round(precip_total, 1),
-            'maxima_diaria': round(precip_total / max(1, dias_totales) * 2, 1),
-            'dias_con_lluvia': dias_lluvia,
-            'diaria': [precip_total / max(1, dias_totales)] * dias_totales
-        }
-    
-    except Exception as e:
-        st.warning(f"Error en CHIRPS: {str(e)[:100]}. Usando valores simulados.")
-        dias_totales = (fecha_fin - fecha_inicio).days
-        if dias_totales <= 0:
-            dias_totales = 30
-        return {
-            'total': 90.0,
-            'maxima_diaria': 15.0,
-            'dias_con_lluvia': 10,
-            'diaria': [3.0] * dias_totales
-        }
-
-def obtener_temperatura_openmeteo(gdf, fecha_inicio, fecha_fin):
-    """
-    Obtiene temperatura promedio desde Open-Meteo Historical API (ERA5).
-    No requiere autenticación, no tiene límites significativos.
+    Obtiene precipitación y temperatura diaria desde Open-Meteo ERA5.
+    Retorna dict con 'precipitacion', 'temperatura', 'periodo', 'fuente'.
     """
     try:
         centroide = gdf.geometry.unary_union.centroid
@@ -431,25 +382,52 @@ def obtener_temperatura_openmeteo(gdf, fecha_inicio, fecha_fin):
             "longitude": lon,
             "start_date": fecha_inicio.strftime("%Y-%m-%d"),
             "end_date": fecha_fin.strftime("%Y-%m-%d"),
-            "daily": "temperature_2m_mean",
+            "daily": ["temperature_2m_max", "temperature_2m_min", 
+                      "temperature_2m_mean", "precipitation_sum"],
             "timezone": "auto"
         }
         
         response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
         data = response.json()
         
-        if "daily" in data and "temperature_2m_mean" in data["daily"]:
-            temps = data["daily"]["temperature_2m_mean"]
-            temps_limpios = [t for t in temps if t is not None]
-            if temps_limpios:
-                temp_promedio = np.mean(temps_limpios)
-                return round(temp_promedio, 1)
+        if "daily" not in data:
+            raise ValueError("No se recibieron datos diarios")
         
-        return 25.0
+        # Extraer listas (pueden tener None)
+        tmax = [t if t is not None else np.nan for t in data["daily"]["temperature_2m_max"]]
+        tmin = [t if t is not None else np.nan for t in data["daily"]["temperature_2m_min"]]
+        tmean = [t if t is not None else np.nan for t in data["daily"]["temperature_2m_mean"]]
+        precip = [p if p is not None else 0.0 for p in data["daily"]["precipitation_sum"]]
+        
+        # Eliminar NaNs para promedios
+        tmean_clean = [t for t in tmean if not np.isnan(t)]
+        tmax_clean = [t for t in tmax if not np.isnan(t)]
+        tmin_clean = [t for t in tmin if not np.isnan(t)]
+        
+        if not tmean_clean:
+            raise ValueError("No hay datos de temperatura válidos")
+        
+        return {
+            'precipitacion': {
+                'total': round(sum(precip), 1),
+                'maxima_diaria': round(max(precip) if precip else 0, 1),
+                'dias_con_lluvia': sum(1 for p in precip if p > 0.1),
+                'diaria': [round(p, 1) for p in precip]
+            },
+            'temperatura': {
+                'promedio': round(np.nanmean(tmean), 1),
+                'maxima': round(np.nanmax(tmax), 1),
+                'minima': round(np.nanmin(tmin), 1),
+                'diaria': [round(t, 1) if not np.isnan(t) else None for t in tmean]
+            },
+            'periodo': f"{fecha_inicio.strftime('%d/%m/%Y')} - {fecha_fin.strftime('%d/%m/%Y')}",
+            'fuente': 'Open-Meteo ERA5'
+        }
         
     except Exception as e:
-        st.warning(f"Error obteniendo temperatura real: {str(e)[:100]}. Usando valor simulado.")
-        return 25.0
+        st.warning(f"Error en Open-Meteo: {str(e)[:100]}. Usando datos simulados.")
+        return generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin)
 
 # ===== FUNCIONES SIMULADAS (FALLBACK) =====
 def generar_datos_indices_simulados(gdf, fecha_inicio, fecha_fin):
@@ -1023,9 +1001,148 @@ def ejecutar_deteccion_palmas():
         st.session_state.deteccion_ejecutada = True
         st.success(f"✅ Detección MEJORADA completada: {len(palmas_verificadas)} palmas detectadas")
 
+# ===== FUNCIONES PARA CURVAS DE NIVEL =====
+def obtener_dem_opentopography(gdf, api_key=None):
+    """
+    Descarga DEM SRTM 1 arc-seg (30 m) desde OpenTopography.
+    Requiere API key gratuita.
+    Retorna (array_2d, meta, transform) o (None, None, None) si falla.
+    """
+    if not CURVAS_OK:
+        st.warning("Librerías rasterio/scikit-image no instaladas. Se usará simulación.")
+        return None, None, None
+    
+    if api_key is None:
+        api_key = os.environ.get("OPENTOPOGRAPHY_API_KEY", None)
+    
+    if not api_key:
+        st.warning("⚠️ No se proporcionó API key de OpenTopography. Generando relieve simulado.")
+        return None, None, None
+    
+    try:
+        bounds = gdf.total_bounds
+        west, south, east, north = bounds
+        
+        # Agregar pequeño buffer (5%)
+        lon_span = east - west
+        lat_span = north - south
+        west -= lon_span * 0.05
+        east += lon_span * 0.05
+        south -= lat_span * 0.05
+        north += lat_span * 0.05
+        
+        url = "https://portal.opentopography.org/API/globaldem"
+        params = {
+            "demtype": "SRTMGL1",
+            "south": south,
+            "north": north,
+            "west": west,
+            "east": east,
+            "outputFormat": "GTiff",
+            "API_Key": api_key
+        }
+        
+        response = requests.get(url, params=params, timeout=60)
+        response.raise_for_status()
+        
+        dem_bytes = BytesIO(response.content)
+        with rasterio.open(dem_bytes) as src:
+            # Recortar exactamente al polígono
+            geom = [mapping(gdf.unary_union)]
+            out_image, out_transform = mask(src, geom, crop=True, nodata=-32768)
+            out_meta = src.meta.copy()
+            out_meta.update({
+                "driver": "GTiff",
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform,
+                "nodata": -32768
+            })
+        
+        return out_image.squeeze(), out_meta, out_transform
+    
+    except Exception as e:
+        st.error(f"Error descargando DEM: {str(e)[:200]}")
+        return None, None, None
+
+def generar_curvas_nivel_simuladas(gdf):
+    """Genera curvas de nivel simuladas (fallback) basadas en pendiente aleatoria suave"""
+    bounds = gdf.total_bounds
+    minx, miny, maxx, maxy = bounds
+    
+    # Crear grid de 100x100
+    n = 100
+    x = np.linspace(minx, maxx, n)
+    y = np.linspace(miny, maxy, n)
+    X, Y = np.meshgrid(x, y)
+    
+    # Superficie aleatoria suave (usamos ruido + tendencia)
+    np.random.seed(42)
+    Z = np.random.randn(n, n) * 20
+    # Aplicar filtro gaussiano simple
+    from scipy.ndimage import gaussian_filter
+    Z = gaussian_filter(Z, sigma=5)
+    # Escalar a rango realista
+    Z = 50 + (Z - Z.min()) / (Z.max() - Z.min()) * 150  # alturas entre 50 y 200 m
+    
+    # Generar contornos
+    contours = []
+    niveles = np.arange(50, 200, 10)
+    
+    for nivel in niveles:
+        for contour in measure.find_contours(Z, nivel):
+            coords = []
+            for row, col in contour:
+                # Convertir píxel a coordenadas
+                lat = miny + (row / n) * (maxy - miny)
+                lon = minx + (col / n) * (maxx - minx)
+                coords.append((lon, lat))
+            if len(coords) > 2:
+                line = LineString(coords)
+                # Filtrar líneas demasiado cortas
+                if line.length > 0.01:
+                    contours.append(line)
+    
+    return contours
+
+def generar_curvas_nivel_reales(dem_array, transform, intervalo=10):
+    """Genera líneas de contorno a partir del array DEM real"""
+    if dem_array is None:
+        return []
+    
+    # Enmascarar nodata
+    dem_array = np.ma.masked_where(dem_array <= -999, dem_array)
+    
+    # Calcular niveles automáticos
+    vmin = dem_array.min()
+    vmax = dem_array.max()
+    if vmin is np.ma.masked or vmax is np.ma.masked:
+        return []
+    
+    niveles = np.arange(np.floor(vmin / intervalo) * intervalo,
+                        np.ceil(vmax / intervalo) * intervalo + intervalo,
+                        intervalo)
+    
+    contours = []
+    for nivel in niveles:
+        try:
+            for contour in measure.find_contours(dem_array.filled(fill_value=-999), nivel):
+                coords = []
+                for row, col in contour:
+                    x, y = transform * (col, row)
+                    coords.append((x, y))
+                if len(coords) > 2:
+                    line = LineString(coords)
+                    if line.length > 0.01:
+                        contours.append(line)
+        except Exception:
+            continue
+    
+    return contours
+
 # ===== FUNCIÓN PRINCIPAL DE ANÁLISIS (SIN AUTENTICACIÓN) =====
 def ejecutar_analisis_completo():
-    """Ejecuta el análisis completo con datos MODIS reales (ORNL) y clima público"""
+    """Ejecuta el análisis completo con datos MODIS reales (ORNL) y clima Open-Meteo"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
         return
@@ -1055,36 +1172,16 @@ def ejecutar_analisis_completo():
         gdf_dividido['ndwi_modis'] = gdf_con_ndvi['ndwi_modis']
         gdf_dividido['ndre_modis'] = gdf_con_ndvi['ndre_modis']
         
-        # 4. OBTENER TEMPERATURA REAL (Open-Meteo) - SIN AUTENTICACIÓN
-        st.info("🌡️ Obteniendo temperatura real (Open-Meteo/ERA5)...")
-        temp_prom = obtener_temperatura_openmeteo(gdf, fecha_inicio, fecha_fin)
+        # 4. OBTENER CLIMA REAL (Open-Meteo ERA5)
+        st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
+        datos_clima = obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin)
+        st.session_state.datos_climaticos = datos_clima
         
-        # 5. OBTENER PRECIPITACIÓN REAL (CHIRPS) - SIN AUTENTICACIÓN
-        st.info("💧 Obteniendo precipitación real (CHIRPS)...")
-        precip_data = obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin)
-        
-        # 6. Construir datos climáticos
-        dias_totales = (fecha_fin - fecha_inicio).days
-        if dias_totales <= 0:
-            dias_totales = 30
-            
-        st.session_state.datos_climaticos = {
-            'precipitacion': precip_data,
-            'temperatura': {
-                'promedio': temp_prom,
-                'maxima': round(temp_prom + 3, 1),
-                'minima': round(temp_prom - 3, 1),
-                'diaria': [temp_prom] * dias_totales
-            },
-            'periodo': f"{fecha_inicio.strftime('%d/%m/%Y')} - {fecha_fin.strftime('%d/%m/%Y')}",
-            'fuente': 'MODIS ORNL + CHIRPS + Open-Meteo'
-        }
-        
-        # 7. Edad (simulada)
+        # 5. Edad (simulada)
         edades = analizar_edad_plantacion(gdf_dividido)
         gdf_dividido['edad_anios'] = edades
         
-        # 8. Clasificar salud basada en NDVI real
+        # 6. Clasificar salud basada en NDVI real
         def clasificar_salud(ndvi):
             if ndvi < 0.4: return 'Crítica'
             if ndvi < 0.6: return 'Baja'
@@ -1092,14 +1189,14 @@ def ejecutar_analisis_completo():
             return 'Buena'
         gdf_dividido['salud'] = gdf_dividido['ndvi_modis'].apply(clasificar_salud)
         
-        # 9. Análisis de textura de suelo (simulado)
+        # 7. Análisis de textura de suelo (simulado)
         if st.session_state.get('analisis_suelo', True):
             st.session_state.textura_suelo = analizar_textura_suelo_venezuela(gdf_dividido)
         
-        # 10. Análisis de fertilidad NPK (basado en NDVI real)
+        # 8. Análisis de fertilidad NPK (basado en NDVI real)
         st.session_state.datos_fertilidad = generar_mapa_fertilidad(gdf_dividido)
         
-        # 11. Guardar datos MODIS para resumen
+        # 9. Guardar datos MODIS para resumen
         st.session_state.datos_modis = {
             'ndvi': gdf_dividido['ndvi_modis'].mean(),
             'ndre': gdf_dividido['ndre_modis'].mean(),
@@ -1116,7 +1213,7 @@ def ejecutar_analisis_completo():
         }
         
         st.session_state.analisis_completado = True
-        st.success("✅ Análisis completado con datos MODIS reales y clima público!")
+        st.success("✅ Análisis completado con datos MODIS reales y clima Open-Meteo!")
 
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(
@@ -1175,7 +1272,7 @@ st.markdown("""
         🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL
     </h1>
     <p style="color: #cbd5e1; font-size: 1.2em;">
-        Monitoreo biológico con datos reales NASA MODIS + CHIRPS + Open-Meteo
+        Monitoreo biológico con datos reales NASA MODIS + Open-Meteo ERA5 + Curvas de nivel SRTM
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1320,10 +1417,11 @@ if st.session_state.analisis_completado:
     gdf_completo = resultados.get('gdf_completo')
     
     if gdf_completo is not None:
-        # Crear pestañas
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        # Crear pestañas (agregamos una octava pestaña para curvas de nivel)
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "📊 Resumen", "🗺️ Mapas", "🛰️ Índices", 
-            "🌤️ Clima", "🌴 Detección", "🧪 Fertilidad NPK", "🌱 Textura Suelo"
+            "🌤️ Clima", "🌴 Detección", "🧪 Fertilidad NPK", 
+            "🌱 Textura Suelo", "🗺️ Curvas de Nivel"
         ])
         
         with tab1:
@@ -1899,13 +1997,123 @@ if st.session_state.analisis_completado:
                 st.write("**Referencia:** Ministerio del Poder Popular para la Agricultura (MPA), 2010")
             else:
                 st.info("Ejecute el análisis completo para ver el análisis de textura del suelo.")
+        
+        with tab8:
+            st.subheader("🗺️ CURVAS DE NIVEL")
+            st.markdown("""
+            **Modelo de elevación:** SRTM 1 arc-seg (30 m) · Fuente: OpenTopography  
+            Para datos reales, obtén una **API key gratuita** [aquí](https://opentopography.org/).  
+            Si no se proporciona, se generará un relieve simulado.
+            """)
+            
+            api_key = st.text_input("🔑 API Key de OpenTopography (opcional)", type="password",
+                                    help="Regístrate gratis en opentopography.org")
+            
+            intervalo = st.slider("Intervalo entre curvas (metros)", 5, 50, 10, key="intervalo_curvas")
+            
+            if st.button("🔄 Generar curvas de nivel", use_container_width=True):
+                with st.spinner("Procesando DEM y generando isolíneas..."):
+                    gdf_original = st.session_state.gdf_original
+                    if gdf_original is None:
+                        st.error("Primero debe cargar una plantación.")
+                    else:
+                        # Intentar descargar DEM real
+                        dem, meta, transform = obtener_dem_opentopography(gdf_original, api_key if api_key else None)
+                        
+                        if dem is not None:
+                            # Generar curvas reales
+                            curvas = generar_curvas_nivel_reales(dem, transform, intervalo)
+                            st.success(f"✅ Se generaron {len(curvas)} curvas de nivel (DEM real)")
+                        else:
+                            # Simular curvas
+                            if CURVAS_OK:
+                                curvas = generar_curvas_nivel_simuladas(gdf_original)
+                                st.info(f"ℹ️ Usando relieve simulado. Se generaron {len(curvas)} curvas de nivel.")
+                            else:
+                                st.error("No se pueden generar curvas: faltan librerías rasterio/scikit-image.")
+                                curvas = []
+                        
+                        if curvas:
+                            # Guardar en sesión para posible exportación
+                            st.session_state.curvas_nivel = curvas
+                            
+                            # Crear GeoDataFrame
+                            gdf_curvas = gpd.GeoDataFrame(geometry=curvas, crs='EPSG:4326')
+                            gdf_curvas['id_curva'] = range(1, len(curvas)+1)
+                            
+                            # Mapa interactivo con curvas
+                            centroide = gdf_original.geometry.unary_union.centroid
+                            m_curvas = folium.Map(location=[centroide.y, centroide.x], 
+                                                 zoom_start=15, control_scale=True)
+                            
+                            # Capa satélite
+                            folium.TileLayer(
+                                tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+                                attr='Esri', name='Satélite'
+                            ).add_to(m_curvas)
+                            
+                            # Polígono de plantación
+                            folium.GeoJson(
+                                gdf_original.to_json(),
+                                name='Plantación',
+                                style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.1, 'weight': 2}
+                            ).add_to(m_curvas)
+                            
+                            # Curvas de nivel
+                            folium.GeoJson(
+                                gdf_curvas.to_json(),
+                                name='Curvas de nivel',
+                                style_function=lambda x: {'color': 'brown', 'weight': 1, 'opacity': 0.8},
+                                tooltip=folium.GeoJsonTooltip(fields=['id_curva'], aliases=['Curva #'])
+                            ).add_to(m_curvas)
+                            
+                            folium.LayerControl().add_to(m_curvas)
+                            folium.plugins.Fullscreen().add_to(m_curvas)
+                            
+                            folium_static(m_curvas, width=1000, height=600)
+                            
+                            # Exportación
+                            col_exp1, col_exp2 = st.columns(2)
+                            with col_exp1:
+                                geojson_curvas = gdf_curvas.to_json()
+                                st.download_button(
+                                    "🗺️ Descargar GeoJSON (curvas)",
+                                    geojson_curvas,
+                                    f"curvas_nivel_{datetime.now():%Y%m%d}.geojson",
+                                    "application/geo+json"
+                                )
+                            with col_exp2:
+                                csv_curvas = gdf_curvas.drop(columns='geometry').to_csv(index=False)
+                                st.download_button(
+                                    "📊 Descargar CSV (curvas)",
+                                    csv_curvas,
+                                    f"curvas_nivel_{datetime.now():%Y%m%d}.csv",
+                                    "text/csv"
+                                )
+                        else:
+                            st.warning("No se encontraron curvas de nivel en el área.")
+            else:
+                # Si ya se generaron curvas anteriormente, mostrar opción de re-generar
+                if st.session_state.get('curvas_nivel'):
+                    st.info("Ya hay curvas de nivel generadas. Presiona el botón para regenerarlas.")
+            
+            # Mostrar ayuda sobre OpenTopography
+            with st.expander("ℹ️ ¿Cómo obtener una API key de OpenTopography?"):
+                st.markdown("""
+                1. Ve a [OpenTopography](https://opentopography.org/) y regístrate gratis.
+                2. Inicia sesión y ve a tu perfil → "API Keys".
+                3. Genera una nueva key (sin costo, 1000 consultas/día).
+                4. Cópiala y pégala en el campo de arriba.
+                
+                Sin API key, la aplicación generará curvas de nivel simuladas (basadas en ruido fractal).
+                """)
 
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
-    <p>Datos satelitales: NASA MODIS (ORNL DAAC) · Precipitación: CHIRPS · Temperatura: Open-Meteo/ERA5</p>
+    <p>Datos satelitales: NASA MODIS (ORNL DAAC) · Clima: Open-Meteo ERA5 · Curvas de nivel: OpenTopography SRTM</p>
     <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
 </div>
 """, unsafe_allow_html=True)
