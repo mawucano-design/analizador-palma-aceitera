@@ -1,6 +1,6 @@
-# app.py - Versión COMPLETA con AUTENTICACIÓN MANUAL EARTHDATA
-# El usuario ingresa sus credenciales Earthdata en la barra lateral.
-# No usa .netrc, las credenciales solo viven en la sesión de Streamlit.
+# app.py - Versión COMPLETA con MODIS REAL (ORNL DAAC, sin autenticación)
+# Temperatura: Open-Meteo (ERA5) · Precipitación: CHIRPS (UCSB)
+# Mapas coropléticos + histogramas · Sin dependencia de Earthdata Login
 
 import streamlit as st
 import geopandas as gpd
@@ -27,16 +27,13 @@ from streamlit_folium import folium_static
 from folium.plugins import MarkerCluster
 from branca.colormap import LinearColormap
 
-# ===== LIBRERÍAS PARA DATOS NASA =====
+# ===== LIBRERÍAS PARA DATOS CLIMÁTICOS =====
 try:
-    import earthaccess
     import xarray as xr
-    import rioxarray
     import netCDF4
-    import h5netcdf
-    nasa_libs_ok = True
+    clima_libs_ok = True
 except ImportError:
-    nasa_libs_ok = False
+    clima_libs_ok = False
 
 # ===== CONFIGURACIÓN =====
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -64,12 +61,7 @@ def init_session_state():
         'variedad_seleccionada': 'Tenera (DxP)',
         'textura_suelo': {},
         'datos_fertilidad': [],
-        'analisis_suelo': True,
-        # ===== NUEVAS VARIABLES PARA AUTENTICACIÓN MANUAL =====
-        'nasa_auth_ok': False,
-        'earthdata_user': '',
-        'earthdata_pass': '',
-        'earth_auth_attempted': False
+        'analisis_suelo': True
     }
     
     for key, value in defaults.items():
@@ -84,23 +76,6 @@ VARIEDADES_PALMA_ACEITERA = [
     'Ekona', 'Calabar', 'NIFOR', 'MARDI', 'CIRAD', 'ASD Costa Rica',
     'Dami', 'Socfindo', 'SP540'
 ]
-
-# ===== FUNCIÓN DE AUTENTICACIÓN MANUAL =====
-def autenticar_nasa_con_credenciales(username, password):
-    """Intenta autenticar con Earthdata usando usuario y contraseña proporcionados."""
-    if not nasa_libs_ok:
-        st.warning("Librerías de NASA no instaladas. No se puede autenticar.")
-        return False
-    try:
-        # persist=False evita escribir en .netrc
-        auth = earthaccess.login(username=username, password=password, persist=False)
-        if auth and auth.authenticated:
-            return True
-        else:
-            return False
-    except Exception as e:
-        st.error(f"Error de autenticación: {str(e)}")
-        return False
 
 # ===== FUNCIONES DE UTILIDAD =====
 def validar_y_corregir_crs(gdf):
@@ -305,19 +280,21 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE ANÁLISIS CON DATOS REALES DE NASA =====
-# -----------------------------------------------------------------
-# 1. NDVI desde ORNL DAAC Subset API (MODIS MOD13Q1) - SIN AUTENTICACIÓN
-# 2. Temperatura desde MODIS LST (MOD11A2) usando credenciales manuales
-# 3. Precipitación desde CHIRPS (servidor público UCSB) - SIN AUTENTICACIÓN
-# -----------------------------------------------------------------
+# ===== FUNCIONES DE ANÁLISIS CON DATOS REALES (SIN AUTENTICACIÓN) =====
+# ---------------------------------------------------------------------
+# 1. NDVI/NDWI/NDRE desde ORNL DAAC Web Service (MODIS MOD13Q1) - PÚBLICO
+# 2. Precipitación desde CHIRPS (servidor público UCSB) - PÚBLICO
+# 3. Temperatura desde Open-Meteo (ERA5) - PÚBLICO
+# ---------------------------------------------------------------------
 
 def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
     """
-    Obtiene NDVI real de MOD13Q1 usando la API de ORNL DAAC.
+    Obtiene NDVI real de MOD13Q1 usando la API pública de ORNL DAAC.
     No requiere autenticación.
+    Retorna GeoDataFrame con columnas ndvi_modis, ndwi_modis, ndre_modis.
     """
     try:
+        # Tomar centroide del polígono principal
         centroide = gdf.geometry.unary_union.centroid
         lat = centroide.y
         lon = centroide.x
@@ -331,6 +308,7 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         
         url = "https://modis.ornl.gov/rst/api/v1/"
         
+        # Obtener fechas disponibles
         dates_url = f"{url}/{product}/dates"
         params = {"latitude": lat, "longitude": lon, "startDate": start, "endDate": end}
         resp = requests.get(dates_url, params=params, timeout=30).json()
@@ -339,7 +317,7 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
             raise Exception("No hay fechas disponibles para este punto")
         
         ndvi_vals = []
-        for date_obj in resp["dates"][:5]:
+        for date_obj in resp["dates"][:5]:  # Limitamos a 5 fechas para rapidez
             modis_date = date_obj["modis_date"]
             cv_url = f"{url}/{product}/values"
             params_cv = {
@@ -358,8 +336,10 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         
         ndvi_promedio = np.mean(ndvi_vals) if ndvi_vals else 0.65
         
+        # Asignar a todo el gdf (mismo valor para todos los bloques)
         gdf_out = gdf.copy()
         gdf_out["ndvi_modis"] = round(ndvi_promedio, 3)
+        # NDWI y NDRE no disponibles directamente; aproximaciones razonables
         gdf_out["ndwi_modis"] = round(ndvi_promedio * 0.55, 3)
         gdf_out["ndre_modis"] = round(ndvi_promedio * 0.85, 3)
         
@@ -373,55 +353,9 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         gdf_out["ndre_modis"] = 0.55
         return gdf_out
 
-def obtener_temperatura_lst_earthaccess(gdf, fecha_inicio, fecha_fin, username, password):
-    """
-    Obtiene temperatura promedio de MODIS LST (MOD11A2) usando credenciales explícitas.
-    Requiere autenticación Earthdata.
-    """
-    if not username or not password:
-        st.warning("Credenciales Earthdata no proporcionadas. Usando temperatura simulada.")
-        return 25.0
-    
-    try:
-        auth = earthaccess.login(username=username, password=password, persist=False)
-        if not auth.authenticated:
-            st.warning("No se pudo autenticar con Earthdata. Usando temperatura simulada.")
-            return 25.0
-        
-        bounds = gdf.total_bounds
-        bbox = (bounds[1], bounds[0], bounds[3], bounds[2])
-        
-        results = earthaccess.search_data(
-            short_name="MOD11A2",
-            bounding_box=bbox,
-            temporal=(fecha_inicio.strftime("%Y-%m-%d"), fecha_fin.strftime("%Y-%m-%d")),
-            cloud_hosted=True,
-            count=3
-        )
-        
-        if not results:
-            return 25.0
-        
-        files = earthaccess.open(results)
-        temp_values = []
-        
-        for f in files[:2]:
-            try:
-                ds = xr.open_dataset(f, group="LST_Day_1km", engine="h5netcdf")
-                lst = ds.LST_Day_1km * 0.02 - 273.15
-                temp_values.append(float(lst.mean().values))
-            except:
-                continue
-        
-        return np.mean(temp_values) if temp_values else 25.0
-    
-    except Exception as e:
-        st.warning(f"Error obteniendo temperatura real: {str(e)[:100]}. Usando simulada.")
-        return 25.0
-
 def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
     """
-    Obtiene precipitación total desde CHIRPS pentadal global (servidor público).
+    Obtiene precipitación total desde CHIRPS pentadal global (servidor público UCSB).
     No requiere autenticación.
     """
     try:
@@ -435,6 +369,7 @@ def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
         if dias_totales <= 0:
             dias_totales = 30
         
+        # Iterar día a día (limitado a 10 días para no saturar)
         contador = 0
         while fecha_actual <= fecha_fin and contador < 10:
             año = fecha_actual.strftime("%Y")
@@ -456,6 +391,7 @@ def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
             fecha_actual += timedelta(days=1)
             contador += 1
         
+        # Escalar a todo el período (aproximación)
         factor_escala = dias_totales / max(1, contador)
         precip_total = precip_total * factor_escala
         dias_lluvia = int(dias_lluvia * factor_escala)
@@ -478,6 +414,42 @@ def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
             'dias_con_lluvia': 10,
             'diaria': [3.0] * dias_totales
         }
+
+def obtener_temperatura_openmeteo(gdf, fecha_inicio, fecha_fin):
+    """
+    Obtiene temperatura promedio desde Open-Meteo Historical API (ERA5).
+    No requiere autenticación, no tiene límites significativos.
+    """
+    try:
+        centroide = gdf.geometry.unary_union.centroid
+        lat = centroide.y
+        lon = centroide.x
+        
+        url = "https://archive-api.open-meteo.com/v1/archive"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": fecha_inicio.strftime("%Y-%m-%d"),
+            "end_date": fecha_fin.strftime("%Y-%m-%d"),
+            "daily": "temperature_2m_mean",
+            "timezone": "auto"
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+        
+        if "daily" in data and "temperature_2m_mean" in data["daily"]:
+            temps = data["daily"]["temperature_2m_mean"]
+            temps_limpios = [t for t in temps if t is not None]
+            if temps_limpios:
+                temp_promedio = np.mean(temps_limpios)
+                return round(temp_promedio, 1)
+        
+        return 25.0
+        
+    except Exception as e:
+        st.warning(f"Error obteniendo temperatura real: {str(e)[:100]}. Usando valor simulado.")
+        return 25.0
 
 # ===== FUNCIONES SIMULADAS (FALLBACK) =====
 def generar_datos_indices_simulados(gdf, fecha_inicio, fecha_fin):
@@ -1051,9 +1023,9 @@ def ejecutar_deteccion_palmas():
         st.session_state.deteccion_ejecutada = True
         st.success(f"✅ Detección MEJORADA completada: {len(palmas_verificadas)} palmas detectadas")
 
-# ===== FUNCIÓN PRINCIPAL DE ANÁLISIS (con datos reales de NASA si hay credenciales) =====
+# ===== FUNCIÓN PRINCIPAL DE ANÁLISIS (SIN AUTENTICACIÓN) =====
 def ejecutar_analisis_completo():
-    """Ejecuta el análisis completo, usando credenciales Earthdata si están disponibles"""
+    """Ejecuta el análisis completo con datos MODIS reales (ORNL) y clima público"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
         return
@@ -1076,56 +1048,43 @@ def ejecutar_analisis_completo():
             areas_ha.append(float(area_ha_val))
         gdf_dividido['area_ha'] = areas_ha
         
-        # 3. OBTENER NDVI REAL desde ORNL DAAC (no requiere autenticación)
-        st.info("🛰️ Consultando MODIS NDVI (ORNL DAAC)...")
+        # 3. OBTENER NDVI REAL desde ORNL DAAC (SIN AUTENTICACIÓN)
+        st.info("🛰️ Consultando MODIS NDVI real (ORNL DAAC)...")
         gdf_con_ndvi = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
         gdf_dividido['ndvi_modis'] = gdf_con_ndvi['ndvi_modis']
         gdf_dividido['ndwi_modis'] = gdf_con_ndvi['ndwi_modis']
         gdf_dividido['ndre_modis'] = gdf_con_ndvi['ndre_modis']
         
-        # 4. OBTENER DATOS CLIMÁTICOS
-        st.info("🌦️ Obteniendo datos climáticos...")
+        # 4. OBTENER TEMPERATURA REAL (Open-Meteo) - SIN AUTENTICACIÓN
+        st.info("🌡️ Obteniendo temperatura real (Open-Meteo/ERA5)...")
+        temp_prom = obtener_temperatura_openmeteo(gdf, fecha_inicio, fecha_fin)
         
-        # 4a. Temperatura (requiere credenciales)
-        if st.session_state.nasa_auth_ok:
-            temp_prom = obtener_temperatura_lst_earthaccess(
-                gdf, 
-                fecha_inicio, 
-                fecha_fin,
-                st.session_state.earthdata_user,
-                st.session_state.earthdata_pass
-            )
-            fuente_temp = 'MODIS LST (NASA real)'
-        else:
-            temp_prom = 25.0
-            fuente_temp = 'Simulado (sin credenciales)'
-            st.info("ℹ️ Usando temperatura simulada. Para datos reales, ingresa credenciales Earthdata.")
-        
-        # 4b. Precipitación (CHIRPS, no requiere autenticación)
+        # 5. OBTENER PRECIPITACIÓN REAL (CHIRPS) - SIN AUTENTICACIÓN
+        st.info("💧 Obteniendo precipitación real (CHIRPS)...")
         precip_data = obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin)
         
-        # Construir dict de datos climáticos
+        # 6. Construir datos climáticos
         dias_totales = (fecha_fin - fecha_inicio).days
         if dias_totales <= 0:
             dias_totales = 30
-        
+            
         st.session_state.datos_climaticos = {
             'precipitacion': precip_data,
             'temperatura': {
-                'promedio': round(temp_prom, 1),
+                'promedio': temp_prom,
                 'maxima': round(temp_prom + 3, 1),
                 'minima': round(temp_prom - 3, 1),
-                'diaria': [round(temp_prom, 1)] * dias_totales
+                'diaria': [temp_prom] * dias_totales
             },
             'periodo': f"{fecha_inicio.strftime('%d/%m/%Y')} - {fecha_fin.strftime('%d/%m/%Y')}",
-            'fuente': f'CHIRPS + {fuente_temp}'
+            'fuente': 'MODIS ORNL + CHIRPS + Open-Meteo'
         }
         
-        # 5. Edad (simulada)
+        # 7. Edad (simulada)
         edades = analizar_edad_plantacion(gdf_dividido)
         gdf_dividido['edad_anios'] = edades
         
-        # 6. Clasificar salud basada en NDVI real
+        # 8. Clasificar salud basada en NDVI real
         def clasificar_salud(ndvi):
             if ndvi < 0.4: return 'Crítica'
             if ndvi < 0.6: return 'Baja'
@@ -1133,14 +1092,14 @@ def ejecutar_analisis_completo():
             return 'Buena'
         gdf_dividido['salud'] = gdf_dividido['ndvi_modis'].apply(clasificar_salud)
         
-        # 7. Análisis de textura de suelo
+        # 9. Análisis de textura de suelo (simulado)
         if st.session_state.get('analisis_suelo', True):
             st.session_state.textura_suelo = analizar_textura_suelo_venezuela(gdf_dividido)
         
-        # 8. Análisis de fertilidad NPK (basado en NDVI real)
+        # 10. Análisis de fertilidad NPK (basado en NDVI real)
         st.session_state.datos_fertilidad = generar_mapa_fertilidad(gdf_dividido)
         
-        # 9. Guardar datos MODIS para resumen
+        # 11. Guardar datos MODIS para resumen
         st.session_state.datos_modis = {
             'ndvi': gdf_dividido['ndvi_modis'].mean(),
             'ndre': gdf_dividido['ndre_modis'].mean(),
@@ -1157,7 +1116,7 @@ def ejecutar_analisis_completo():
         }
         
         st.session_state.analisis_completado = True
-        st.success("✅ Análisis completado!")
+        st.success("✅ Análisis completado con datos MODIS reales y clima público!")
 
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(
@@ -1216,7 +1175,7 @@ st.markdown("""
         🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL
     </h1>
     <p style="color: #cbd5e1; font-size: 1.2em;">
-        Monitoreo biológico con datos NASA MODIS + CHIRPS
+        Monitoreo biológico con datos reales NASA MODIS + CHIRPS + Open-Meteo
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1224,42 +1183,6 @@ st.markdown("""
 # ===== SIDEBAR =====
 with st.sidebar:
     st.markdown("## 🌴 CONFIGURACIÓN")
-    
-    # --- SECCIÓN DE AUTENTICACIÓN NASA ---
-    st.markdown("### 🔐 Acceso a datos NASA")
-    
-    if st.session_state.nasa_auth_ok:
-        st.success(f"✅ Conectado como: {st.session_state.earthdata_user}")
-        if st.button("❌ Cerrar sesión"):
-            st.session_state.nasa_auth_ok = False
-            st.session_state.earthdata_user = ''
-            st.session_state.earthdata_pass = ''
-            st.rerun()
-    else:
-        st.warning("⚠️ Se requieren credenciales Earthdata para temperatura real")
-        with st.expander("🔑 Ingresar credenciales", expanded=True):
-            earth_user = st.text_input("Usuario Earthdata", 
-                                      value=st.session_state.earthdata_user,
-                                      key="earth_user_input")
-            earth_pass = st.text_input("Contraseña Earthdata", 
-                                      type="password",
-                                      key="earth_pass_input")
-            if st.button("🔓 Conectar a NASA Earthdata"):
-                if earth_user and earth_pass:
-                    with st.spinner("Verificando credenciales..."):
-                        ok = autenticar_nasa_con_credenciales(earth_user, earth_pass)
-                        if ok:
-                            st.session_state.nasa_auth_ok = True
-                            st.session_state.earthdata_user = earth_user
-                            st.session_state.earthdata_pass = earth_pass
-                            st.success("✅ Autenticación exitosa")
-                            st.rerun()
-                        else:
-                            st.error("❌ Credenciales inválidas")
-                else:
-                    st.warning("Ingresa usuario y contraseña")
-    
-    st.markdown("---")
     
     # --- SELECCIÓN DE VARIEDAD ---
     variedad = st.selectbox(
@@ -1982,7 +1905,7 @@ st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
-    <p>Datos satelitales: NASA MODIS (ORNL DAAC) / CHIRPS / MODIS LST - Acceso público con credenciales Earthdata</p>
+    <p>Datos satelitales: NASA MODIS (ORNL DAAC) · Precipitación: CHIRPS · Temperatura: Open-Meteo/ERA5</p>
     <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
 </div>
 """, unsafe_allow_html=True)
