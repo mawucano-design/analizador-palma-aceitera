@@ -1,5 +1,6 @@
-# app.py - Versión COMPLETA con DATOS REALES DE NASA (MODIS ORNL + CHIRPS + earthaccess)
-# Visualización mejorada: mapas coropléticos + histogramas + recomendaciones claras
+# app.py - Versión COMPLETA con AUTENTICACIÓN MANUAL EARTHDATA
+# El usuario ingresa sus credenciales Earthdata en la barra lateral.
+# No usa .netrc, las credenciales solo viven en la sesión de Streamlit.
 
 import streamlit as st
 import geopandas as gpd
@@ -64,8 +65,11 @@ def init_session_state():
         'textura_suelo': {},
         'datos_fertilidad': [],
         'analisis_suelo': True,
-        'nasa_available': False,
-        'nasa_auth_ok': False
+        # ===== NUEVAS VARIABLES PARA AUTENTICACIÓN MANUAL =====
+        'nasa_auth_ok': False,
+        'earthdata_user': '',
+        'earthdata_pass': '',
+        'earth_auth_attempted': False
     }
     
     for key, value in defaults.items():
@@ -81,29 +85,22 @@ VARIEDADES_PALMA_ACEITERA = [
     'Dami', 'Socfindo', 'SP540'
 ]
 
-# ===== AUTENTICACIÓN NASA EARTHDATA =====
-def autenticar_nasa():
-    """Intenta autenticar con Earthdata Login usando earthaccess"""
+# ===== FUNCIÓN DE AUTENTICACIÓN MANUAL =====
+def autenticar_nasa_con_credenciales(username, password):
+    """Intenta autenticar con Earthdata usando usuario y contraseña proporcionados."""
     if not nasa_libs_ok:
-        st.session_state.nasa_available = False
-        st.session_state.nasa_auth_ok = False
+        st.warning("Librerías de NASA no instaladas. No se puede autenticar.")
         return False
-    
     try:
-        auth = earthaccess.login(persist=True)
-        if auth.authenticated:
-            st.session_state.nasa_available = True
-            st.session_state.nasa_auth_ok = True
+        # persist=False evita escribir en .netrc
+        auth = earthaccess.login(username=username, password=password, persist=False)
+        if auth and auth.authenticated:
             return True
         else:
-            st.session_state.nasa_auth_ok = False
             return False
     except Exception as e:
-        st.session_state.nasa_auth_ok = False
+        st.error(f"Error de autenticación: {str(e)}")
         return False
-
-# Intentar autenticar al inicio
-st.session_state.nasa_auth_ok = autenticar_nasa()
 
 # ===== FUNCIONES DE UTILIDAD =====
 def validar_y_corregir_crs(gdf):
@@ -310,18 +307,17 @@ def cargar_archivo_plantacion(uploaded_file):
 
 # ===== FUNCIONES DE ANÁLISIS CON DATOS REALES DE NASA =====
 # -----------------------------------------------------------------
-# 1. NDVI desde ORNL DAAC Subset API (MODIS MOD13Q1)
-# 2. Temperatura desde MODIS LST (MOD11A2) usando earthaccess
-# 3. Precipitación desde CHIRPS (servidor público UCSB)
+# 1. NDVI desde ORNL DAAC Subset API (MODIS MOD13Q1) - SIN AUTENTICACIÓN
+# 2. Temperatura desde MODIS LST (MOD11A2) usando credenciales manuales
+# 3. Precipitación desde CHIRPS (servidor público UCSB) - SIN AUTENTICACIÓN
 # -----------------------------------------------------------------
 
 def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real de MOD13Q1 usando la API de ORNL DAAC.
-    Retorna un GeoDataFrame con columna 'ndvi_modis'.
+    No requiere autenticación.
     """
     try:
-        # Tomar centroide del polígono principal
         centroide = gdf.geometry.unary_union.centroid
         lat = centroide.y
         lon = centroide.x
@@ -335,7 +331,6 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         
         url = "https://modis.ornl.gov/rst/api/v1/"
         
-        # Obtener fechas disponibles
         dates_url = f"{url}/{product}/dates"
         params = {"latitude": lat, "longitude": lon, "startDate": start, "endDate": end}
         resp = requests.get(dates_url, params=params, timeout=30).json()
@@ -344,7 +339,7 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
             raise Exception("No hay fechas disponibles para este punto")
         
         ndvi_vals = []
-        for date_obj in resp["dates"][:5]:  # Limitamos a 5 fechas para rapidez
+        for date_obj in resp["dates"][:5]:
             modis_date = date_obj["modis_date"]
             cv_url = f"{url}/{product}/values"
             params_cv = {
@@ -363,10 +358,8 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         
         ndvi_promedio = np.mean(ndvi_vals) if ndvi_vals else 0.65
         
-        # Asignar a todo el gdf (mismo valor para todos los bloques)
         gdf_out = gdf.copy()
         gdf_out["ndvi_modis"] = round(ndvi_promedio, 3)
-        # NDWI y NDRE no disponibles directamente; aproximaciones razonables
         gdf_out["ndwi_modis"] = round(ndvi_promedio * 0.55, 3)
         gdf_out["ndre_modis"] = round(ndvi_promedio * 0.85, 3)
         
@@ -380,23 +373,30 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         gdf_out["ndre_modis"] = 0.55
         return gdf_out
 
-def obtener_temperatura_lst_earthaccess(gdf, fecha_inicio, fecha_fin):
+def obtener_temperatura_lst_earthaccess(gdf, fecha_inicio, fecha_fin, username, password):
     """
-    Obtiene temperatura promedio de MODIS LST (MOD11A2) usando earthaccess.
+    Obtiene temperatura promedio de MODIS LST (MOD11A2) usando credenciales explícitas.
+    Requiere autenticación Earthdata.
     """
-    if not st.session_state.nasa_auth_ok:
-        return 25.0  # fallback
+    if not username or not password:
+        st.warning("Credenciales Earthdata no proporcionadas. Usando temperatura simulada.")
+        return 25.0
     
     try:
+        auth = earthaccess.login(username=username, password=password, persist=False)
+        if not auth.authenticated:
+            st.warning("No se pudo autenticar con Earthdata. Usando temperatura simulada.")
+            return 25.0
+        
         bounds = gdf.total_bounds
-        bbox = (bounds[1], bounds[0], bounds[3], bounds[2])  # (min_lat, min_lon, max_lat, max_lon)
+        bbox = (bounds[1], bounds[0], bounds[3], bounds[2])
         
         results = earthaccess.search_data(
             short_name="MOD11A2",
             bounding_box=bbox,
             temporal=(fecha_inicio.strftime("%Y-%m-%d"), fecha_fin.strftime("%Y-%m-%d")),
             cloud_hosted=True,
-            count=3  # limitar
+            count=3
         )
         
         if not results:
@@ -405,7 +405,7 @@ def obtener_temperatura_lst_earthaccess(gdf, fecha_inicio, fecha_fin):
         files = earthaccess.open(results)
         temp_values = []
         
-        for f in files[:2]:  # máximo 2 archivos
+        for f in files[:2]:
             try:
                 ds = xr.open_dataset(f, group="LST_Day_1km", engine="h5netcdf")
                 lst = ds.LST_Day_1km * 0.02 - 273.15
@@ -416,12 +416,13 @@ def obtener_temperatura_lst_earthaccess(gdf, fecha_inicio, fecha_fin):
         return np.mean(temp_values) if temp_values else 25.0
     
     except Exception as e:
-        st.warning(f"Error obteniendo temperatura: {str(e)[:100]}. Usando valor simulado.")
+        st.warning(f"Error obteniendo temperatura real: {str(e)[:100]}. Usando simulada.")
         return 25.0
 
 def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
     """
-    Obtiene precipitación total desde CHIRPS pentadal global (servidor UCSB).
+    Obtiene precipitación total desde CHIRPS pentadal global (servidor público).
+    No requiere autenticación.
     """
     try:
         bounds = gdf.total_bounds
@@ -434,7 +435,6 @@ def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
         if dias_totales <= 0:
             dias_totales = 30
         
-        # Iterar día a día (limitado a 10 días para no saturar)
         contador = 0
         while fecha_actual <= fecha_fin and contador < 10:
             año = fecha_actual.strftime("%Y")
@@ -456,7 +456,6 @@ def obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin):
             fecha_actual += timedelta(days=1)
             contador += 1
         
-        # Escalar a todo el período (aproximación)
         factor_escala = dias_totales / max(1, contador)
         precip_total = precip_total * factor_escala
         dias_lluvia = int(dias_lluvia * factor_escala)
@@ -794,9 +793,6 @@ def generar_mapa_fertilidad(gdf):
         return []
 
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
-# -----------------------------------------------------------------
-# NUEVA: Mapa coroplético + histograma (reemplaza a la antigua interpolación)
-# -----------------------------------------------------------------
 def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn', 
                               vmin=None, vmax=None, etiqueta='Valor'):
     """
@@ -812,7 +808,6 @@ def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn',
 
     fig = plt.figure(figsize=(14, 6))
     
-    # ---- Mapa principal (izquierda) ----
     ax1 = plt.subplot(1, 2, 1)
     gdf.plot(column=columna, ax=ax1, cmap=cmap, 
              edgecolor='black', linewidth=0.5, 
@@ -830,7 +825,6 @@ def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn',
     ax1.set_ylabel('Latitud')
     ax1.grid(True, alpha=0.3)
     
-    # ---- Histograma de distribución (derecha) ----
     ax2 = plt.subplot(1, 2, 2)
     valores = gdf[columna].dropna()
     ax2.hist(valores, bins=15, color='steelblue', edgecolor='black', alpha=0.7)
@@ -975,7 +969,6 @@ def crear_graficos_climaticos(datos_climaticos):
         
         dias = list(range(1, len(datos_climaticos['precipitacion']['diaria']) + 1))
         
-        # Radiación (solo en simulado)
         if 'radiacion' in datos_climaticos:
             radiacion = datos_climaticos['radiacion']['diaria']
             ax1 = axes[0, 0]
@@ -992,7 +985,6 @@ def crear_graficos_climaticos(datos_climaticos):
             axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
             axes[0, 0].set_title('Radiación', fontweight='bold')
         
-        # Precipitación
         precipitacion = datos_climaticos['precipitacion']['diaria']
         ax2 = axes[0, 1]
         ax2.bar(dias, precipitacion, color='blue', alpha=0.7)
@@ -1001,7 +993,6 @@ def crear_graficos_climaticos(datos_climaticos):
         ax2.set_title(f'Precipitación Diaria (Total: {datos_climaticos["precipitacion"]["total"]} mm)', fontweight='bold')
         ax2.grid(True, alpha=0.3, axis='y')
         
-        # Viento (solo en simulado)
         if 'viento' in datos_climaticos:
             viento = datos_climaticos['viento']['diaria']
             ax3 = axes[1, 0]
@@ -1018,7 +1009,6 @@ def crear_graficos_climaticos(datos_climaticos):
             axes[1, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
             axes[1, 0].set_title('Viento', fontweight='bold')
         
-        # Temperatura
         temperatura = datos_climaticos['temperatura']['diaria']
         ax4 = axes[1, 1]
         ax4.plot(dias, temperatura, '^-', color='red', linewidth=2, markersize=4)
@@ -1061,9 +1051,9 @@ def ejecutar_deteccion_palmas():
         st.session_state.deteccion_ejecutada = True
         st.success(f"✅ Detección MEJORADA completada: {len(palmas_verificadas)} palmas detectadas")
 
-# ===== FUNCIÓN PRINCIPAL DE ANÁLISIS (con datos reales de NASA) =====
+# ===== FUNCIÓN PRINCIPAL DE ANÁLISIS (con datos reales de NASA si hay credenciales) =====
 def ejecutar_analisis_completo():
-    """Ejecuta el análisis completo, usando datos reales de NASA (ORNL + CHIRPS + earthaccess)"""
+    """Ejecuta el análisis completo, usando credenciales Earthdata si están disponibles"""
     if st.session_state.gdf_original is None:
         st.error("Primero debe cargar un archivo de plantación")
         return
@@ -1086,16 +1076,32 @@ def ejecutar_analisis_completo():
             areas_ha.append(float(area_ha_val))
         gdf_dividido['area_ha'] = areas_ha
         
-        # 3. OBTENER NDVI REAL desde ORNL DAAC
+        # 3. OBTENER NDVI REAL desde ORNL DAAC (no requiere autenticación)
         st.info("🛰️ Consultando MODIS NDVI (ORNL DAAC)...")
         gdf_con_ndvi = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
         gdf_dividido['ndvi_modis'] = gdf_con_ndvi['ndvi_modis']
         gdf_dividido['ndwi_modis'] = gdf_con_ndvi['ndwi_modis']
         gdf_dividido['ndre_modis'] = gdf_con_ndvi['ndre_modis']
         
-        # 4. OBTENER DATOS CLIMÁTICOS REALES
-        st.info("🌦️ Obteniendo datos climáticos (CHIRPS + MODIS LST)...")
-        temp_prom = obtener_temperatura_lst_earthaccess(gdf, fecha_inicio, fecha_fin)
+        # 4. OBTENER DATOS CLIMÁTICOS
+        st.info("🌦️ Obteniendo datos climáticos...")
+        
+        # 4a. Temperatura (requiere credenciales)
+        if st.session_state.nasa_auth_ok:
+            temp_prom = obtener_temperatura_lst_earthaccess(
+                gdf, 
+                fecha_inicio, 
+                fecha_fin,
+                st.session_state.earthdata_user,
+                st.session_state.earthdata_pass
+            )
+            fuente_temp = 'MODIS LST (NASA real)'
+        else:
+            temp_prom = 25.0
+            fuente_temp = 'Simulado (sin credenciales)'
+            st.info("ℹ️ Usando temperatura simulada. Para datos reales, ingresa credenciales Earthdata.")
+        
+        # 4b. Precipitación (CHIRPS, no requiere autenticación)
         precip_data = obtener_precipitacion_chirps(gdf, fecha_inicio, fecha_fin)
         
         # Construir dict de datos climáticos
@@ -1112,7 +1118,7 @@ def ejecutar_analisis_completo():
                 'diaria': [round(temp_prom, 1)] * dias_totales
             },
             'periodo': f"{fecha_inicio.strftime('%d/%m/%Y')} - {fecha_fin.strftime('%d/%m/%Y')}",
-            'fuente': 'CHIRPS + MODIS LST (NASA real)'
+            'fuente': f'CHIRPS + {fuente_temp}'
         }
         
         # 5. Edad (simulada)
@@ -1151,7 +1157,7 @@ def ejecutar_analisis_completo():
         }
         
         st.session_state.analisis_completado = True
-        st.success("✅ Análisis completado con datos reales de NASA!")
+        st.success("✅ Análisis completado!")
 
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(
@@ -1210,29 +1216,52 @@ st.markdown("""
         🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL
     </h1>
     <p style="color: #cbd5e1; font-size: 1.2em;">
-        Monitoreo biológico con datos reales NASA MODIS + CHIRPS
+        Monitoreo biológico con datos NASA MODIS + CHIRPS
     </p>
 </div>
 """, unsafe_allow_html=True)
 
-# Sidebar
+# ===== SIDEBAR =====
 with st.sidebar:
     st.markdown("## 🌴 CONFIGURACIÓN")
     
-    # Estado de autenticación NASA
-    if st.session_state.nasa_auth_ok:
-        st.success("🛰️ NASA Earthdata: Conectado")
-    else:
-        st.warning("⚠️ NASA Earthdata: No autenticado (usando datos simulados)")
-        if st.button("🔐 Autenticar ahora"):
-            try:
-                earthaccess.login(persist=True)
-                st.session_state.nasa_auth_ok = autenticar_nasa()
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error: {e}")
+    # --- SECCIÓN DE AUTENTICACIÓN NASA ---
+    st.markdown("### 🔐 Acceso a datos NASA")
     
-    # Selección de variedad
+    if st.session_state.nasa_auth_ok:
+        st.success(f"✅ Conectado como: {st.session_state.earthdata_user}")
+        if st.button("❌ Cerrar sesión"):
+            st.session_state.nasa_auth_ok = False
+            st.session_state.earthdata_user = ''
+            st.session_state.earthdata_pass = ''
+            st.rerun()
+    else:
+        st.warning("⚠️ Se requieren credenciales Earthdata para temperatura real")
+        with st.expander("🔑 Ingresar credenciales", expanded=True):
+            earth_user = st.text_input("Usuario Earthdata", 
+                                      value=st.session_state.earthdata_user,
+                                      key="earth_user_input")
+            earth_pass = st.text_input("Contraseña Earthdata", 
+                                      type="password",
+                                      key="earth_pass_input")
+            if st.button("🔓 Conectar a NASA Earthdata"):
+                if earth_user and earth_pass:
+                    with st.spinner("Verificando credenciales..."):
+                        ok = autenticar_nasa_con_credenciales(earth_user, earth_pass)
+                        if ok:
+                            st.session_state.nasa_auth_ok = True
+                            st.session_state.earthdata_user = earth_user
+                            st.session_state.earthdata_pass = earth_pass
+                            st.success("✅ Autenticación exitosa")
+                            st.rerun()
+                        else:
+                            st.error("❌ Credenciales inválidas")
+                else:
+                    st.warning("Ingresa usuario y contraseña")
+    
+    st.markdown("---")
+    
+    # --- SELECCIÓN DE VARIEDAD ---
     variedad = st.selectbox(
         "Variedad de palma:",
         VARIEDADES_PALMA_ACEITERA,
@@ -1297,7 +1326,7 @@ with st.sidebar:
         help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)"
     )
 
-# Área principal
+# ===== ÁREA PRINCIPAL =====
 if uploaded_file and not st.session_state.archivo_cargado:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
@@ -1414,7 +1443,7 @@ if st.session_state.analisis_completado:
                         return 'color: #fee08b'
                     elif val == 'Moderada':
                         return 'color: #91cf60'
-                    else:  # Buena
+                    else:
                         return 'color: #1a9850; font-weight: bold'
                 
                 st.dataframe(
@@ -1433,7 +1462,6 @@ if st.session_state.analisis_completado:
         
         with tab2:
             st.subheader("🗺️ MAPAS INTERACTIVOS")
-            
             st.markdown("### 🌍 Mapa Interactivo con Palmas Detectadas")
             
             try:
@@ -1471,7 +1499,6 @@ if st.session_state.analisis_completado:
                         gdf_export = gdf_completo.copy()
                         if 'geometry' in gdf_export.columns:
                             geojson_str = gdf_export.to_json()
-                            
                             col_exp1, col_exp2 = st.columns(2)
                             with col_exp1:
                                 st.download_button(
@@ -1513,7 +1540,6 @@ if st.session_state.analisis_completado:
                 except Exception:
                     st.info("No se pudo mostrar ningún mapa")
         
-        # ========== PESTAÑA ÍNDICES - TOTALMENTE RENOVADA ==========
         with tab3:
             st.subheader("🛰️ ÍNDICES DE VEGETACIÓN")
             st.caption(f"Fuente: {st.session_state.datos_modis.get('fuente', 'MODIS ORNL')}")
@@ -1536,7 +1562,7 @@ if st.session_state.analisis_completado:
                 <p style="text-align: center; font-size: 0.9em;">Escala NDVI</p>
                 """, unsafe_allow_html=True)
             
-            # ---- NDVI ----
+            # NDVI
             st.markdown("### 🌿 NDVI - Índice de Vegetación")
             if 'ndvi_modis' in gdf_completo.columns:
                 fig_ndvi = crear_mapa_bloques_simple(
@@ -1546,7 +1572,6 @@ if st.session_state.analisis_completado:
                 st.pyplot(fig_ndvi)
                 plt.close(fig_ndvi)
                 
-                # Recomendación automática
                 ndvi_prom = gdf_completo['ndvi_modis'].mean()
                 if ndvi_prom < 0.4:
                     st.error(f"⚠️ **NDVI crítico** ({ndvi_prom:.2f}). Evalúe riego y fertilización urgente.")
@@ -1557,7 +1582,7 @@ if st.session_state.analisis_completado:
             else:
                 st.info("Datos NDVI no disponibles")
             
-            # ---- NDRE ----
+            # NDRE
             st.markdown("### 🍂 NDRE - Borde Rojo (estimado)")
             if 'ndre_modis' in gdf_completo.columns:
                 fig_ndre = crear_mapa_bloques_simple(
@@ -1570,7 +1595,7 @@ if st.session_state.analisis_completado:
             else:
                 st.info("Datos NDRE no disponibles")
             
-            # ---- NDWI ----
+            # NDWI
             st.markdown("### 💧 NDWI - Índice de Agua")
             if 'ndwi_modis' in gdf_completo.columns:
                 fig_ndwi = crear_mapa_bloques_simple(
@@ -1588,31 +1613,18 @@ if st.session_state.analisis_completado:
             else:
                 st.info("Datos NDWI no disponibles")
             
-            # ---- Exportación ----
+            # Exportación
             st.markdown("### 📥 EXPORTAR DATOS DE ÍNDICES")
             try:
                 gdf_indices = gdf_completo[['id_bloque', 'ndvi_modis', 'ndre_modis', 'ndwi_modis', 'salud', 'geometry']].copy()
                 gdf_indices.columns = ['id_bloque', 'NDVI', 'NDRE', 'NDWI', 'Salud', 'geometry']
                 geojson_indices = gdf_indices.to_json()
                 csv_indices = gdf_indices.drop(columns='geometry').to_csv(index=False)
-                
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1:
-                    st.download_button(
-                        label="🗺️ Descargar GeoJSON (Índices)",
-                        data=geojson_indices,
-                        file_name=f"indices_palma_{datetime.now().strftime('%Y%m%d')}.geojson",
-                        mime="application/geo+json",
-                        use_container_width=True
-                    )
+                    st.download_button("🗺️ GeoJSON", geojson_indices, f"indices_{datetime.now():%Y%m%d}.geojson", "application/geo+json")
                 with col_dl2:
-                    st.download_button(
-                        label="📊 Descargar CSV (Índices)",
-                        data=csv_indices,
-                        file_name=f"indices_palma_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+                    st.download_button("📊 CSV", csv_indices, f"indices_{datetime.now():%Y%m%d}.csv", "text/csv")
             except Exception:
                 st.info("No se pudieron exportar los datos de índices")
         
@@ -1655,15 +1667,8 @@ if st.session_state.analisis_completado:
                         'Precipitacion_mm': datos_climaticos['precipitacion']['diaria'],
                         'Temperatura_C': datos_climaticos['temperatura']['diaria']
                     })
-                    
                     csv_clima = df_clima.to_csv(index=False)
-                    st.download_button(
-                        label="📊 Descargar CSV (Datos climáticos)",
-                        data=csv_clima,
-                        file_name=f"clima_palma_{datetime.now().strftime('%Y%m%d')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
+                    st.download_button("📊 CSV", csv_clima, f"clima_{datetime.now():%Y%m%d}.csv", "text/csv")
                 except Exception:
                     st.info("No se pudieron exportar los datos climáticos")
         
@@ -1790,24 +1795,11 @@ if st.session_state.analisis_completado:
                         )
                         geojson_palmas = gdf_palmas.to_json()
                         csv_palmas = df_palmas.to_csv(index=False)
-                        
                         col_p1, col_p2 = st.columns(2)
                         with col_p1:
-                            st.download_button(
-                                label="🗺️ Descargar GeoJSON (Palmas)",
-                                data=geojson_palmas,
-                                file_name=f"palmas_detectadas_{datetime.now().strftime('%Y%m%d')}.geojson",
-                                mime="application/geo+json",
-                                use_container_width=True
-                            )
+                            st.download_button("🗺️ GeoJSON", geojson_palmas, f"palmas_{datetime.now():%Y%m%d}.geojson", "application/geo+json")
                         with col_p2:
-                            st.download_button(
-                                label="📊 Descargar CSV (Coordenadas)",
-                                data=csv_palmas,
-                                file_name=f"coordenadas_palmas_{datetime.now().strftime('%Y%m%d')}.csv",
-                                mime="text/csv",
-                                use_container_width=True
-                            )
+                            st.download_button("📊 CSV", csv_palmas, f"coordenadas_{datetime.now():%Y%m%d}.csv", "text/csv")
                     except Exception:
                         st.info("No se pudieron exportar los datos de palmas")
             else:
@@ -1816,7 +1808,6 @@ if st.session_state.analisis_completado:
                     ejecutar_deteccion_palmas()
                     st.rerun()
         
-        # ========== PESTAÑA FERTILIDAD - TOTALMENTE RENOVADA ==========
         with tab6:
             st.subheader("🧪 FERTILIDAD DEL SUELO Y RECOMENDACIONES NPK")
             st.caption("Basado en NDVI real y modelos de fertilidad típicos para palma aceitera.")
@@ -1825,7 +1816,6 @@ if st.session_state.analisis_completado:
             if datos_fertilidad:
                 df_fertilidad = pd.DataFrame(datos_fertilidad)
                 
-                # ---- Métricas generales ----
                 col1, col2, col3, col4, col5 = st.columns(5)
                 with col1:
                     N_prom = df_fertilidad['N_kg_ha'].mean()
@@ -1847,9 +1837,8 @@ if st.session_state.analisis_completado:
                 st.markdown("---")
                 st.markdown("### 🗺️ MAPAS DE NUTRIENTES POR BLOQUE")
                 
-                # ---- Mapa de Nitrógeno ----
+                # Nitrógeno
                 st.markdown("#### 🌱 Nitrógeno disponible (kg/ha)")
-                # Crear GeoDataFrame temporal con geometría y valor de N
                 gdf_n = gpd.GeoDataFrame(
                     df_fertilidad[['id_bloque', 'N_kg_ha']],
                     geometry=[d['geometria'] for d in datos_fertilidad],
@@ -1862,7 +1851,6 @@ if st.session_state.analisis_completado:
                 st.pyplot(fig_n)
                 plt.close(fig_n)
                 
-                # Recomendación N
                 if N_prom < 80:
                     st.error(f"**Deficiencia general de N**. Aplicar 120-150 kg/ha de N (Urea: {int((120-N_prom)/0.46)} kg/ha).")
                 elif N_prom < 120:
@@ -1870,7 +1858,7 @@ if st.session_state.analisis_completado:
                 else:
                     st.success("**Nivel adecuado de N**. Mantener dosis de mantenimiento.")
                 
-                # ---- Mapa de Fósforo ----
+                # Fósforo
                 st.markdown("#### 🌿 Fósforo disponible (kg/ha P₂O₅)")
                 gdf_p = gpd.GeoDataFrame(
                     df_fertilidad[['id_bloque', 'P_kg_ha']],
@@ -1891,7 +1879,7 @@ if st.session_state.analisis_completado:
                 else:
                     st.success("**Nivel adecuado de P**. Mantener dosis.")
                 
-                # ---- Mapa de Potasio ----
+                # Potasio
                 st.markdown("#### 🍌 Potasio disponible (kg/ha K₂O)")
                 gdf_k = gpd.GeoDataFrame(
                     df_fertilidad[['id_bloque', 'K_kg_ha']],
@@ -1914,23 +1902,14 @@ if st.session_state.analisis_completado:
                 
                 st.markdown("---")
                 st.markdown("### 📋 RECOMENDACIONES DETALLADAS POR BLOQUE")
-                
-                # Tabla resumida con las 3 recomendaciones principales
                 df_recom = df_fertilidad[['id_bloque', 'N_kg_ha', 'P_kg_ha', 'K_kg_ha', 'pH', 
                                           'recomendacion_N', 'recomendacion_P', 'recomendacion_K']].copy()
                 df_recom.columns = ['Bloque', 'N', 'P₂O₅', 'K₂O', 'pH', 'Recomendación N', 'Recomendación P', 'Recomendación K']
                 st.dataframe(df_recom.head(15), use_container_width=True)
                 
-                # Exportar CSV
                 st.markdown("### 📥 EXPORTAR DATOS DE FERTILIDAD")
                 csv_data = df_fertilidad.drop(columns=['geometria']).to_csv(index=False)
-                st.download_button(
-                    label="📊 Descargar CSV completo",
-                    data=csv_data,
-                    file_name=f"fertilidad_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                st.download_button("📊 CSV completo", csv_data, f"fertilidad_{datetime.now():%Y%m%d}.csv", "text/csv")
             else:
                 st.info("Ejecute el análisis completo para ver los datos de fertilidad.")
         
@@ -1998,12 +1977,12 @@ if st.session_state.analisis_completado:
             else:
                 st.info("Ejecute el análisis completo para ver el análisis de textura del suelo.")
 
-# Pie de página
+# ===== PIE DE PÁGINA =====
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
-    <p>Datos satelitales: NASA MODIS (ORNL DAAC) / CHIRPS / MODIS LST - Acceso público</p>
+    <p>Datos satelitales: NASA MODIS (ORNL DAAC) / CHIRPS / MODIS LST - Acceso público con credenciales Earthdata</p>
     <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
 </div>
 """, unsafe_allow_html=True)
