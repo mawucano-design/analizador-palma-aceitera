@@ -22,7 +22,8 @@ pykml==0.2.0
 lxml==4.9.3
 streamlit_folium
 folium
-branca plotly 
+branca 
+plotly 
 xarray 
 netCDF4 
 rasterio 
