@@ -2,6 +2,7 @@
 # curvas de nivel SRTM (reales o simuladas) y visualizaciones mejoradas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # Sin dependencia de Earthdata Login.
+# CORREGIDO: import mapping y función crear_mapa_bloques_simple.
 
 import streamlit as st
 import geopandas as gpd
@@ -16,7 +17,7 @@ import matplotlib
 matplotlib.use('Agg')
 from matplotlib.patches import Polygon as MplPolygon
 import io
-from shapely.geometry import Polygon, Point, LineString
+from shapely.geometry import Polygon, Point, LineString, mapping   # <--- mapping añadido
 import math
 import warnings
 from io import BytesIO
@@ -207,7 +208,6 @@ def procesar_kml_robusto(file_content):
         return None
 
 def cargar_archivo_plantacion(uploaded_file):
-    # [Misma función que antes, sin cambios]
     try:
         file_content = uploaded_file.read()
         if uploaded_file.name.endswith('.zip'):
@@ -278,7 +278,6 @@ def cargar_archivo_plantacion(uploaded_file):
 
 # ===== FUNCIONES DE DATOS CLIMÁTICOS =====
 def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
-    """Obtiene NDVI real de MOD13Q1 (ORNL DAAC público)"""
     try:
         centroide = gdf.geometry.unary_union.centroid
         lat = centroide.y
@@ -327,7 +326,6 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         return gdf_out
 
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
-    """Precipitación y temperatura diaria desde Open-Meteo ERA5"""
     try:
         centroide = gdf.geometry.unary_union.centroid
         lat = centroide.y
@@ -372,17 +370,10 @@ def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
         return generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin)
 
 def obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin):
-    """
-    Obtiene radiación solar (ALLSKY_SFC_SW_DWN) y velocidad del viento (WS2M)
-    desde NASA POWER (público, sin autenticación).
-    Retorna dict con promedios y series diarias.
-    """
     try:
         centroide = gdf.geometry.unary_union.centroid
         lat = centroide.y
         lon = centroide.x
-        
-        # NASA POWER API
         start = fecha_inicio.strftime("%Y%m%d")
         end = fecha_fin.strftime("%Y%m%d")
         url = "https://power.larc.nasa.gov/api/temporal/daily/point"
@@ -398,23 +389,14 @@ def obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin):
         response = requests.get(url, params=params, timeout=30)
         response.raise_for_status()
         data = response.json()
-        
         props = data['properties']['parameter']
         radiacion = props.get('ALLSKY_SFC_SW_DWN', {})
         viento = props.get('WS2M', {})
-        
-        # Convertir a listas ordenadas por fecha
         fechas = sorted(radiacion.keys())
         rad_diaria = [radiacion[f] for f in fechas]
         wind_diaria = [viento[f] for f in fechas]
-        
-        # Filtrar valores -999 (nodata)
         rad_diaria = [r if r != -999 else np.nan for r in rad_diaria]
         wind_diaria = [w if w != -999 else np.nan for w in wind_diaria]
-        
-        rad_clean = [r for r in rad_diaria if not np.isnan(r)]
-        wind_clean = [w for w in wind_diaria if not np.isnan(w)]
-        
         return {
             'radiacion': {
                 'promedio': round(np.nanmean(rad_diaria), 1),
@@ -431,7 +413,6 @@ def obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin):
         }
     except Exception as e:
         st.warning(f"Error en NASA POWER: {str(e)[:100]}. Usando datos simulados.")
-        # Simulación básica
         dias = (fecha_fin - fecha_inicio).days
         if dias <= 0:
             dias = 30
@@ -453,7 +434,6 @@ def obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin):
         }
 
 def generar_datos_climaticos_simulados(gdf, fecha_inicio, fecha_fin):
-    """Genera datos climáticos simulados completos (fallback)"""
     try:
         dias = (fecha_fin - fecha_inicio).days
         if dias <= 0:
@@ -590,16 +570,10 @@ def ejecutar_deteccion_palmas():
 
 # ===== ANÁLISIS DE TEXTURA DE SUELO MEJORADO =====
 def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
-    """
-    Genera un análisis de textura de suelo por bloque con variabilidad espacial simulada.
-    Retorna lista de dicts con tipo de suelo, porcentajes, y geometría.
-    """
     resultados = []
     try:
         centroide_global = gdf_dividido.geometry.unary_union.centroid
         lat_base = centroide_global.y
-        
-        # Determinar tipo base según latitud
         if lat_base > 10:
             base = 'Franco Arcilloso'
             alt_base = 'Arcilloso'
@@ -613,7 +587,6 @@ def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
             base = 'Franco Arcilloso'
             alt_base = 'Arcilloso Pesado'
         
-        # Diccionario de características
         caracteristicas = {
             'Franco Arcilloso': {
                 'arena': 35, 'limo': 25, 'arcilla': 30,
@@ -660,31 +633,21 @@ def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
         }
         
         for idx, row in gdf_dividido.iterrows():
-            # Variabilidad espacial: usar coordenada del bloque
             centroid = row.geometry.centroid
-            # Factor aleatorio pero determinístico basado en posición
             np.random.seed(int(centroid.x * 1000 + centroid.y * 1000))
             r = np.random.random()
-            
-            # Asignar tipo: 70% base, 30% alternativo
             if r < 0.7:
                 tipo = base
             else:
                 tipo = alt_base
-            
-            # Obtener características
             carac = caracteristicas.get(tipo, caracteristicas['Franco Arcilloso'])
-            
-            # Pequeña variación en porcentajes
             arena = carac['arena'] + np.random.randint(-5, 6)
             limo = carac['limo'] + np.random.randint(-5, 6)
             arcilla = carac['arcilla'] + np.random.randint(-5, 6)
-            # Ajustar para que sumen 100
             total = arena + limo + arcilla
             arena = int(arena / total * 100)
             limo = int(limo / total * 100)
             arcilla = 100 - arena - limo
-            
             resultados.append({
                 'id_bloque': row.get('id_bloque', idx+1),
                 'tipo_suelo': tipo,
@@ -705,7 +668,6 @@ def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
 
 # ===== FERTILIDAD NPK =====
 def generar_mapa_fertilidad(gdf):
-    """Basado en NDVI real o simulado"""
     try:
         fertilidad_data = []
         for idx, row in gdf.iterrows():
@@ -728,7 +690,6 @@ def generar_mapa_fertilidad(gdf):
                 K = np.random.uniform(80, 120)
                 pH = np.random.uniform(4.8, 5.2)
                 MO = np.random.uniform(1.5, 2.5)
-            
             if N < 100:
                 rec_N = f"Aplicar {max(0, 120-N):.0f} kg/ha N (Urea: {max(0, (120-N)/0.46):.0f} kg/ha)"
             else:
@@ -741,7 +702,6 @@ def generar_mapa_fertilidad(gdf):
                 rec_K = f"Aplicar {max(0, 200-K):.0f} kg/ha K2O (KCl: {max(0, (200-K)/0.6):.0f} kg/ha)"
             else:
                 rec_K = "Mantener dosis actual"
-            
             fertilidad_data.append({
                 'id_bloque': row.get('id_bloque', idx+1),
                 'N_kg_ha': round(N, 1),
@@ -759,6 +719,52 @@ def generar_mapa_fertilidad(gdf):
         return []
 
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
+def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn', 
+                              vmin=None, vmax=None, etiqueta='Valor'):
+    """
+    Crea un mapa simple donde cada bloque se colorea según el valor de 'columna'.
+    Incluye barra de color y histograma de distribución.
+    """
+    if gdf is None or len(gdf) == 0 or columna not in gdf.columns:
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.text(0.5, 0.5, f"No hay datos para {titulo}", 
+                ha='center', va='center', fontsize=12)
+        ax.axis('off')
+        return fig
+
+    fig = plt.figure(figsize=(14, 6))
+    
+    ax1 = plt.subplot(1, 2, 1)
+    gdf.plot(column=columna, ax=ax1, cmap=cmap, 
+             edgecolor='black', linewidth=0.5, 
+             legend=True, legend_kwds={
+                 'label': etiqueta,
+                 'orientation': 'horizontal',
+                 'shrink': 0.8,
+                 'pad': 0.05
+             },
+             vmin=vmin, vmax=vmax,
+             alpha=0.9)
+    
+    ax1.set_title(titulo, fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Longitud')
+    ax1.set_ylabel('Latitud')
+    ax1.grid(True, alpha=0.3)
+    
+    ax2 = plt.subplot(1, 2, 2)
+    valores = gdf[columna].dropna()
+    ax2.hist(valores, bins=15, color='steelblue', edgecolor='black', alpha=0.7)
+    ax2.axvline(valores.mean(), color='red', linestyle='--', 
+                linewidth=2, label=f'Promedio: {valores.mean():.3f}')
+    ax2.set_xlabel(etiqueta)
+    ax2.set_ylabel('Frecuencia (bloques)')
+    ax2.set_title(f'Distribución de {titulo}', fontsize=12, fontweight='bold')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
+
 def crear_mapa_interactivo_base(gdf, capas_adicionales=None, columna_color=None, colormap=None, tooltip=None):
     """
     Crea un mapa folium con capa base Esri Satélite y agrega capas.
@@ -768,7 +774,6 @@ def crear_mapa_interactivo_base(gdf, capas_adicionales=None, columna_color=None,
     centroide = gdf.geometry.unary_union.centroid
     m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, 
                    tiles=None, control_scale=True)
-    # Capa base Esri Satélite
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         attr='Esri, Maxar, Earthstar Geographics',
@@ -776,7 +781,6 @@ def crear_mapa_interactivo_base(gdf, capas_adicionales=None, columna_color=None,
         overlay=False,
         control=True
     ).add_to(m)
-    # Capa base OpenStreetMap como alternativa
     folium.TileLayer(
         tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
         attr='OpenStreetMap',
@@ -785,14 +789,9 @@ def crear_mapa_interactivo_base(gdf, capas_adicionales=None, columna_color=None,
         control=True
     ).add_to(m)
     
-    # Capa principal de polígonos
     if columna_color and colormap:
-        gdf.plot(ax=None, column=columna_color, cmap=colormap, legend=False)
-        # No podemos usar matplotlib, usamos estilo folium
-        # Crear una capa GeoJson con estilo dinámico
         def style_function(feature):
             valor = feature['properties'].get(columna_color, 0)
-            # Convertir valor a color usando branca
             color = colormap(valor) if hasattr(colormap, '__call__') else '#3388ff'
             return {
                 'fillColor': color,
@@ -814,7 +813,6 @@ def crear_mapa_interactivo_base(gdf, capas_adicionales=None, columna_color=None,
             tooltip=tooltip
         ).add_to(m)
     
-    # Capas adicionales
     if capas_adicionales:
         for capa in capas_adicionales:
             capa.add_to(m)
@@ -826,13 +824,9 @@ def crear_mapa_interactivo_base(gdf, capas_adicionales=None, columna_color=None,
     return m
 
 def crear_graficos_climaticos_completos(datos_climaticos):
-    """
-    Crea gráficos de temperatura, precipitación, radiación y viento.
-    """
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     dias = list(range(1, len(datos_climaticos['precipitacion']['diaria']) + 1))
     
-    # Radiación
     if 'radiacion' in datos_climaticos and datos_climaticos['radiacion']['diaria']:
         ax1 = axes[0, 0]
         rad = datos_climaticos['radiacion']['diaria']
@@ -849,7 +843,6 @@ def crear_graficos_climaticos_completos(datos_climaticos):
         axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
         axes[0, 0].set_title('Radiación', fontweight='bold')
     
-    # Precipitación
     ax2 = axes[0, 1]
     precip = datos_climaticos['precipitacion']['diaria']
     ax2.bar(dias, precip, color='blue', alpha=0.7)
@@ -858,7 +851,6 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     ax2.set_title(f"Precipitación (Total: {datos_climaticos['precipitacion']['total']} mm)", fontweight='bold')
     ax2.grid(True, alpha=0.3, axis='y')
     
-    # Viento
     if 'viento' in datos_climaticos and datos_climaticos['viento']['diaria']:
         ax3 = axes[1, 0]
         wind = datos_climaticos['viento']['diaria']
@@ -875,7 +867,6 @@ def crear_graficos_climaticos_completos(datos_climaticos):
         axes[1, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
         axes[1, 0].set_title('Viento', fontweight='bold')
     
-    # Temperatura
     ax4 = axes[1, 1]
     temp = datos_climaticos['temperatura']['diaria']
     ax4.plot(dias, temp, '^-', color='red', linewidth=2, markersize=4)
@@ -894,13 +885,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     return fig
 
 def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
-    """
-    Crea un gráfico de triángulo textural usando Plotly.
-    """
-    # Coordenadas del triángulo (simplificado)
     fig = go.Figure()
-    
-    # Añadir puntos para la textura actual
     fig.add_trace(go.Scatterternary(
         a=[arcilla],
         b=[limo],
@@ -911,8 +896,6 @@ def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
         textposition='top center',
         name='Suelo actual'
     ))
-    
-    # Regiones aproximadas (podríamos dibujar polígonos, pero es complejo)
     fig.update_layout(
         title='Triángulo Textural',
         ternary=dict(
@@ -957,7 +940,7 @@ def obtener_dem_opentopography(gdf, api_key=None):
         response.raise_for_status()
         dem_bytes = BytesIO(response.content)
         with rasterio.open(dem_bytes) as src:
-            geom = [mapping(gdf.unary_union)]
+            geom = [mapping(gdf.unary_union)]   # <--- mapping ya importado
             out_image, out_transform = mask(src, geom, crop=True, nodata=-32768)
             out_meta = src.meta.copy()
             out_meta.update({
@@ -1030,37 +1013,26 @@ def generar_curvas_nivel_reales(dem_array, transform, intervalo=10):
     return contours
 
 def mapa_curvas_coloreadas(gdf_original, curvas_con_elevacion):
-    """
-    Crea mapa folium con:
-    - Capa base Esri Satélite
-    - Polígono de plantación
-    - Curvas de nivel coloreadas por elevación (colormap)
-    - Leyenda de elevación
-    """
     centroide = gdf_original.geometry.unary_union.centroid
     m = folium.Map(location=[centroide.y, centroide.x], zoom_start=15, 
                    tiles=None, control_scale=True)
-    
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         attr='Esri', name='Satélite Esri',
         overlay=False, control=True
     ).add_to(m)
-    
     folium.TileLayer(
         tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
         attr='OpenStreetMap', name='OpenStreetMap',
         overlay=False, control=True
     ).add_to(m)
     
-    # Polígono de plantación
     folium.GeoJson(
         gdf_original.to_json(),
         name='Plantación',
         style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.1, 'weight': 2}
     ).add_to(m)
     
-    # Colormap para elevación
     elevaciones = [e for _, e in curvas_con_elevacion]
     if elevaciones:
         vmin = min(elevaciones)
@@ -1071,8 +1043,6 @@ def mapa_curvas_coloreadas(gdf_original, curvas_con_elevacion):
             caption='Elevación (m.s.n.m)'
         )
         colormap.add_to(m)
-        
-        # Agregar curvas
         for line, elev in curvas_con_elevacion:
             folium.GeoJson(
                 gpd.GeoSeries(line).to_json(),
@@ -1102,39 +1072,31 @@ def ejecutar_analisis_completo():
         
         gdf = st.session_state.gdf_original.copy()
         
-        # 1. Dividir
         gdf_dividido = dividir_plantacion_en_bloques(gdf, n_divisiones)
         
-        # 2. Áreas
         areas_ha = []
         for idx, row in gdf_dividido.iterrows():
             area_gdf = gpd.GeoDataFrame({'geometry': [row.geometry]}, crs=gdf_dividido.crs)
             areas_ha.append(float(calcular_superficie(area_gdf)))
         gdf_dividido['area_ha'] = areas_ha
         
-        # 3. NDVI MODIS
         st.info("🛰️ Consultando MODIS NDVI real (ORNL DAAC)...")
         gdf_con_ndvi = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
         gdf_dividido['ndvi_modis'] = gdf_con_ndvi['ndvi_modis']
         gdf_dividido['ndwi_modis'] = gdf_con_ndvi['ndwi_modis']
         gdf_dividido['ndre_modis'] = gdf_con_ndvi['ndre_modis']
         
-        # 4. Clima Open-Meteo (temperatura, precipitación)
         st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
         datos_clima = obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin)
         
-        # 5. Radiación y viento NASA POWER
         st.info("☀️ Obteniendo radiación y viento de NASA POWER...")
         datos_power = obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin)
         
-        # Combinar datos climáticos
         st.session_state.datos_climaticos = {**datos_clima, **datos_power}
         
-        # 6. Edad
         edades = analizar_edad_plantacion(gdf_dividido)
         gdf_dividido['edad_anios'] = edades
         
-        # 7. Salud
         def clasificar_salud(ndvi):
             if ndvi < 0.4: return 'Crítica'
             if ndvi < 0.6: return 'Baja'
@@ -1142,17 +1104,13 @@ def ejecutar_analisis_completo():
             return 'Buena'
         gdf_dividido['salud'] = gdf_dividido['ndvi_modis'].apply(clasificar_salud)
         
-        # 8. Textura de suelo por bloque (mejorado)
         if st.session_state.get('analisis_suelo', True):
             st.session_state.textura_por_bloque = analizar_textura_suelo_venezuela_por_bloque(gdf_dividido)
-            # Resumen general (primer bloque o promedio)
             if st.session_state.textura_por_bloque:
-                st.session_state.textura_suelo = st.session_state.textura_por_bloque[0]  # ejemplo
+                st.session_state.textura_suelo = st.session_state.textura_por_bloque[0]
         
-        # 9. Fertilidad
         st.session_state.datos_fertilidad = generar_mapa_fertilidad(gdf_dividido)
         
-        # 10. Datos MODIS resumen
         st.session_state.datos_modis = {
             'ndvi': gdf_dividido['ndvi_modis'].mean(),
             'ndre': gdf_dividido['ndre_modis'].mean(),
@@ -1173,7 +1131,7 @@ def ejecutar_analisis_completo():
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
-# Estilos CSS (igual que antes)
+# Estilos CSS
 st.markdown("""
 <style>
 .stApp { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; }
@@ -1352,16 +1310,17 @@ if st.session_state.analisis_completado:
             st.subheader("🗺️ MAPAS INTERACTIVOS")
             st.markdown("### 🌍 Mapa Interactivo con Palmas Detectadas")
             try:
+                colormap_ndvi = LinearColormap(colors=['red','yellow','green'], vmin=0.3, vmax=0.9)
                 mapa_interactivo = crear_mapa_interactivo_base(
                     gdf_completo,
                     columna_color='ndvi_modis',
-                    colormap=LinearColormap(colors=['red','yellow','green'], vmin=0.3, vmax=0.9),
+                    colormap=colormap_ndvi,
                     tooltip=folium.GeoJsonTooltip(fields=['id_bloque','ndvi_modis','salud'],
                                                   aliases=['Bloque','NDVI','Salud'])
                 )
                 if st.session_state.palmas_detectadas:
                     palmas_group = folium.FeatureGroup(name="Palmas detectadas")
-                    for i, palma in enumerate(st.session_state.palmas_detectadas):
+                    for i, palma in enumerate(st.session_state.palmas_detectadas[:2000]):
                         if 'centroide' in palma:
                             lon, lat = palma['centroide']
                             folium.CircleMarker([lat, lon], radius=2, color='red', fill=True,
@@ -1431,7 +1390,7 @@ if st.session_state.analisis_completado:
                     st.error(f"Error al mostrar gráficos climáticos: {str(e)[:100]}")
                 st.markdown("### 📋 INFORMACIÓN ADICIONAL")
                 st.write(f"- **Fuente precipitación/temperatura:** {datos_climaticos.get('fuente', 'N/A')}")
-                st.write(f"- **Fuente radiación/viento:** {datos_climaticos.get('fuente_power', 'NASA POWER')}")
+                st.write(f"- **Fuente radiación/viento:** NASA POWER")
                 st.write(f"- **Período:** {datos_climaticos['periodo']}")
             else:
                 st.info("No hay datos climáticos disponibles")
@@ -1504,10 +1463,28 @@ if st.session_state.analisis_completado:
                 with col5: MO_prom = df_fertilidad['MO_porcentaje'].mean(); st.metric("Materia Orgánica", f"{MO_prom:.1f}%")
                 st.markdown("---")
                 st.markdown("### 🗺️ MAPAS DE NUTRIENTES POR BLOQUE")
-                # Similar a antes, usando crear_mapa_bloques_simple
-                # (omitido por brevedad, pero se puede incluir igual que en código original)
+                # Nitrógeno
+                st.markdown("#### 🌱 Nitrógeno disponible (kg/ha)")
+                gdf_n = gpd.GeoDataFrame(df_fertilidad[['id_bloque', 'N_kg_ha']], geometry=[d['geometria'] for d in datos_fertilidad], crs='EPSG:4326')
+                fig_n = crear_mapa_bloques_simple(gdf_n, 'N_kg_ha', 'Nitrógeno por Bloque', cmap='RdPu', etiqueta='N (kg/ha)')
+                st.pyplot(fig_n); plt.close(fig_n)
+                # Fósforo
+                st.markdown("#### 🌿 Fósforo disponible (kg/ha P₂O₅)")
+                gdf_p = gpd.GeoDataFrame(df_fertilidad[['id_bloque', 'P_kg_ha']], geometry=[d['geometria'] for d in datos_fertilidad], crs='EPSG:4326')
+                fig_p = crear_mapa_bloques_simple(gdf_p, 'P_kg_ha', 'Fósforo por Bloque', cmap='YlOrBr', etiqueta='P₂O₅ (kg/ha)')
+                st.pyplot(fig_p); plt.close(fig_p)
+                # Potasio
+                st.markdown("#### 🍌 Potasio disponible (kg/ha K₂O)")
+                gdf_k = gpd.GeoDataFrame(df_fertilidad[['id_bloque', 'K_kg_ha']], geometry=[d['geometria'] for d in datos_fertilidad], crs='EPSG:4326')
+                fig_k = crear_mapa_bloques_simple(gdf_k, 'K_kg_ha', 'Potasio por Bloque', cmap='YlGn', etiqueta='K₂O (kg/ha)')
+                st.pyplot(fig_k); plt.close(fig_k)
+                # Recomendaciones
                 st.markdown("### 📋 RECOMENDACIONES DETALLADAS")
-                st.dataframe(df_fertilidad[['id_bloque','N_kg_ha','P_kg_ha','K_kg_ha','pH','recomendacion_N','recomendacion_P','recomendacion_K']].head(15))
+                df_recom = df_fertilidad[['id_bloque', 'N_kg_ha', 'P_kg_ha', 'K_kg_ha', 'pH', 
+                                          'recomendacion_N', 'recomendacion_P', 'recomendacion_K']].copy()
+                df_recom.columns = ['Bloque', 'N', 'P₂O₅', 'K₂O', 'pH', 'Recomendación N', 'Recomendación P', 'Recomendación K']
+                st.dataframe(df_recom.head(15), use_container_width=True)
+                # Exportar
                 csv_data = df_fertilidad.drop(columns=['geometria']).to_csv(index=False)
                 st.download_button("📊 CSV completo", csv_data, f"fertilidad_{datetime.now():%Y%m%d}.csv", "text/csv")
             else:
@@ -1518,27 +1495,22 @@ if st.session_state.analisis_completado:
             textura_por_bloque = st.session_state.get('textura_por_bloque', [])
             if textura_por_bloque:
                 df_textura = pd.DataFrame(textura_por_bloque)
-                # Mostrar resumen
                 st.success(f"**Análisis de textura por bloque completado**")
                 # Mapa interactivo de textura
                 st.markdown("### 🗺️ Mapa de Tipos de Suelo por Bloque")
                 try:
                     gdf_textura = gpd.GeoDataFrame(df_textura, geometry='geometria', crs='EPSG:4326')
-                    # Crear colormap categórico
                     tipos_unicos = gdf_textura['tipo_suelo'].unique()
                     colores = ['#8B4513', '#D2691E', '#F4A460', '#DEB887', '#BC8F8F', '#CD853F']
                     color_dict = {tipo: colores[i % len(colores)] for i, tipo in enumerate(tipos_unicos)}
-                    
                     m_textura = folium.Map(location=[gdf_completo.geometry.centroid.y.mean(), gdf_completo.geometry.centroid.x.mean()], 
                                            zoom_start=15, tiles=None)
                     folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
                                      attr='Esri', name='Satélite').add_to(m_textura)
-                    
                     def style_func(feature):
                         tipo = feature['properties']['tipo_suelo']
                         return {'fillColor': color_dict.get(tipo, '#888'), 
                                 'color': 'black', 'weight': 1, 'fillOpacity': 0.6}
-                    
                     folium.GeoJson(
                         gdf_textura.to_json(),
                         name='Textura del suelo',
@@ -1555,7 +1527,7 @@ if st.session_state.analisis_completado:
                 # Gráfico de barras apiladas de composición
                 st.markdown("### 📊 Composición Textural por Bloque")
                 fig, ax = plt.subplots(figsize=(12,6))
-                df_plot = df_textura.head(20)  # primeros 20
+                df_plot = df_textura.head(20)
                 ax.bar(df_plot['id_bloque'].astype(str), df_plot['arena'], label='Arena', color='#F4A460')
                 ax.bar(df_plot['id_bloque'].astype(str), df_plot['limo'], bottom=df_plot['arena'], label='Limo', color='#DEB887')
                 ax.bar(df_plot['id_bloque'].astype(str), df_plot['arcilla'], 
@@ -1569,7 +1541,7 @@ if st.session_state.analisis_completado:
                 st.pyplot(fig)
                 plt.close(fig)
                 
-                # Gráfico de triángulo textural para un bloque representativo
+                # Triángulo textural
                 st.markdown("### 🔺 Triángulo Textural (primer bloque)")
                 if len(df_textura) > 0:
                     row = df_textura.iloc[0]
@@ -1613,11 +1585,9 @@ if st.session_state.analisis_completado:
                         
                         if curvas:
                             st.session_state.curvas_nivel = curvas
-                            # Mapa con curvas coloreadas
                             m_curvas = mapa_curvas_coloreadas(gdf_original, curvas)
                             folium_static(m_curvas, width=1000, height=600)
                             
-                            # Exportar
                             gdf_curvas = gpd.GeoDataFrame(
                                 {'elevacion': [e for _, e in curvas], 'geometry': [l for l, _ in curvas]},
                                 crs='EPSG:4326'
