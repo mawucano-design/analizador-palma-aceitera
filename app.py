@@ -4,6 +4,7 @@
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
 # NUEVO: Mapas de calor continuos para índices, extendidos más allá del polígono.
+# CORREGIDO: Error de set_page_config por warnings anticipados.
 
 import streamlit as st
 import geopandas as gpd
@@ -32,10 +33,9 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import cv2
 from PIL import Image
-from scipy.interpolate import Rbf  # Para interpolación radial
 from scipy.spatial import KDTree
 
-# ===== LIBRERÍAS OPCIONALES =====
+# ===== LIBRERÍAS OPCIONALES (solo importar, sin warnings) =====
 try:
     import xarray as xr
     import netCDF4
@@ -50,14 +50,12 @@ try:
     CURVAS_OK = True
 except ImportError:
     CURVAS_OK = False
-    st.warning("Para curvas de nivel reales instala: rasterio y scikit-image")
 
 try:
     from ultralytics import YOLO
     YOLO_AVAILABLE = True
 except ImportError:
     YOLO_AVAILABLE = False
-    st.warning("Para usar la detección YOLO, instala 'ultralytics': pip install ultralytics")
 
 # ===== CONFIGURACIÓN =====
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -1411,7 +1409,16 @@ def ejecutar_analisis_completo():
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
+# Inicializar estado de sesión
 init_session_state()
+
+# Mostrar advertencias de librerías opcionales (ahora después de set_page_config)
+if not CURVAS_OK:
+    st.warning("Para curvas de nivel reales instala: rasterio y scikit-image")
+if not YOLO_AVAILABLE:
+    st.warning("Para usar la detección YOLO, instala 'ultralytics': pip install ultralytics")
+if not clima_libs_ok:
+    st.warning("Algunas funciones climáticas pueden no estar disponibles. Instala xarray y netCDF4 para mejor compatibilidad.")
 
 # ===== OCULTAR MENÚ GITHUB Y MEJORAR ESTILOS =====
 st.markdown("""
@@ -1481,6 +1488,7 @@ div[data-testid="metric-container"] {
 </style>
 """, unsafe_allow_html=True)
 
+# Banner
 st.markdown("""
 <div class="hero-banner">
     <h1 class="hero-title">🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL</h1>
