@@ -1,9 +1,8 @@
 # app.py - Versión COMPLETA con MODIS REAL (ORNL DAAC), clima Open-Meteo + NASA POWER,
-# curvas de nivel SRTM (reales o simuladas) y visualizaciones mejoradas.
+# curvas de nivel SRTM (reales o simuladas), visualizaciones mejoradas,
+# corrección en índices (NDWI real, NDRE no disponible) y panel de estadísticas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
-# CORREGIDO: error de ufunc 'isfinite' en gráficos climáticos.
-# MEJORADO: mapas de índices con gradientes continuos y gráficos interactivos (boxplot + pastel/barras).
-# OCULTO: menú de GitHub y footer de Streamlit.
+# Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
 
 import streamlit as st
 import geopandas as gpd
@@ -30,6 +29,8 @@ from branca.colormap import LinearColormap
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
+import cv2
+from PIL import Image
 
 # ===== LIBRERÍAS OPCIONALES =====
 try:
@@ -47,6 +48,13 @@ try:
 except ImportError:
     CURVAS_OK = False
     st.warning("Para curvas de nivel reales instala: rasterio y scikit-image")
+
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+    st.warning("Para usar la detección YOLO, instala 'ultralytics': pip install ultralytics")
 
 # ===== CONFIGURACIÓN =====
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -264,8 +272,9 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE DATOS CLIMÁTICOS =====
+# ===== FUNCIONES DE DATOS SATELITALES MEJORADAS =====
 def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
+    """Obtiene NDVI real del producto MOD13Q1 a través de ORNL DAAC."""
     try:
         centroide = gdf.geometry.unary_union.centroid
         lat = centroide.y
@@ -283,7 +292,7 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
         if not resp.get("dates"):
             raise Exception("No hay fechas disponibles para este punto")
         ndvi_vals = []
-        for date_obj in resp["dates"][:5]:
+        for date_obj in resp["dates"][:5]:  # tomamos las últimas 5 fechas
             modis_date = date_obj["modis_date"]
             cv_url = f"{url}/{product}/values"
             params_cv = {
@@ -297,21 +306,83 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
             }
             data = requests.get(cv_url, params=params_cv, timeout=30).json()
             if data.get("values"):
+                # El valor NDVI viene escalado por 0.0001
                 ndvi = np.mean([v["value"] for v in data["values"]]) * 0.0001
                 ndvi_vals.append(ndvi)
         ndvi_promedio = np.mean(ndvi_vals) if ndvi_vals else 0.65
         gdf_out = gdf.copy()
         gdf_out["ndvi_modis"] = round(ndvi_promedio, 3)
-        gdf_out["ndwi_modis"] = round(ndvi_promedio * 0.55, 3)
-        gdf_out["ndre_modis"] = round(ndvi_promedio * 0.85, 3)
-        return gdf_out
+        return gdf_out, ndvi_promedio
     except Exception as e:
         st.warning(f"Error en ORNL NDVI: {str(e)[:100]}. Usando valores simulados.")
         gdf_out = gdf.copy()
         gdf_out["ndvi_modis"] = 0.65
+        return gdf_out, 0.65
+
+def obtener_ndwi_ornl(gdf, fecha_inicio, fecha_fin):
+    """
+    Calcula NDWI real usando bandas NIR (banda 2) y SWIR (banda 5) del producto MOD09GA.
+    NDWI = (NIR - SWIR) / (NIR + SWIR)
+    """
+    try:
+        centroide = gdf.geometry.unary_union.centroid
+        lat = centroide.y
+        lon = centroide.x
+        product = "MOD09GA"
+        band_nir = "sur_reflect_b02"  # NIR, 841-876 nm
+        band_swir = "sur_reflect_b05" # SWIR, 1230-1250 nm
+        start = fecha_inicio.strftime("%Y-%m-%d")
+        end = fecha_fin.strftime("%Y-%m-%d")
+        km_ab = 1
+        km_lr = 1
+        url = "https://modis.ornl.gov/rst/api/v1/"
+        
+        # Obtener fechas disponibles
+        dates_url = f"{url}/{product}/dates"
+        params = {"latitude": lat, "longitude": lon, "startDate": start, "endDate": end}
+        resp = requests.get(dates_url, params=params, timeout=30).json()
+        if not resp.get("dates"):
+            raise Exception("No hay fechas disponibles para NDWI")
+        
+        ndwi_vals = []
+        for date_obj in resp["dates"][:5]:  # últimas 5 fechas
+            modis_date = date_obj["modis_date"]
+            # Consultar NIR
+            cv_url = f"{url}/{product}/values"
+            params_nir = {
+                "latitude": lat,
+                "longitude": lon,
+                "band": band_nir,
+                "startDate": modis_date,
+                "endDate": modis_date,
+                "kmAboveBelow": km_ab,
+                "kmLeftRight": km_lr
+            }
+            data_nir = requests.get(cv_url, params=params_nir, timeout=30).json()
+            # Consultar SWIR
+            params_swir = params_nir.copy()
+            params_swir["band"] = band_swir
+            data_swir = requests.get(cv_url, params=params_swir, timeout=30).json()
+            
+            if data_nir.get("values") and data_swir.get("values"):
+                nir = np.mean([v["value"] for v in data_nir["values"]]) * 0.0001
+                swir = np.mean([v["value"] for v in data_swir["values"]]) * 0.0001
+                if (nir + swir) != 0:
+                    ndwi = (nir - swir) / (nir + swir)
+                    ndwi_vals.append(ndwi)
+        
+        ndwi_promedio = np.mean(ndwi_vals) if ndwi_vals else 0.35
+        gdf_out = gdf.copy()
+        gdf_out["ndwi_modis"] = round(ndwi_promedio, 3)
+        return gdf_out, ndwi_promedio
+    except Exception as e:
+        st.warning(f"Error en ORNL NDWI: {str(e)[:100]}. Usando valores simulados.")
+        gdf_out = gdf.copy()
         gdf_out["ndwi_modis"] = 0.35
-        gdf_out["ndre_modis"] = 0.55
-        return gdf_out
+        return gdf_out, 0.35
+
+# Nota: NDRE no puede calcularse con MODIS por falta de banda red edge.
+# Se omite este índice.
 
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     try:
@@ -822,7 +893,6 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     if 'radiacion' in datos_climaticos and datos_climaticos['radiacion']['diaria']:
         ax1 = axes[0, 0]
         rad = np.array(datos_climaticos['radiacion']['diaria'], dtype=np.float64)
-        # Reemplazar NaN con el promedio de los valores válidos para visualización
         mask_nan = np.isnan(rad)
         if np.any(mask_nan):
             rad_filled = rad.copy()
@@ -838,7 +908,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     else:
         axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[0, 0].set_title('Radiación', fontweight='bold')
     
-    # Precipitación (sin NaN)
+    # Precipitación
     ax2 = axes[0, 1]
     precip = np.array(datos_climaticos['precipitacion']['diaria'], dtype=np.float64)
     ax2.bar(dias, precip, color='blue', alpha=0.7)
@@ -907,69 +977,150 @@ def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
     )
     return fig
 
-# ===== NUEVAS FUNCIONES PARA GRÁFICOS INTERACTIVOS (PLOTLY) =====
-def crear_boxplot_plotly(gdf, columna, titulo, color='steelblue'):
-    """Crea un boxplot horizontal interactivo con Plotly."""
+# ===== NUEVAS FUNCIONES PARA ESTADÍSTICAS DE ÍNDICES =====
+def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap):
+    """
+    Muestra mapa de calor interactivo y panel de estadísticas descriptivas.
+    """
+    # Mapa interactivo con gradiente
+    mapa = crear_mapa_interactivo_base(
+        gdf,
+        columna_color=columna,
+        colormap=LinearColormap(colors=colormap, vmin=vmin, vmax=vmax, caption=titulo),
+        tooltip_fields=['id_bloque', columna],
+        tooltip_aliases=['Bloque', titulo]
+    )
+    if mapa:
+        folium_static(mapa, width=1000, height=500)
+    
+    # Estadísticas
     valores = gdf[columna].dropna()
-    fig = go.Figure()
-    fig.add_trace(go.Box(
+    if len(valores) == 0:
+        st.warning("No hay datos para este índice.")
+        return
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("Media", f"{valores.mean():.3f}")
+    with col2:
+        st.metric("Mediana", f"{valores.median():.3f}")
+    with col3:
+        st.metric("Desv. estándar", f"{valores.std():.3f}")
+    with col4:
+        st.metric("Mínimo", f"{valores.min():.3f}")
+    with col5:
+        st.metric("Máximo", f"{valores.max():.3f}")
+    
+    # Histograma interactivo
+    fig_hist = go.Figure()
+    fig_hist.add_trace(go.Histogram(
         x=valores,
-        name=titulo,
-        boxmean='sd',  # muestra la media y desviación
-        marker_color=color,
-        orientation='h',
-        boxpoints='all',  # muestra todos los puntos (outliers)
-        jitter=0.3,
-        pointpos=-1.8
+        nbinsx=20,
+        marker_color='steelblue',
+        opacity=0.7,
+        name='Frecuencia'
     ))
-    fig.update_layout(
+    fig_hist.update_layout(
         title=f'Distribución de {titulo}',
         xaxis_title=titulo,
-        height=300,
-        margin=dict(l=20, r=20, t=40, b=20),
-        showlegend=False
-    )
-    return fig
-
-def crear_grafico_torta_salud(gdf):
-    """Crea un gráfico de torta con la proporción de categorías de salud."""
-    conteo = gdf['salud'].value_counts().reset_index()
-    conteo.columns = ['salud', 'cantidad']
-    colores = {'Crítica': '#d73027', 'Baja': '#fee08b', 'Moderada': '#91cf60', 'Buena': '#1a9850'}
-    fig = go.Figure(data=[go.Pie(
-        labels=conteo['salud'],
-        values=conteo['cantidad'],
-        marker=dict(colors=[colores.get(s, '#cccccc') for s in conteo['salud']]),
-        textinfo='percent+label',
-        insidetextorientation='radial'
-    )])
-    fig.update_layout(
-        title='Salud de la plantación',
-        height=300,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
-    return fig
-
-def crear_grafico_barras_rangos(gdf, columna, titulo, bins=[0, 0.3, 0.6, 1.0], etiquetas=['Bajo', 'Medio', 'Alto']):
-    """Crea un gráfico de barras con la frecuencia en rangos predefinidos."""
-    valores = gdf[columna].dropna()
-    categorias = pd.cut(valores, bins=bins, labels=etiquetas, include_lowest=True)
-    conteo = categorias.value_counts().sort_index()
-    fig = go.Figure(data=[go.Bar(
-        x=conteo.index,
-        y=conteo.values,
-        marker_color=['#fc8d59', '#ffffbf', '#91cf60'],
-        text=conteo.values,
-        textposition='auto'
-    )])
-    fig.update_layout(
-        title=f'Distribución de {titulo} por rangos',
-        xaxis_title='Rango',
         yaxis_title='Número de bloques',
         height=300,
         margin=dict(l=20, r=20, t=40, b=20)
     )
-    return fig
+    st.plotly_chart(fig_hist, use_container_width=True)
+    
+    # Tabla de valores por bloque
+    st.markdown("#### Valores por bloque")
+    df_tabla = gdf[['id_bloque', columna]].copy()
+    df_tabla.columns = ['Bloque', titulo]
+    st.dataframe(df_tabla.style.format({titulo: '{:.3f}'}), use_container_width=True)
+
+# ===== FUNCIONES YOLO =====
+def cargar_modelo_yolo(ruta_modelo):
+    if not YOLO_AVAILABLE:
+        return None
+    try:
+        modelo = YOLO(ruta_modelo)
+        return modelo
+    except Exception as e:
+        st.error(f"Error al cargar el modelo YOLO: {str(e)}")
+        return None
+
+def detectar_en_imagen(modelo, imagen_cv, conf_threshold=0.25):
+    if modelo is None:
+        return None
+    try:
+        resultados = modelo(imagen_cv, conf=conf_threshold)
+        return resultados
+    except Exception as e:
+        st.error(f"Error en la inferencia YOLO: {str(e)}")
+        return None
+
+def dibujar_detecciones_con_leyenda(imagen_cv, resultados, colores_aleatorios=True):
+    if resultados is None or len(resultados) == 0:
+        return imagen_cv, []
+
+    img_anotada = imagen_cv.copy()
+    detecciones_info = []
+    names = resultados[0].names
+
+    for r in resultados:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
+            cls_id = int(box.cls[0])
+            label = names[cls_id]
+
+            if colores_aleatorios:
+                color = tuple(np.random.randint(0, 255, 3).tolist())
+            else:
+                np.random.seed(cls_id)
+                color = tuple(np.random.randint(0, 255, 3).tolist())
+                np.random.seed(None)
+
+            cv2.rectangle(img_anotada, (x1, y1), (x2, y2), color, 3)
+            etiqueta = f"{label} {conf:.2f}"
+            (w, h), _ = cv2.getTextSize(etiqueta, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            cv2.rectangle(img_anotada, (x1, y1 - h - 10), (x1 + w, y1), color, -1)
+            cv2.putText(img_anotada, etiqueta, (x1, y1 - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+            detecciones_info.append({
+                'clase': label,
+                'confianza': round(conf, 3),
+                'bbox': [x1, y1, x2, y2],
+                'color': color
+            })
+
+    return img_anotada, detecciones_info
+
+def crear_leyenda_html(detecciones_info):
+    if not detecciones_info:
+        return "<p>No se detectaron objetos.</p>"
+
+    clases_vistas = {}
+    for d in detecciones_info:
+        if d['clase'] not in clases_vistas:
+            clases_vistas[d['clase']] = d['color']
+
+    from collections import Counter
+    conteo_clases = Counter([d['clase'] for d in detecciones_info])
+
+    html = "<div style='background: rgba(30, 30, 30, 0.9); padding: 15px; border-radius: 10px; margin-top: 20px;'>"
+    html += "<h4 style='color: white; margin-bottom: 10px;'>📋 Leyenda de detecciones</h4>"
+    html += "<table style='width: 100%; color: white; border-collapse: collapse;'>"
+    html += "<tr><th>Color</th><th>Clase</th><th>Conteo</th></tr>"
+
+    for clase, color in clases_vistas.items():
+        color_hex = '#{:02x}{:02x}{:02x}'.format(color[0], color[1], color[2])
+        html += f"<tr style='border-bottom: 1px solid #444;'>"
+        html += f"<td style='padding: 8px;'><span style='display: inline-block; width: 20px; height: 20px; background-color: {color_hex}; border-radius: 4px;'></span></td>"
+        html += f"<td style='padding: 8px;'>{clase}</td>"
+        html += f"<td style='padding: 8px; text-align: center;'>{conteo_clases[clase]}</td>"
+        html += f"</tr>"
+
+    html += "</table></div>"
+    return html
 
 # ===== CURVAS DE NIVEL =====
 def obtener_dem_opentopography(gdf, api_key=None):
@@ -1112,36 +1263,50 @@ def ejecutar_analisis_completo():
             area_gdf = gpd.GeoDataFrame({'geometry': [row.geometry]}, crs=gdf_dividido.crs)
             areas_ha.append(float(calcular_superficie(area_gdf)))
         gdf_dividido['area_ha'] = areas_ha
+        
+        # Obtener NDVI real
         st.info("🛰️ Consultando MODIS NDVI real (ORNL DAAC)...")
-        gdf_con_ndvi = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
-        gdf_dividido['ndvi_modis'] = gdf_con_ndvi['ndvi_modis']
-        gdf_dividido['ndwi_modis'] = gdf_con_ndvi['ndwi_modis']
-        gdf_dividido['ndre_modis'] = gdf_con_ndvi['ndre_modis']
+        gdf_ndvi, ndvi_prom = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
+        gdf_dividido['ndvi_modis'] = gdf_ndvi['ndvi_modis']
+        
+        # Obtener NDWI real
+        st.info("💧 Consultando MODIS NDWI real (bandas NIR/SWIR)...")
+        gdf_ndwi, ndwi_prom = obtener_ndwi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
+        gdf_dividido['ndwi_modis'] = gdf_ndwi['ndwi_modis']
+        
+        # NDRE no disponible con MODIS, se omite
+        st.info("⚠️ NDRE no puede calcularse con MODIS (requiere banda red edge). Se omite.")
+        
         st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
         datos_clima = obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin)
         st.info("☀️ Obteniendo radiación y viento de NASA POWER...")
         datos_power = obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin)
         st.session_state.datos_climaticos = {**datos_clima, **datos_power}
+        
         edades = analizar_edad_plantacion(gdf_dividido)
         gdf_dividido['edad_anios'] = edades
+        
         def clasificar_salud(ndvi):
             if ndvi < 0.4: return 'Crítica'
             if ndvi < 0.6: return 'Baja'
             if ndvi < 0.75: return 'Moderada'
             return 'Buena'
         gdf_dividido['salud'] = gdf_dividido['ndvi_modis'].apply(clasificar_salud)
+        
         if st.session_state.get('analisis_suelo', True):
             st.session_state.textura_por_bloque = analizar_textura_suelo_venezuela_por_bloque(gdf_dividido)
             if st.session_state.textura_por_bloque:
                 st.session_state.textura_suelo = st.session_state.textura_por_bloque[0]
+        
         st.session_state.datos_fertilidad = generar_mapa_fertilidad(gdf_dividido)
+        
         st.session_state.datos_modis = {
             'ndvi': gdf_dividido['ndvi_modis'].mean(),
-            'ndre': gdf_dividido['ndre_modis'].mean(),
             'ndwi': gdf_dividido['ndwi_modis'].mean(),
             'fecha': fecha_inicio.strftime('%Y-%m-%d'),
-            'fuente': 'MODIS MOD13Q1 (ORNL DAAC real)'
+            'fuente': 'MODIS (ORNL DAAC)'
         }
+        
         st.session_state.resultados_todos = {
             'exitoso': True,
             'gdf_completo': gdf_dividido,
@@ -1329,10 +1494,10 @@ if st.session_state.analisis_completado:
     gdf_completo = resultados.get('gdf_completo')
     
     if gdf_completo is not None:
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "📊 Resumen", "🗺️ Mapas", "🛰️ Índices", 
             "🌤️ Clima", "🌴 Detección", "🧪 Fertilidad NPK", 
-            "🌱 Textura Suelo", "🗺️ Curvas de Nivel"
+            "🌱 Textura Suelo", "🗺️ Curvas de Nivel", "🐛 Detección YOLO"
         ])
         
         with tab1:
@@ -1354,9 +1519,9 @@ if st.session_state.analisis_completado:
                 except: st.metric("Salud Buena", "N/A")
             st.subheader("📋 RESUMEN POR BLOQUE")
             try:
-                columnas = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 'ndre_modis', 'ndwi_modis', 'salud']
+                columnas = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 'ndwi_modis', 'salud']
                 tabla = gdf_completo[columnas].copy()
-                tabla.columns = ['Bloque', 'Área (ha)', 'Edad (años)', 'NDVI', 'NDRE', 'NDWI', 'Salud']
+                tabla.columns = ['Bloque', 'Área (ha)', 'Edad (años)', 'NDVI', 'NDWI', 'Salud']
                 def color_salud(val):
                     if val == 'Crítica': return 'color: #d73027; font-weight: bold'
                     elif val == 'Baja': return 'color: #fee08b'
@@ -1365,7 +1530,7 @@ if st.session_state.analisis_completado:
                 st.dataframe(
                     tabla.style.format({
                         'Área (ha)': '{:.2f}', 'Edad (años)': '{:.1f}',
-                        'NDVI': '{:.3f}', 'NDRE': '{:.3f}', 'NDWI': '{:.3f}'
+                        'NDVI': '{:.3f}', 'NDWI': '{:.3f}'
                     }).applymap(color_salud, subset=['Salud'])
                 )
             except Exception as e:
@@ -1403,77 +1568,22 @@ if st.session_state.analisis_completado:
             st.subheader("🛰️ ÍNDICES DE VEGETACIÓN")
             st.caption(f"Fuente: {st.session_state.datos_modis.get('fuente', 'MODIS ORNL')}")
             
-            # Pestañas internas para cada índice
-            tab_ndvi, tab_ndre, tab_ndwi = st.tabs(["🌿 NDVI", "🍂 NDRE", "💧 NDWI"])
+            st.markdown("### 🌿 NDVI")
+            mostrar_estadisticas_indice(gdf_completo, 'ndvi_modis', 'NDVI', 0.3, 0.9, ['red','yellow','green'])
             
-            with tab_ndvi:
-                st.markdown("### Mapa de NDVI (gradiente continuo)")
-                colormap_ndvi = LinearColormap(colors=['red','yellow','green'], vmin=0.3, vmax=0.9, caption='NDVI')
-                mapa_ndvi = crear_mapa_interactivo_base(
-                    gdf_completo,
-                    columna_color='ndvi_modis',
-                    colormap=colormap_ndvi,
-                    tooltip_fields=['id_bloque','ndvi_modis','salud'],
-                    tooltip_aliases=['Bloque','NDVI','Salud']
-                )
-                if mapa_ndvi:
-                    colormap_ndvi.add_to(mapa_ndvi)
-                    folium_static(mapa_ndvi, width=1000, height=500)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.plotly_chart(crear_boxplot_plotly(gdf_completo, 'ndvi_modis', 'NDVI'), use_container_width=True)
-                with col2:
-                    st.plotly_chart(crear_grafico_torta_salud(gdf_completo), use_container_width=True)
+            st.markdown("---")
+            st.markdown("### 💧 NDWI")
+            st.info("NDWI calculado como (NIR - SWIR)/(NIR+SWIR) con bandas reales de MODIS (producto MOD09GA).")
+            mostrar_estadisticas_indice(gdf_completo, 'ndwi_modis', 'NDWI', 0.1, 0.7, ['brown','yellow','blue'])
             
-            with tab_ndre:
-                st.markdown("### Mapa de NDRE (gradiente continuo)")
-                colormap_ndre = LinearColormap(colors=['purple','yellow','green'], vmin=0.2, vmax=0.8, caption='NDRE')
-                mapa_ndre = crear_mapa_interactivo_base(
-                    gdf_completo,
-                    columna_color='ndre_modis',
-                    colormap=colormap_ndre,
-                    tooltip_fields=['id_bloque','ndre_modis'],
-                    tooltip_aliases=['Bloque','NDRE']
-                )
-                if mapa_ndre:
-                    colormap_ndre.add_to(mapa_ndre)
-                    folium_static(mapa_ndre, width=1000, height=500)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.plotly_chart(crear_boxplot_plotly(gdf_completo, 'ndre_modis', 'NDRE', color='purple'), use_container_width=True)
-                with col2:
-                    st.plotly_chart(crear_grafico_barras_rangos(gdf_completo, 'ndre_modis', 'NDRE', 
-                                                                 bins=[0.2, 0.4, 0.6, 0.8], 
-                                                                 etiquetas=['Bajo', 'Medio', 'Alto']), use_container_width=True)
-            
-            with tab_ndwi:
-                st.markdown("### Mapa de NDWI (gradiente continuo)")
-                colormap_ndwi = LinearColormap(colors=['brown','yellow','blue'], vmin=0.1, vmax=0.7, caption='NDWI')
-                mapa_ndwi = crear_mapa_interactivo_base(
-                    gdf_completo,
-                    columna_color='ndwi_modis',
-                    colormap=colormap_ndwi,
-                    tooltip_fields=['id_bloque','ndwi_modis'],
-                    tooltip_aliases=['Bloque','NDWI']
-                )
-                if mapa_ndwi:
-                    colormap_ndwi.add_to(mapa_ndwi)
-                    folium_static(mapa_ndwi, width=1000, height=500)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.plotly_chart(crear_boxplot_plotly(gdf_completo, 'ndwi_modis', 'NDWI', color='blue'), use_container_width=True)
-                with col2:
-                    st.plotly_chart(crear_grafico_barras_rangos(gdf_completo, 'ndwi_modis', 'NDWI',
-                                                                 bins=[0.1, 0.3, 0.5, 0.7],
-                                                                 etiquetas=['Bajo', 'Medio', 'Alto']), use_container_width=True)
+            st.markdown("---")
+            st.markdown("### ⚠️ NDRE")
+            st.warning("El índice NDRE requiere una banda de red edge, no disponible en MODIS. Para obtenerlo, se recomienda usar imágenes Sentinel-2.")
             
             st.markdown("### 📥 EXPORTAR")
             try:
-                gdf_indices = gdf_completo[['id_bloque','ndvi_modis','ndre_modis','ndwi_modis','salud','geometry']].copy()
-                gdf_indices.columns = ['id_bloque','NDVI','NDRE','NDWI','Salud','geometry']
+                gdf_indices = gdf_completo[['id_bloque','ndvi_modis','ndwi_modis','salud','geometry']].copy()
+                gdf_indices.columns = ['id_bloque','NDVI','NDWI','Salud','geometry']
                 geojson_indices = gdf_indices.to_json()
                 csv_indices = gdf_indices.drop(columns='geometry').to_csv(index=False)
                 col_dl1, col_dl2 = st.columns(2)
@@ -1698,6 +1808,81 @@ if st.session_state.analisis_completado:
             else:
                 if st.session_state.get('curvas_nivel'):
                     st.info("Ya hay curvas de nivel generadas. Presiona el botón para regenerarlas.")
+        
+        with tab9:
+            st.subheader("🐛 Detección de Enfermedades y Plagas con YOLO")
+            st.markdown("""
+            Esta herramienta utiliza modelos YOLO para detectar automáticamente signos de enfermedades o plagas en imágenes de palma aceitera.
+            - **Sube una imagen** (JPG, PNG) tomada con drone o cámara.
+            - **Carga un modelo YOLO** pre-entrenado (formato `.pt` de PyTorch o `.onnx`).
+            - Ajusta el **umbral de confianza** para filtrar detecciones débiles.
+            """)
+
+            if not YOLO_AVAILABLE:
+                st.error("⚠️ La librería 'ultralytics' no está instalada. Para usar esta función, ejecuta: `pip install ultralytics`")
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    archivo_imagen = st.file_uploader("📸 Subir imagen (RGB)", type=['jpg', 'jpeg', 'png'], key="yolo_img")
+                with col2:
+                    archivo_modelo = st.file_uploader("🤖 Cargar modelo YOLO (.pt o .onnx)", type=['pt', 'onnx'], key="yolo_model")
+
+                umbral_confianza = st.slider("Umbral de confianza", min_value=0.1, max_value=0.9, value=0.25, step=0.05)
+
+                if archivo_imagen is not None and archivo_modelo is not None:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(archivo_modelo.name)[1]) as tmp_model:
+                        tmp_model.write(archivo_modelo.read())
+                        ruta_modelo_tmp = tmp_model.name
+
+                    imagen_bytes = archivo_imagen.read()
+                    imagen_pil = Image.open(io.BytesIO(imagen_bytes))
+                    imagen_cv = cv2.cvtColor(np.array(imagen_pil), cv2.COLOR_RGB2BGR)
+
+                    modelo = cargar_modelo_yolo(ruta_modelo_tmp)
+
+                    if modelo is not None:
+                        st.info("🔄 Ejecutando inferencia...")
+                        resultados_yolo = detectar_en_imagen(modelo, imagen_cv, conf_threshold=umbral_confianza)
+
+                        if resultados_yolo and len(resultados_yolo) > 0:
+                            img_anotada, detecciones = dibujar_detecciones_con_leyenda(imagen_cv, resultados_yolo)
+
+                            st.success(f"✅ Se detectaron {len(detecciones)} objetos.")
+
+                            img_rgb = cv2.cvtColor(img_anotada, cv2.COLOR_BGR2RGB)
+                            st.image(img_rgb, caption="Imagen con detecciones", use_container_width=True)
+
+                            leyenda_html = crear_leyenda_html(detecciones)
+                            st.markdown(leyenda_html, unsafe_allow_html=True)
+
+                            st.markdown("### 📥 Exportar resultados")
+                            img_pil_export = Image.fromarray(cv2.cvtColor(img_anotada, cv2.COLOR_BGR2RGB))
+                            buf = io.BytesIO()
+                            img_pil_export.save(buf, format='PNG')
+                            byte_im = buf.getvalue()
+
+                            df_detecciones = pd.DataFrame(detecciones)
+                            if 'color' in df_detecciones.columns:
+                                df_detecciones = df_detecciones.drop(columns=['color'])
+                            csv_detecciones = df_detecciones.to_csv(index=False)
+
+                            col_dl1, col_dl2 = st.columns(2)
+                            with col_dl1:
+                                st.download_button("📸 Imagen anotada (PNG)", byte_im,
+                                                   f"deteccion_yolo_{datetime.now():%Y%m%d_%H%M%S}.png",
+                                                   "image/png")
+                            with col_dl2:
+                                st.download_button("📊 CSV detecciones", csv_detecciones,
+                                                   f"detecciones_{datetime.now():%Y%m%d_%H%M%S}.csv",
+                                                   "text/csv")
+                        else:
+                            st.warning("No se detectaron objetos con el umbral de confianza actual.")
+                    else:
+                        st.error("No se pudo cargar el modelo. Asegúrate de que sea un archivo válido.")
+
+                    os.unlink(ruta_modelo_tmp)
+                else:
+                    st.info("👆 Sube una imagen y un modelo YOLO para comenzar.")
 
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
