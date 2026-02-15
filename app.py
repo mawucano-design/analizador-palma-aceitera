@@ -2,6 +2,7 @@
 # curvas de nivel SRTM (reales o simuladas) y visualizaciones mejoradas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # CORREGIDO: error de ufunc 'isfinite' en gráficos climáticos.
+# MEJORADO: mapas de índices con gradientes claros e histogramas con KDE y percentiles.
 
 import streamlit as st
 import geopandas as gpd
@@ -709,26 +710,84 @@ def generar_mapa_fertilidad(gdf):
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
 def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn', 
                               vmin=None, vmax=None, etiqueta='Valor'):
-    """Mapa estático con matplotlib (usado para índices y otros)"""
+    """
+    Crea un mapa de bloques con gradiente de color y un histograma mejorado
+    que incluye curva de densidad y percentiles.
+    """
     if gdf is None or len(gdf) == 0 or columna not in gdf.columns:
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.text(0.5, 0.5, f"No hay datos para {titulo}", ha='center', va='center', fontsize=12)
         ax.axis('off')
         return fig
-    fig = plt.figure(figsize=(14, 6))
+
+    fig = plt.figure(figsize=(15, 6))
+    
+    # ---- Mapa con gradiente de color ----
     ax1 = plt.subplot(1, 2, 1)
+    # Mejoramos la leyenda: más ticks y formato
     gdf.plot(column=columna, ax=ax1, cmap=cmap, edgecolor='black', linewidth=0.5,
-             legend=True, legend_kwds={'label': etiqueta, 'orientation': 'horizontal', 'shrink': 0.8, 'pad': 0.05},
-             vmin=vmin, vmax=vmax, alpha=0.9)
+             legend=True, 
+             legend_kwds={
+                 'label': etiqueta,
+                 'orientation': 'horizontal',
+                 'shrink': 0.8,
+                 'pad': 0.05,
+                 'ticks': np.linspace(vmin if vmin else gdf[columna].min(),
+                                       vmax if vmax else gdf[columna].max(), 5)
+             },
+             vmin=vmin, vmax=vmax, alpha=0.85)
     ax1.set_title(titulo, fontsize=14, fontweight='bold')
-    ax1.set_xlabel('Longitud'); ax1.set_ylabel('Latitud'); ax1.grid(True, alpha=0.3)
+    ax1.set_xlabel('Longitud')
+    ax1.set_ylabel('Latitud')
+    ax1.grid(True, alpha=0.3)
+
+    # ---- Histograma mejorado ----
     ax2 = plt.subplot(1, 2, 2)
     valores = gdf[columna].dropna()
-    ax2.hist(valores, bins=15, color='steelblue', edgecolor='black', alpha=0.7)
-    ax2.axvline(valores.mean(), color='red', linestyle='--', linewidth=2, label=f'Promedio: {valores.mean():.3f}')
-    ax2.set_xlabel(etiqueta); ax2.set_ylabel('Frecuencia (bloques)')
+    
+    # Histograma normalizado
+    n, bins, patches = ax2.hist(valores, bins=15, density=True, 
+                                 color='steelblue', edgecolor='black', 
+                                 alpha=0.6, label='Densidad')
+    ax2.set_xlabel(etiqueta)
+    ax2.set_ylabel('Densidad', color='steelblue')
+    ax2.tick_params(axis='y', labelcolor='steelblue')
+    
+    # Crear un segundo eje Y para la frecuencia absoluta (opcional)
+    ax2b = ax2.twinx()
+    ax2b.hist(valores, bins=15, density=False, alpha=0.0)  # invisible, solo para escala
+    ax2b.set_ylabel('Frecuencia (bloques)', color='gray')
+    ax2b.tick_params(axis='y', labelcolor='gray')
+    
+    # Curva de densidad KDE (si scipy está disponible)
+    try:
+        from scipy.stats import gaussian_kde
+        kde = gaussian_kde(valores)
+        x_kde = np.linspace(valores.min(), valores.max(), 200)
+        y_kde = kde(x_kde)
+        ax2.plot(x_kde, y_kde, 'r-', linewidth=2, label='KDE')
+    except ImportError:
+        pass  # No se muestra KDE si no hay scipy
+    
+    # Líneas de estadísticos
+    media = valores.mean()
+    mediana = valores.median()
+    p25 = valores.quantile(0.25)
+    p75 = valores.quantile(0.75)
+    
+    ax2.axvline(media, color='darkred', linestyle='--', linewidth=2, 
+                label=f'Media: {media:.3f}')
+    ax2.axvline(mediana, color='purple', linestyle=':', linewidth=2,
+                label=f'Mediana: {mediana:.3f}')
+    ax2.axvline(p25, color='blue', linestyle=':', linewidth=1.5, alpha=0.7,
+                label=f'P25: {p25:.3f}')
+    ax2.axvline(p75, color='blue', linestyle=':', linewidth=1.5, alpha=0.7,
+                label=f'P75: {p75:.3f}')
+    
     ax2.set_title(f'Distribución de {titulo}', fontsize=12, fontweight='bold')
-    ax2.legend(); ax2.grid(True, alpha=0.3)
+    ax2.grid(True, alpha=0.3, axis='x')
+    ax2.legend(loc='upper right', fontsize=9)
+    
     plt.tight_layout()
     return fig
 
