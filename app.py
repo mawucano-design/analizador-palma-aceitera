@@ -2,7 +2,7 @@
 # curvas de nivel SRTM (reales o simuladas) y visualizaciones mejoradas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # CORREGIDO: error de ufunc 'isfinite' en gráficos climáticos.
-# MEJORADO: mapas de índices con gradientes claros e histogramas con KDE y percentiles.
+# MEJORADO: mapas de índices con gradientes continuos y gráficos interactivos (boxplot + pastel/barras).
 # OCULTO: menú de GitHub y footer de Streamlit.
 
 import streamlit as st
@@ -28,6 +28,8 @@ from streamlit_folium import folium_static
 from folium.plugins import Fullscreen, MeasureControl, MiniMap
 from branca.colormap import LinearColormap
 import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 
 # ===== LIBRERÍAS OPCIONALES =====
 try:
@@ -709,96 +711,6 @@ def generar_mapa_fertilidad(gdf):
         return []
 
 # ===== FUNCIONES DE VISUALIZACIÓN MEJORADAS =====
-def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn', 
-                              vmin=None, vmax=None, etiqueta='Valor'):
-    """
-    Crea un mapa de bloques con gradiente de color y un histograma mejorado
-    que incluye curva de densidad y percentiles.
-    Maneja correctamente casos con datos constantes (evita LinAlgError).
-    """
-    if gdf is None or len(gdf) == 0 or columna not in gdf.columns:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, f"No hay datos para {titulo}", ha='center', va='center', fontsize=12)
-        ax.axis('off')
-        return fig
-
-    fig = plt.figure(figsize=(15, 6))
-    
-    # ---- Mapa con gradiente de color ----
-    ax1 = plt.subplot(1, 2, 1)
-    gdf.plot(column=columna, ax=ax1, cmap=cmap, edgecolor='black', linewidth=0.5,
-             legend=True, 
-             legend_kwds={
-                 'label': etiqueta,
-                 'orientation': 'horizontal',
-                 'shrink': 0.8,
-                 'pad': 0.05,
-                 'ticks': np.linspace(vmin if vmin else gdf[columna].min(),
-                                       vmax if vmax else gdf[columna].max(), 5)
-             },
-             vmin=vmin, vmax=vmax, alpha=0.85)
-    ax1.set_title(titulo, fontsize=14, fontweight='bold')
-    ax1.set_xlabel('Longitud')
-    ax1.set_ylabel('Latitud')
-    ax1.grid(True, alpha=0.3)
-
-    # ---- Histograma mejorado ----
-    ax2 = plt.subplot(1, 2, 2)
-    valores = gdf[columna].dropna()
-    
-    if len(valores) == 0:
-        ax2.text(0.5, 0.5, "Sin datos válidos", ha='center', va='center', fontsize=12)
-        ax2.set_title(f'Distribución de {titulo}', fontsize=12, fontweight='bold')
-        plt.tight_layout()
-        return fig
-    
-    # Histograma normalizado
-    n, bins, patches = ax2.hist(valores, bins=15, density=True, 
-                                 color='steelblue', edgecolor='black', 
-                                 alpha=0.6, label='Densidad')
-    ax2.set_xlabel(etiqueta)
-    ax2.set_ylabel('Densidad', color='steelblue')
-    ax2.tick_params(axis='y', labelcolor='steelblue')
-    
-    # Segundo eje Y para frecuencia absoluta
-    ax2b = ax2.twinx()
-    ax2b.hist(valores, bins=15, density=False, alpha=0.0)
-    ax2b.set_ylabel('Frecuencia (bloques)', color='gray')
-    ax2b.tick_params(axis='y', labelcolor='gray')
-    
-    # Curva KDE (solo si hay variabilidad)
-    try:
-        from scipy.stats import gaussian_kde
-        if valores.std() > 1e-6:
-            kde = gaussian_kde(valores)
-            x_kde = np.linspace(valores.min(), valores.max(), 200)
-            y_kde = kde(x_kde)
-            ax2.plot(x_kde, y_kde, 'r-', linewidth=2, label='KDE')
-    except (np.linalg.LinAlgError, ValueError):
-        pass
-    
-    # Estadísticos
-    media = valores.mean()
-    mediana = valores.median()
-    p25 = valores.quantile(0.25)
-    p75 = valores.quantile(0.75)
-    
-    ax2.axvline(media, color='darkred', linestyle='--', linewidth=2, 
-                label=f'Media: {media:.3f}')
-    ax2.axvline(mediana, color='purple', linestyle=':', linewidth=2,
-                label=f'Mediana: {mediana:.3f}')
-    ax2.axvline(p25, color='blue', linestyle=':', linewidth=1.5, alpha=0.7,
-                label=f'P25: {p25:.3f}')
-    ax2.axvline(p75, color='blue', linestyle=':', linewidth=1.5, alpha=0.7,
-                label=f'P75: {p75:.3f}')
-    
-    ax2.set_title(f'Distribución de {titulo}', fontsize=12, fontweight='bold')
-    ax2.grid(True, alpha=0.3, axis='x')
-    ax2.legend(loc='upper right', fontsize=9)
-    
-    plt.tight_layout()
-    return fig
-
 def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_fields=None, tooltip_aliases=None):
     """
     Crea un mapa folium con capa base Esri Satélite y polígonos coloreados según columna_color.
@@ -992,6 +904,70 @@ def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
             caxis=dict(title='% Arena', min=0, linewidth=2)
         ),
         height=500, width=600
+    )
+    return fig
+
+# ===== NUEVAS FUNCIONES PARA GRÁFICOS INTERACTIVOS (PLOTLY) =====
+def crear_boxplot_plotly(gdf, columna, titulo, color='steelblue'):
+    """Crea un boxplot horizontal interactivo con Plotly."""
+    valores = gdf[columna].dropna()
+    fig = go.Figure()
+    fig.add_trace(go.Box(
+        x=valores,
+        name=titulo,
+        boxmean='sd',  # muestra la media y desviación
+        marker_color=color,
+        orientation='h',
+        boxpoints='all',  # muestra todos los puntos (outliers)
+        jitter=0.3,
+        pointpos=-1.8
+    ))
+    fig.update_layout(
+        title=f'Distribución de {titulo}',
+        xaxis_title=titulo,
+        height=300,
+        margin=dict(l=20, r=20, t=40, b=20),
+        showlegend=False
+    )
+    return fig
+
+def crear_grafico_torta_salud(gdf):
+    """Crea un gráfico de torta con la proporción de categorías de salud."""
+    conteo = gdf['salud'].value_counts().reset_index()
+    conteo.columns = ['salud', 'cantidad']
+    colores = {'Crítica': '#d73027', 'Baja': '#fee08b', 'Moderada': '#91cf60', 'Buena': '#1a9850'}
+    fig = go.Figure(data=[go.Pie(
+        labels=conteo['salud'],
+        values=conteo['cantidad'],
+        marker=dict(colors=[colores.get(s, '#cccccc') for s in conteo['salud']]),
+        textinfo='percent+label',
+        insidetextorientation='radial'
+    )])
+    fig.update_layout(
+        title='Salud de la plantación',
+        height=300,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    return fig
+
+def crear_grafico_barras_rangos(gdf, columna, titulo, bins=[0, 0.3, 0.6, 1.0], etiquetas=['Bajo', 'Medio', 'Alto']):
+    """Crea un gráfico de barras con la frecuencia en rangos predefinidos."""
+    valores = gdf[columna].dropna()
+    categorias = pd.cut(valores, bins=bins, labels=etiquetas, include_lowest=True)
+    conteo = categorias.value_counts().sort_index()
+    fig = go.Figure(data=[go.Bar(
+        x=conteo.index,
+        y=conteo.values,
+        marker_color=['#fc8d59', '#ffffbf', '#91cf60'],
+        text=conteo.values,
+        textposition='auto'
+    )])
+    fig.update_layout(
+        title=f'Distribución de {titulo} por rangos',
+        xaxis_title='Rango',
+        yaxis_title='Número de bloques',
+        height=300,
+        margin=dict(l=20, r=20, t=40, b=20)
     )
     return fig
 
@@ -1426,23 +1402,74 @@ if st.session_state.analisis_completado:
         with tab3:
             st.subheader("🛰️ ÍNDICES DE VEGETACIÓN")
             st.caption(f"Fuente: {st.session_state.datos_modis.get('fuente', 'MODIS ORNL')}")
-            col_info, col_legend = st.columns([2,1])
-            with col_info:
-                st.markdown("**📊 Interpretación rápida:** NDVI: salud general; NDRE: clorofila; NDWI: agua.")
-            with col_legend:
-                st.markdown('<div style="background: linear-gradient(90deg, red, yellow, green); height:20px; border-radius:10px;"></div><div style="display:flex; justify-content:space-between;"><span>0.0</span><span>0.5</span><span>1.0</span></div><p style="text-align:center;">Escala NDVI</p>', unsafe_allow_html=True)
-            st.markdown("### 🌿 NDVI")
-            if 'ndvi_modis' in gdf_completo.columns:
-                fig_ndvi = crear_mapa_bloques_simple(gdf_completo, 'ndvi_modis', 'NDVI por Bloque', cmap='RdYlGn', vmin=0.3, vmax=0.9, etiqueta='NDVI')
-                st.pyplot(fig_ndvi); plt.close(fig_ndvi)
-            st.markdown("### 🍂 NDRE (estimado)")
-            if 'ndre_modis' in gdf_completo.columns:
-                fig_ndre = crear_mapa_bloques_simple(gdf_completo, 'ndre_modis', 'NDRE por Bloque', cmap='YlGn', vmin=0.2, vmax=0.8, etiqueta='NDRE')
-                st.pyplot(fig_ndre); plt.close(fig_ndre)
-            st.markdown("### 💧 NDWI")
-            if 'ndwi_modis' in gdf_completo.columns:
-                fig_ndwi = crear_mapa_bloques_simple(gdf_completo, 'ndwi_modis', 'NDWI por Bloque', cmap='Blues', vmin=0.1, vmax=0.7, etiqueta='NDWI')
-                st.pyplot(fig_ndwi); plt.close(fig_ndwi)
+            
+            # Pestañas internas para cada índice
+            tab_ndvi, tab_ndre, tab_ndwi = st.tabs(["🌿 NDVI", "🍂 NDRE", "💧 NDWI"])
+            
+            with tab_ndvi:
+                st.markdown("### Mapa de NDVI (gradiente continuo)")
+                colormap_ndvi = LinearColormap(colors=['red','yellow','green'], vmin=0.3, vmax=0.9, caption='NDVI')
+                mapa_ndvi = crear_mapa_interactivo_base(
+                    gdf_completo,
+                    columna_color='ndvi_modis',
+                    colormap=colormap_ndvi,
+                    tooltip_fields=['id_bloque','ndvi_modis','salud'],
+                    tooltip_aliases=['Bloque','NDVI','Salud']
+                )
+                if mapa_ndvi:
+                    colormap_ndvi.add_to(mapa_ndvi)
+                    folium_static(mapa_ndvi, width=1000, height=500)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.plotly_chart(crear_boxplot_plotly(gdf_completo, 'ndvi_modis', 'NDVI'), use_container_width=True)
+                with col2:
+                    st.plotly_chart(crear_grafico_torta_salud(gdf_completo), use_container_width=True)
+            
+            with tab_ndre:
+                st.markdown("### Mapa de NDRE (gradiente continuo)")
+                colormap_ndre = LinearColormap(colors=['purple','yellow','green'], vmin=0.2, vmax=0.8, caption='NDRE')
+                mapa_ndre = crear_mapa_interactivo_base(
+                    gdf_completo,
+                    columna_color='ndre_modis',
+                    colormap=colormap_ndre,
+                    tooltip_fields=['id_bloque','ndre_modis'],
+                    tooltip_aliases=['Bloque','NDRE']
+                )
+                if mapa_ndre:
+                    colormap_ndre.add_to(mapa_ndre)
+                    folium_static(mapa_ndre, width=1000, height=500)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.plotly_chart(crear_boxplot_plotly(gdf_completo, 'ndre_modis', 'NDRE', color='purple'), use_container_width=True)
+                with col2:
+                    st.plotly_chart(crear_grafico_barras_rangos(gdf_completo, 'ndre_modis', 'NDRE', 
+                                                                 bins=[0.2, 0.4, 0.6, 0.8], 
+                                                                 etiquetas=['Bajo', 'Medio', 'Alto']), use_container_width=True)
+            
+            with tab_ndwi:
+                st.markdown("### Mapa de NDWI (gradiente continuo)")
+                colormap_ndwi = LinearColormap(colors=['brown','yellow','blue'], vmin=0.1, vmax=0.7, caption='NDWI')
+                mapa_ndwi = crear_mapa_interactivo_base(
+                    gdf_completo,
+                    columna_color='ndwi_modis',
+                    colormap=colormap_ndwi,
+                    tooltip_fields=['id_bloque','ndwi_modis'],
+                    tooltip_aliases=['Bloque','NDWI']
+                )
+                if mapa_ndwi:
+                    colormap_ndwi.add_to(mapa_ndwi)
+                    folium_static(mapa_ndwi, width=1000, height=500)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.plotly_chart(crear_boxplot_plotly(gdf_completo, 'ndwi_modis', 'NDWI', color='blue'), use_container_width=True)
+                with col2:
+                    st.plotly_chart(crear_grafico_barras_rangos(gdf_completo, 'ndwi_modis', 'NDWI',
+                                                                 bins=[0.1, 0.3, 0.5, 0.7],
+                                                                 etiquetas=['Bajo', 'Medio', 'Alto']), use_container_width=True)
+            
             st.markdown("### 📥 EXPORTAR")
             try:
                 gdf_indices = gdf_completo[['id_bloque','ndvi_modis','ndre_modis','ndwi_modis','salud','geometry']].copy()
