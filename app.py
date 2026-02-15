@@ -3,6 +3,7 @@
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # CORREGIDO: error de ufunc 'isfinite' en gráficos climáticos.
 # MEJORADO: mapas de índices con gradientes claros e histogramas con KDE y percentiles.
+# OCULTO: menú de GitHub y footer de Streamlit.
 
 import streamlit as st
 import geopandas as gpd
@@ -713,6 +714,7 @@ def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn',
     """
     Crea un mapa de bloques con gradiente de color y un histograma mejorado
     que incluye curva de densidad y percentiles.
+    Maneja correctamente casos con datos constantes (evita LinAlgError).
     """
     if gdf is None or len(gdf) == 0 or columna not in gdf.columns:
         fig, ax = plt.subplots(figsize=(10, 6))
@@ -724,7 +726,6 @@ def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn',
     
     # ---- Mapa con gradiente de color ----
     ax1 = plt.subplot(1, 2, 1)
-    # Mejoramos la leyenda: más ticks y formato
     gdf.plot(column=columna, ax=ax1, cmap=cmap, edgecolor='black', linewidth=0.5,
              legend=True, 
              legend_kwds={
@@ -745,6 +746,12 @@ def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn',
     ax2 = plt.subplot(1, 2, 2)
     valores = gdf[columna].dropna()
     
+    if len(valores) == 0:
+        ax2.text(0.5, 0.5, "Sin datos válidos", ha='center', va='center', fontsize=12)
+        ax2.set_title(f'Distribución de {titulo}', fontsize=12, fontweight='bold')
+        plt.tight_layout()
+        return fig
+    
     # Histograma normalizado
     n, bins, patches = ax2.hist(valores, bins=15, density=True, 
                                  color='steelblue', edgecolor='black', 
@@ -753,23 +760,24 @@ def crear_mapa_bloques_simple(gdf, columna, titulo, cmap='RdYlGn',
     ax2.set_ylabel('Densidad', color='steelblue')
     ax2.tick_params(axis='y', labelcolor='steelblue')
     
-    # Crear un segundo eje Y para la frecuencia absoluta (opcional)
+    # Segundo eje Y para frecuencia absoluta
     ax2b = ax2.twinx()
-    ax2b.hist(valores, bins=15, density=False, alpha=0.0)  # invisible, solo para escala
+    ax2b.hist(valores, bins=15, density=False, alpha=0.0)
     ax2b.set_ylabel('Frecuencia (bloques)', color='gray')
     ax2b.tick_params(axis='y', labelcolor='gray')
     
-    # Curva de densidad KDE (si scipy está disponible)
+    # Curva KDE (solo si hay variabilidad)
     try:
         from scipy.stats import gaussian_kde
-        kde = gaussian_kde(valores)
-        x_kde = np.linspace(valores.min(), valores.max(), 200)
-        y_kde = kde(x_kde)
-        ax2.plot(x_kde, y_kde, 'r-', linewidth=2, label='KDE')
-    except ImportError:
-        pass  # No se muestra KDE si no hay scipy
+        if valores.std() > 1e-6:
+            kde = gaussian_kde(valores)
+            x_kde = np.linspace(valores.min(), valores.max(), 200)
+            y_kde = kde(x_kde)
+            ax2.plot(x_kde, y_kde, 'r-', linewidth=2, label='KDE')
+    except (np.linalg.LinAlgError, ValueError):
+        pass
     
-    # Líneas de estadísticos
+    # Estadísticos
     media = valores.mean()
     mediana = valores.median()
     p25 = valores.quantile(0.25)
@@ -1169,24 +1177,78 @@ def ejecutar_analisis_completo():
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
-# Estilos CSS
+# ===== OCULTAR MENÚ GITHUB Y MEJORAR ESTILOS =====
 st.markdown("""
 <style>
-.stApp { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; }
-.stButton > button { background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; color: white !important; border: none !important; padding: 0.8em 1.5em !important; border-radius: 12px !important; font-weight: 700 !important; font-size: 1em !important; margin: 5px 0 !important; transition: all 0.3s ease !important; }
-.stButton > button:hover { transform: translateY(-2px) !important; box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; }
-.stTabs [data-baseweb="tab-list"] { background: rgba(30, 41, 59, 0.7) !important; backdrop-filter: blur(10px) !important; padding: 8px 16px !important; border-radius: 16px !important; border: 1px solid rgba(76, 175, 80, 0.3) !important; margin-top: 1.5em !important; }
-div[data-testid="metric-container"] { background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; backdrop-filter: blur(10px) !important; border-radius: 18px !important; padding: 22px !important; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; border: 1px solid rgba(76, 175, 80, 0.25) !important; }
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+.stApp {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    color: #ffffff;
+}
+
+.hero-banner {
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
+    padding: 1.5em;
+    border-radius: 15px;
+    margin-bottom: 1em;
+    border: 1px solid rgba(76, 175, 80, 0.3);
+    text-align: center;
+}
+
+.hero-title {
+    color: #ffffff;
+    font-size: 2em;
+    font-weight: 800;
+    margin-bottom: 0.5em;
+    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.stButton > button {
+    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important;
+    color: white !important;
+    border: none !important;
+    padding: 0.8em 1.5em !important;
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+    font-size: 1em !important;
+    margin: 5px 0 !important;
+    transition: all 0.3s ease !important;
+}
+
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important;
+}
+
+.stTabs [data-baseweb="tab-list"] {
+    background: rgba(30, 41, 59, 0.7) !important;
+    backdrop-filter: blur(10px) !important;
+    padding: 8px 16px !important;
+    border-radius: 16px !important;
+    border: 1px solid rgba(76, 175, 80, 0.3) !important;
+    margin-top: 1.5em !important;
+}
+
+div[data-testid="metric-container"] {
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important;
+    backdrop-filter: blur(10px) !important;
+    border-radius: 18px !important;
+    padding: 22px !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important;
+    border: 1px solid rgba(76, 175, 80, 0.25) !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # Banner
 st.markdown("""
-<div style="background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
-            padding: 2em; border-radius: 15px; margin-bottom: 2em; text-align: center;">
-    <h1 style="color: #ffffff; font-size: 2.8em; margin-bottom: 0.5em;">
-        🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL
-    </h1>
+<div class="hero-banner">
+    <h1 class="hero-title">🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL</h1>
     <p style="color: #cbd5e1; font-size: 1.2em;">
         Monitoreo biológico con datos reales NASA MODIS · Open-Meteo ERA5 · NASA POWER · SRTM
     </p>
