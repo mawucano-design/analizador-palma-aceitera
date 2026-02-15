@@ -3,7 +3,7 @@
 # corrección en índices (NDWI real, NDRE no disponible) y panel de estadísticas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
-# CORREGIDO: Error de inicialización de sesión.
+# NUEVO: Mapas de calor continuos para índices, extendidos más allá del polígono.
 
 import streamlit as st
 import geopandas as gpd
@@ -32,6 +32,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import cv2
 from PIL import Image
+from scipy.interpolate import Rbf  # Para interpolación radial
+from scipy.spatial import KDTree
 
 # ===== LIBRERÍAS OPCIONALES =====
 try:
@@ -61,7 +63,7 @@ except ImportError:
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 warnings.filterwarnings('ignore')
 
-# ===== INICIALIZACIÓN DE SESIÓN (se llamará después de st.set_page_config) =====
+# ===== INICIALIZACIÓN DE SESIÓN =====
 def init_session_state():
     defaults = {
         'geojson_data': None,
@@ -305,7 +307,6 @@ def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
             }
             data = requests.get(cv_url, params=params_cv, timeout=30).json()
             if data.get("values"):
-                # El valor NDVI viene escalado por 0.0001
                 ndvi = np.mean([v["value"] for v in data["values"]]) * 0.0001
                 ndvi_vals.append(ndvi)
         ndvi_promedio = np.mean(ndvi_vals) if ndvi_vals else 0.65
@@ -336,7 +337,6 @@ def obtener_ndwi_ornl(gdf, fecha_inicio, fecha_fin):
         km_lr = 1
         url = "https://modis.ornl.gov/rst/api/v1/"
         
-        # Obtener fechas disponibles
         dates_url = f"{url}/{product}/dates"
         params = {"latitude": lat, "longitude": lon, "startDate": start, "endDate": end}
         resp = requests.get(dates_url, params=params, timeout=30).json()
@@ -344,9 +344,8 @@ def obtener_ndwi_ornl(gdf, fecha_inicio, fecha_fin):
             raise Exception("No hay fechas disponibles para NDWI")
         
         ndwi_vals = []
-        for date_obj in resp["dates"][:5]:  # últimas 5 fechas
+        for date_obj in resp["dates"][:5]:
             modis_date = date_obj["modis_date"]
-            # Consultar NIR
             cv_url = f"{url}/{product}/values"
             params_nir = {
                 "latitude": lat,
@@ -358,7 +357,6 @@ def obtener_ndwi_ornl(gdf, fecha_inicio, fecha_fin):
                 "kmLeftRight": km_lr
             }
             data_nir = requests.get(cv_url, params=params_nir, timeout=30).json()
-            # Consultar SWIR
             params_swir = params_nir.copy()
             params_swir["band"] = band_swir
             data_swir = requests.get(cv_url, params=params_swir, timeout=30).json()
@@ -692,7 +690,6 @@ def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
         
         for idx, row in gdf_dividido.iterrows():
             centroid = row.geometry.centroid
-            # CORRECCIÓN: semilla entera no negativa en rango 0..2**32-1
             semilla = abs(int(centroid.x * 1000 + centroid.y * 1000)) % (2**32)
             np.random.seed(semilla)
             r = np.random.random()
@@ -784,6 +781,7 @@ def generar_mapa_fertilidad(gdf):
 def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_fields=None, tooltip_aliases=None):
     """
     Crea un mapa folium con capa base Esri Satélite y polígonos coloreados según columna_color.
+    (Esta función se mantiene para otros mapas, pero para índices usaremos la nueva función de calor)
     """
     if gdf is None or len(gdf) == 0:
         return None
@@ -806,7 +804,6 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
         control=True
     ).add_to(m)
     
-    # Estilo basado en columna_color
     if columna_color and colormap:
         def style_function(feature):
             valor = feature['properties'].get(columna_color, 0)
@@ -823,7 +820,6 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
         def style_function(feature):
             return {'fillColor': '#3388ff', 'color': 'black', 'weight': 0.5, 'fillOpacity': 0.4}
     
-    # Tooltip
     if tooltip_fields and tooltip_aliases:
         tooltip = folium.GeoJsonTooltip(fields=tooltip_fields, aliases=tooltip_aliases, localize=True)
     else:
@@ -842,155 +838,129 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
     MiniMap(toggle_display=True).add_to(m)
     return m
 
-def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre='YlOrRd'):
+def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     """
-    Crea un mapa interactivo para una variable de fertilidad (N, P, K, pH, MO).
-    gdf_fertilidad: GeoDataFrame con columnas 'id_bloque', variable, 'geometria' y recomendaciones.
+    Crea un mapa de calor continuo a partir de los valores de los bloques.
+    Utiliza interpolación IDW para generar una cuadrícula regular que se extiende
+    un 10% más allá del bounding box del polígono.
     """
-    # Definir rangos y títulos
-    info_var = {
-        'N_kg_ha': {'titulo': 'Nitrógeno (N)', 'unidad': 'kg/ha', 'vmin': 40, 'vmax': 180, 'cmap': 'YlGnBu'},
-        'P_kg_ha': {'titulo': 'Fósforo (P₂O₅)', 'unidad': 'kg/ha', 'vmin': 15, 'vmax': 70, 'cmap': 'YlOrRd'},
-        'K_kg_ha': {'titulo': 'Potasio (K₂O)', 'unidad': 'kg/ha', 'vmin': 80, 'vmax': 250, 'cmap': 'YlGn'},
-        'pH': {'titulo': 'pH del suelo', 'unidad': '', 'vmin': 4.5, 'vmax': 6.5, 'cmap': 'RdYlGn_r'},
-        'MO_porcentaje': {'titulo': 'Materia Orgánica', 'unidad': '%', 'vmin': 1.0, 'vmax': 5.0, 'cmap': 'BrBG'}
-    }
-    info = info_var.get(variable, {'titulo': variable, 'unidad': '', 'vmin': None, 'vmax': None, 'cmap': 'YlOrRd'})
+    # Obtener geometría unida de la plantación
+    plantacion_union = gdf.unary_union
+    bounds = plantacion_union.bounds  # (minx, miny, maxx, maxy)
     
-    # Crear colormap
-    colormap = LinearColormap(
-        colors=['#ffffb2','#fecc5c','#fd8d3c','#f03b20','#bd0026'] if info['cmap'] == 'YlOrRd' else
-                ['#c7e9c0','#74c476','#31a354','#006d2c'] if info['cmap'] == 'YlGn' else
-                ['#4575b4','#91bfdb','#e0f3f8','#fee090','#fc8d59','#d73027'] if info['cmap'] == 'RdYlGn_r' else
-                ['#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e'],
-        vmin=info['vmin'] if info['vmin'] else gdf_fertilidad[variable].min(),
-        vmax=info['vmax'] if info['vmax'] else gdf_fertilidad[variable].max(),
-        caption=f"{info['titulo']} ({info['unidad']})"
-    )
+    # Expandir bounds un 10%
+    dx = bounds[2] - bounds[0]
+    dy = bounds[3] - bounds[1]
+    minx = bounds[0] - 0.1 * dx
+    maxx = bounds[2] + 0.1 * dx
+    miny = bounds[1] - 0.1 * dy
+    maxy = bounds[3] + 0.1 * dy
+    
+    # Crear cuadrícula de puntos (200x200)
+    n = 200
+    xi = np.linspace(minx, maxx, n)
+    yi = np.linspace(miny, maxy, n)
+    XI, YI = np.meshgrid(xi, yi)
+    
+    # Obtener puntos de los centroides de los bloques y sus valores
+    puntos = []
+    valores = []
+    for idx, row in gdf.iterrows():
+        centroide = row.geometry.centroid
+        puntos.append([centroide.x, centroide.y])
+        valores.append(row[columna])
+    puntos = np.array(puntos)
+    valores = np.array(valores)
+    
+    # Interpolación IDW (Inverse Distance Weighting)
+    # Construir árbol KD para búsqueda rápida de vecinos
+    tree = KDTree(puntos)
+    # Para cada punto de la cuadrícula, encontrar los k vecinos más cercanos
+    k = min(8, len(puntos))  # número de vecinos a considerar
+    distancias, indices = tree.query(np.column_stack((XI.ravel(), YI.ravel())), k=k)
+    
+    # Calcular pesos (inverso de la distancia, con un epsilon para evitar división por cero)
+    epsilon = 1e-6
+    pesos = 1.0 / (distancias + epsilon)
+    # Normalizar pesos
+    suma_pesos = np.sum(pesos, axis=1)
+    # Valor interpolado = suma(pesos * valores_vecinos) / suma_pesos
+    valores_vecinos = valores[indices]
+    valores_interp = np.sum(pesos * valores_vecinos, axis=1) / suma_pesos
+    # Reconstruir cuadrícula
+    ZI = valores_interp.reshape(XI.shape)
+    
+    # Crear una imagen RGB a partir de ZI usando un colormap de matplotlib
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
+    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+    rgba = cmap(norm(ZI))
+    # Convertir a imagen (uint8) para folium. Folium espera una imagen con canales RGBA, valores 0-255.
+    img = (rgba * 255).astype(np.uint8)
+    
+    # Guardar la imagen en un objeto BytesIO
+    img_bytes = io.BytesIO()
+    Image.fromarray(img).save(img_bytes, format='PNG')
+    img_bytes.seek(0)
     
     # Crear mapa base
-    m = crear_mapa_interactivo_base(
-        gdf_fertilidad,
-        columna_color=variable,
-        colormap=colormap,
-        tooltip_fields=['id_bloque', variable, 'recomendacion_N', 'recomendacion_P', 'recomendacion_K'],
-        tooltip_aliases=['Bloque', f'{info["titulo"]} ({info["unidad"]})', 'Recom. N', 'Recom. P', 'Recom. K']
-    )
-    if m:
-        colormap.add_to(m)
+    centroide = plantacion_union.centroid
+    m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri, Maxar, Earthstar Geographics',
+        name='Satélite Esri',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    folium.TileLayer(
+        tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        attr='OpenStreetMap',
+        name='OpenStreetMap',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    # Superponer la imagen de calor
+    # Las coordenadas de la imagen son (minx, miny, maxx, maxy) en el orden (lon_min, lat_min, lon_max, lat_max)
+    # Folium espera ((lat_min, lon_min), (lat_max, lon_max)) para el bounding box.
+    bounds_img = [[miny, minx], [maxy, maxx]]
+    folium.raster_layers.ImageOverlay(
+        image=img_bytes,
+        bounds=bounds_img,
+        opacity=0.7,
+        name=f'Calor {titulo}',
+        interactive=True,
+        cross_origin=False,
+        zindex=1
+    ).add_to(m)
+    
+    # Añadir el contorno del polígono de la plantación
+    folium.GeoJson(
+        gpd.GeoSeries(plantacion_union).to_json(),
+        name='Límite plantación',
+        style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
+        tooltip='Límite de la plantación'
+    ).add_to(m)
+    
+    # Añadir leyenda de color
+    colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
+    colormap.add_to(m)
+    
+    folium.LayerControl(collapsed=False).add_to(m)
+    Fullscreen().add_to(m)
+    MeasureControl().add_to(m)
+    MiniMap(toggle_display=True).add_to(m)
+    
     return m
 
-def crear_graficos_climaticos_completos(datos_climaticos):
-    """
-    Crea gráficos de temperatura, precipitación, radiación y viento.
-    Maneja correctamente valores NaN.
-    """
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    dias = list(range(1, len(datos_climaticos['precipitacion']['diaria']) + 1))
-    
-    # Radiación
-    if 'radiacion' in datos_climaticos and datos_climaticos['radiacion']['diaria']:
-        ax1 = axes[0, 0]
-        rad = np.array(datos_climaticos['radiacion']['diaria'], dtype=np.float64)
-        mask_nan = np.isnan(rad)
-        if np.any(mask_nan):
-            rad_filled = rad.copy()
-            rad_filled[mask_nan] = np.nanmean(rad)
-        else:
-            rad_filled = rad
-        ax1.plot(dias, rad_filled, 'o-', color='orange', linewidth=2, markersize=4)
-        ax1.fill_between(dias, rad_filled, alpha=0.3, color='orange')
-        ax1.axhline(y=datos_climaticos['radiacion']['promedio'], color='red', 
-                   linestyle='--', label=f"Promedio: {datos_climaticos['radiacion']['promedio']} MJ/m²")
-        ax1.set_xlabel('Día'); ax1.set_ylabel('Radiación (MJ/m²/día)')
-        ax1.set_title('Radiación Solar', fontweight='bold'); ax1.legend(); ax1.grid(True, alpha=0.3)
-    else:
-        axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[0, 0].set_title('Radiación', fontweight='bold')
-    
-    # Precipitación
-    ax2 = axes[0, 1]
-    precip = np.array(datos_climaticos['precipitacion']['diaria'], dtype=np.float64)
-    ax2.bar(dias, precip, color='blue', alpha=0.7)
-    ax2.set_xlabel('Día'); ax2.set_ylabel('Precipitación (mm)')
-    ax2.set_title(f"Precipitación (Total: {datos_climaticos['precipitacion']['total']} mm)", fontweight='bold')
-    ax2.grid(True, alpha=0.3, axis='y')
-    
-    # Viento
-    if 'viento' in datos_climaticos and datos_climaticos['viento']['diaria']:
-        ax3 = axes[1, 0]
-        wind = np.array(datos_climaticos['viento']['diaria'], dtype=np.float64)
-        mask_nan = np.isnan(wind)
-        if np.any(mask_nan):
-            wind_filled = wind.copy()
-            wind_filled[mask_nan] = np.nanmean(wind)
-        else:
-            wind_filled = wind
-        ax3.plot(dias, wind_filled, 's-', color='green', linewidth=2, markersize=4)
-        ax3.fill_between(dias, wind_filled, alpha=0.3, color='green')
-        ax3.axhline(y=datos_climaticos['viento']['promedio'], color='red', 
-                   linestyle='--', label=f"Promedio: {datos_climaticos['viento']['promedio']} m/s")
-        ax3.set_xlabel('Día'); ax3.set_ylabel('Viento (m/s)')
-        ax3.set_title('Velocidad del Viento', fontweight='bold'); ax3.legend(); ax3.grid(True, alpha=0.3)
-    else:
-        axes[1, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[1, 0].set_title('Viento', fontweight='bold')
-    
-    # Temperatura
-    ax4 = axes[1, 1]
-    temp = np.array(datos_climaticos['temperatura']['diaria'], dtype=np.float64)
-    mask_nan = np.isnan(temp)
-    if np.any(mask_nan):
-        temp_filled = temp.copy()
-        temp_filled[mask_nan] = np.nanmean(temp)
-    else:
-        temp_filled = temp
-    ax4.plot(dias, temp_filled, '^-', color='red', linewidth=2, markersize=4)
-    ax4.fill_between(dias, temp_filled, alpha=0.3, color='red')
-    ax4.axhline(y=datos_climaticos['temperatura']['promedio'], color='blue', 
-               linestyle='--', label=f"Promedio: {datos_climaticos['temperatura']['promedio']}°C")
-    ax4.set_xlabel('Día'); ax4.set_ylabel('Temperatura (°C)')
-    ax4.set_title('Temperatura Diaria', fontweight='bold'); ax4.legend(); ax4.grid(True, alpha=0.3)
-    
-    plt.suptitle(f"Datos Climáticos - {datos_climaticos.get('fuente', 'Desconocido')}", fontsize=16, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    return fig
-
-def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
-    fig = go.Figure()
-    fig.add_trace(go.Scatterternary(
-        a=[arcilla], b=[limo], c=[arena],
-        mode='markers+text',
-        marker=dict(size=14, color='red'),
-        text=[tipo_suelo],
-        textposition='top center',
-        name='Suelo actual'
-    ))
-    fig.update_layout(
-        title='Triángulo Textural',
-        ternary=dict(
-            sum=100,
-            aaxis=dict(title='% Arcilla', min=0, linewidth=2),
-            baxis=dict(title='% Limo', min=0, linewidth=2),
-            caxis=dict(title='% Arena', min=0, linewidth=2)
-        ),
-        height=500, width=600
-    )
-    return fig
-
-# ===== NUEVAS FUNCIONES PARA ESTADÍSTICAS DE ÍNDICES =====
-def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap):
+def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     """
     Muestra mapa de calor interactivo y panel de estadísticas descriptivas.
     """
-    # Mapa interactivo con gradiente
-    mapa = crear_mapa_interactivo_base(
-        gdf,
-        columna_color=columna,
-        colormap=LinearColormap(colors=colormap, vmin=vmin, vmax=vmax, caption=titulo),
-        tooltip_fields=['id_bloque', columna],
-        tooltip_aliases=['Bloque', titulo]
-    )
-    if mapa:
-        folium_static(mapa, width=1000, height=500)
+    # Mapa de calor
+    mapa_calor = crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
+    if mapa_calor:
+        folium_static(mapa_calor, width=1000, height=600)
     
     # Estadísticas
     valores = gdf[columna].dropna()
@@ -1033,6 +1003,133 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap):
     df_tabla = gdf[['id_bloque', columna]].copy()
     df_tabla.columns = ['Bloque', titulo]
     st.dataframe(df_tabla.style.format({titulo: '{:.3f}'}), use_container_width=True)
+
+def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre='YlOrRd'):
+    """
+    Crea un mapa interactivo para una variable de fertilidad (N, P, K, pH, MO).
+    gdf_fertilidad: GeoDataFrame con columnas 'id_bloque', variable, 'geometria' y recomendaciones.
+    """
+    info_var = {
+        'N_kg_ha': {'titulo': 'Nitrógeno (N)', 'unidad': 'kg/ha', 'vmin': 40, 'vmax': 180, 'cmap': 'YlGnBu'},
+        'P_kg_ha': {'titulo': 'Fósforo (P₂O₅)', 'unidad': 'kg/ha', 'vmin': 15, 'vmax': 70, 'cmap': 'YlOrRd'},
+        'K_kg_ha': {'titulo': 'Potasio (K₂O)', 'unidad': 'kg/ha', 'vmin': 80, 'vmax': 250, 'cmap': 'YlGn'},
+        'pH': {'titulo': 'pH del suelo', 'unidad': '', 'vmin': 4.5, 'vmax': 6.5, 'cmap': 'RdYlGn_r'},
+        'MO_porcentaje': {'titulo': 'Materia Orgánica', 'unidad': '%', 'vmin': 1.0, 'vmax': 5.0, 'cmap': 'BrBG'}
+    }
+    info = info_var.get(variable, {'titulo': variable, 'unidad': '', 'vmin': None, 'vmax': None, 'cmap': 'YlOrRd'})
+    
+    colormap = LinearColormap(
+        colors=['#ffffb2','#fecc5c','#fd8d3c','#f03b20','#bd0026'] if info['cmap'] == 'YlOrRd' else
+                ['#c7e9c0','#74c476','#31a354','#006d2c'] if info['cmap'] == 'YlGn' else
+                ['#4575b4','#91bfdb','#e0f3f8','#fee090','#fc8d59','#d73027'] if info['cmap'] == 'RdYlGn_r' else
+                ['#8c510a','#bf812d','#dfc27d','#f6e8c3','#c7eae5','#80cdc1','#35978f','#01665e'],
+        vmin=info['vmin'] if info['vmin'] else gdf_fertilidad[variable].min(),
+        vmax=info['vmax'] if info['vmax'] else gdf_fertilidad[variable].max(),
+        caption=f"{info['titulo']} ({info['unidad']})"
+    )
+    
+    m = crear_mapa_interactivo_base(
+        gdf_fertilidad,
+        columna_color=variable,
+        colormap=colormap,
+        tooltip_fields=['id_bloque', variable, 'recomendacion_N', 'recomendacion_P', 'recomendacion_K'],
+        tooltip_aliases=['Bloque', f'{info["titulo"]} ({info["unidad"]})', 'Recom. N', 'Recom. P', 'Recom. K']
+    )
+    if m:
+        colormap.add_to(m)
+    return m
+
+def crear_graficos_climaticos_completos(datos_climaticos):
+    """
+    Crea gráficos de temperatura, precipitación, radiación y viento.
+    Maneja correctamente valores NaN.
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    dias = list(range(1, len(datos_climaticos['precipitacion']['diaria']) + 1))
+    
+    if 'radiacion' in datos_climaticos and datos_climaticos['radiacion']['diaria']:
+        ax1 = axes[0, 0]
+        rad = np.array(datos_climaticos['radiacion']['diaria'], dtype=np.float64)
+        mask_nan = np.isnan(rad)
+        if np.any(mask_nan):
+            rad_filled = rad.copy()
+            rad_filled[mask_nan] = np.nanmean(rad)
+        else:
+            rad_filled = rad
+        ax1.plot(dias, rad_filled, 'o-', color='orange', linewidth=2, markersize=4)
+        ax1.fill_between(dias, rad_filled, alpha=0.3, color='orange')
+        ax1.axhline(y=datos_climaticos['radiacion']['promedio'], color='red', 
+                   linestyle='--', label=f"Promedio: {datos_climaticos['radiacion']['promedio']} MJ/m²")
+        ax1.set_xlabel('Día'); ax1.set_ylabel('Radiación (MJ/m²/día)')
+        ax1.set_title('Radiación Solar', fontweight='bold'); ax1.legend(); ax1.grid(True, alpha=0.3)
+    else:
+        axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[0, 0].set_title('Radiación', fontweight='bold')
+    
+    ax2 = axes[0, 1]
+    precip = np.array(datos_climaticos['precipitacion']['diaria'], dtype=np.float64)
+    ax2.bar(dias, precip, color='blue', alpha=0.7)
+    ax2.set_xlabel('Día'); ax2.set_ylabel('Precipitación (mm)')
+    ax2.set_title(f"Precipitación (Total: {datos_climaticos['precipitacion']['total']} mm)", fontweight='bold')
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    if 'viento' in datos_climaticos and datos_climaticos['viento']['diaria']:
+        ax3 = axes[1, 0]
+        wind = np.array(datos_climaticos['viento']['diaria'], dtype=np.float64)
+        mask_nan = np.isnan(wind)
+        if np.any(mask_nan):
+            wind_filled = wind.copy()
+            wind_filled[mask_nan] = np.nanmean(wind)
+        else:
+            wind_filled = wind
+        ax3.plot(dias, wind_filled, 's-', color='green', linewidth=2, markersize=4)
+        ax3.fill_between(dias, wind_filled, alpha=0.3, color='green')
+        ax3.axhline(y=datos_climaticos['viento']['promedio'], color='red', 
+                   linestyle='--', label=f"Promedio: {datos_climaticos['viento']['promedio']} m/s")
+        ax3.set_xlabel('Día'); ax3.set_ylabel('Viento (m/s)')
+        ax3.set_title('Velocidad del Viento', fontweight='bold'); ax3.legend(); ax3.grid(True, alpha=0.3)
+    else:
+        axes[1, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center'); axes[1, 0].set_title('Viento', fontweight='bold')
+    
+    ax4 = axes[1, 1]
+    temp = np.array(datos_climaticos['temperatura']['diaria'], dtype=np.float64)
+    mask_nan = np.isnan(temp)
+    if np.any(mask_nan):
+        temp_filled = temp.copy()
+        temp_filled[mask_nan] = np.nanmean(temp)
+    else:
+        temp_filled = temp
+    ax4.plot(dias, temp_filled, '^-', color='red', linewidth=2, markersize=4)
+    ax4.fill_between(dias, temp_filled, alpha=0.3, color='red')
+    ax4.axhline(y=datos_climaticos['temperatura']['promedio'], color='blue', 
+               linestyle='--', label=f"Promedio: {datos_climaticos['temperatura']['promedio']}°C")
+    ax4.set_xlabel('Día'); ax4.set_ylabel('Temperatura (°C)')
+    ax4.set_title('Temperatura Diaria', fontweight='bold'); ax4.legend(); ax4.grid(True, alpha=0.3)
+    
+    plt.suptitle(f"Datos Climáticos - {datos_climaticos.get('fuente', 'Desconocido')}", fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    return fig
+
+def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
+    fig = go.Figure()
+    fig.add_trace(go.Scatterternary(
+        a=[arcilla], b=[limo], c=[arena],
+        mode='markers+text',
+        marker=dict(size=14, color='red'),
+        text=[tipo_suelo],
+        textposition='top center',
+        name='Suelo actual'
+    ))
+    fig.update_layout(
+        title='Triángulo Textural',
+        ternary=dict(
+            sum=100,
+            aaxis=dict(title='% Arcilla', min=0, linewidth=2),
+            baxis=dict(title='% Limo', min=0, linewidth=2),
+            caxis=dict(title='% Arena', min=0, linewidth=2)
+        ),
+        height=500, width=600
+    )
+    return fig
 
 # ===== FUNCIONES YOLO =====
 def cargar_modelo_yolo(ruta_modelo):
@@ -1263,17 +1360,14 @@ def ejecutar_analisis_completo():
             areas_ha.append(float(calcular_superficie(area_gdf)))
         gdf_dividido['area_ha'] = areas_ha
         
-        # Obtener NDVI real
         st.info("🛰️ Consultando MODIS NDVI real (ORNL DAAC)...")
         gdf_ndvi, ndvi_prom = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
         gdf_dividido['ndvi_modis'] = gdf_ndvi['ndvi_modis']
         
-        # Obtener NDWI real
         st.info("💧 Consultando MODIS NDWI real (bandas NIR/SWIR)...")
         gdf_ndwi, ndwi_prom = obtener_ndwi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
         gdf_dividido['ndwi_modis'] = gdf_ndwi['ndwi_modis']
         
-        # NDRE no disponible con MODIS, se omite
         st.info("⚠️ NDRE no puede calcularse con MODIS (requiere banda red edge). Se omite.")
         
         st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
@@ -1317,7 +1411,6 @@ def ejecutar_analisis_completo():
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
-# Ahora inicializamos el estado de sesión
 init_session_state()
 
 # ===== OCULTAR MENÚ GITHUB Y MEJORAR ESTILOS =====
@@ -1388,7 +1481,6 @@ div[data-testid="metric-container"] {
 </style>
 """, unsafe_allow_html=True)
 
-# Banner
 st.markdown("""
 <div class="hero-banner">
     <h1 class="hero-title">🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL</h1>
@@ -1670,7 +1762,6 @@ if st.session_state.analisis_completado:
                 df_fertilidad = pd.DataFrame(datos_fertilidad)
                 gdf_fertilidad = gpd.GeoDataFrame(df_fertilidad, geometry='geometria', crs='EPSG:4326')
                 
-                # Métricas generales
                 col1, col2, col3, col4, col5 = st.columns(5)
                 with col1: N_prom = df_fertilidad['N_kg_ha'].mean(); st.metric("Nitrógeno (N)", f"{N_prom:.0f} kg/ha")
                 with col2: P_prom = df_fertilidad['P_kg_ha'].mean(); st.metric("Fósforo (P₂O₅)", f"{P_prom:.0f} kg/ha")
@@ -1681,7 +1772,6 @@ if st.session_state.analisis_completado:
                 st.markdown("---")
                 st.markdown("### 🗺️ MAPA INTERACTIVO DE NUTRIENTES (Esri Satélite)")
                 
-                # Selector de variable
                 variable = st.selectbox(
                     "Selecciona la variable a visualizar:",
                     options=['N_kg_ha', 'P_kg_ha', 'K_kg_ha', 'pH', 'MO_porcentaje'],
@@ -1694,7 +1784,6 @@ if st.session_state.analisis_completado:
                     }[x]
                 )
                 
-                # Crear mapa interactivo
                 mapa_fertilidad = crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable)
                 if mapa_fertilidad:
                     folium_static(mapa_fertilidad, width=1000, height=600)
