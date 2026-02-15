@@ -28,3 +28,4 @@ xarray
 netCDF4 
 rasterio 
 ultralytics
+netCDF4
