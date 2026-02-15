@@ -1,10 +1,9 @@
 # app.py - Versión COMPLETA con MODIS REAL (ORNL DAAC), clima Open-Meteo + NASA POWER,
 # curvas de nivel SRTM (reales o simuladas), visualizaciones mejoradas,
-# corrección en índices (NDWI real, NDRE no disponible) y panel de estadísticas.
+# índices NDVI y NDWI con variabilidad espacial (gradientes), eliminado NDRE.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
-# NUEVO: Mapas de calor continuos para índices, extendidos más allá del polígono.
-# CORREGIDO: Error de set_page_config por warnings anticipados.
+# Mapas de calor con interpolación RBF, extendidos más allá del polígono.
 
 import streamlit as st
 import geopandas as gpd
@@ -34,6 +33,8 @@ from plotly.subplots import make_subplots
 import cv2
 from PIL import Image
 from scipy.spatial import KDTree
+from scipy.interpolate import Rbf
+import base64
 
 # ===== LIBRERÍAS OPCIONALES (solo importar, sin warnings) =====
 try:
@@ -271,114 +272,143 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE DATOS SATELITALES MEJORADAS =====
-def obtener_ndvi_ornl(gdf, fecha_inicio, fecha_fin):
-    """Obtiene NDVI real del producto MOD13Q1 a través de ORNL DAAC."""
-    try:
+# ===== FUNCIONES DE DATOS SATELITALES CON VARIABILIDAD ESPACIAL =====
+def obtener_valores_modis_en_area(gdf, fecha_inicio, fecha_fin, producto, banda, paso_m=100):
+    """
+    Consulta valores MODIS en una cuadrícula regular dentro del polígono.
+    Retorna una lista de puntos (lon, lat, valor).
+    """
+    bounds = gdf.total_bounds
+    minx, miny, maxx, maxy = bounds
+    paso_grados = paso_m / 111000.0
+    lons = np.arange(minx, maxx, paso_grados)
+    lats = np.arange(miny, maxy, paso_grados)
+    puntos = []
+    for lon in lons:
+        for lat in lats:
+            punto = Point(lon, lat)
+            if gdf.contains(punto).any():
+                puntos.append((lon, lat))
+    
+    if len(puntos) == 0:
         centroide = gdf.geometry.unary_union.centroid
-        lat = centroide.y
-        lon = centroide.x
-        product = "MOD13Q1"
-        band = "250m_16_days_NDVI"
-        start = fecha_inicio.strftime("%Y-%m-%d")
-        end = fecha_fin.strftime("%Y-%m-%d")
-        km_ab = 1
-        km_lr = 1
-        url = "https://modis.ornl.gov/rst/api/v1/"
-        dates_url = f"{url}/{product}/dates"
-        params = {"latitude": lat, "longitude": lon, "startDate": start, "endDate": end}
-        resp = requests.get(dates_url, params=params, timeout=30).json()
-        if not resp.get("dates"):
-            raise Exception("No hay fechas disponibles para este punto")
-        ndvi_vals = []
-        for date_obj in resp["dates"][:5]:  # tomamos las últimas 5 fechas
-            modis_date = date_obj["modis_date"]
-            cv_url = f"{url}/{product}/values"
+        puntos = [(centroide.x, centroide.y)]
+    
+    url = "https://modis.ornl.gov/rst/api/v1/"
+    valores = []
+    for lon, lat in puntos:
+        try:
+            dates_url = f"{url}/{producto}/dates"
+            params = {"latitude": lat, "longitude": lon, "startDate": fecha_inicio.strftime("%Y-%m-%d"), "endDate": fecha_fin.strftime("%Y-%m-%d")}
+            resp = requests.get(dates_url, params=params, timeout=30).json()
+            if not resp.get("dates"):
+                continue
+            modis_date = resp["dates"][-1]["modis_date"]
+            cv_url = f"{url}/{producto}/values"
             params_cv = {
                 "latitude": lat,
                 "longitude": lon,
-                "band": band,
+                "band": banda,
                 "startDate": modis_date,
                 "endDate": modis_date,
-                "kmAboveBelow": km_ab,
-                "kmLeftRight": km_lr
+                "kmAboveBelow": 0,
+                "kmLeftRight": 0
             }
             data = requests.get(cv_url, params=params_cv, timeout=30).json()
             if data.get("values"):
-                ndvi = np.mean([v["value"] for v in data["values"]]) * 0.0001
-                ndvi_vals.append(ndvi)
-        ndvi_promedio = np.mean(ndvi_vals) if ndvi_vals else 0.65
-        gdf_out = gdf.copy()
-        gdf_out["ndvi_modis"] = round(ndvi_promedio, 3)
-        return gdf_out, ndvi_promedio
-    except Exception as e:
-        st.warning(f"Error en ORNL NDVI: {str(e)[:100]}. Usando valores simulados.")
-        gdf_out = gdf.copy()
-        gdf_out["ndvi_modis"] = 0.65
-        return gdf_out, 0.65
-
-def obtener_ndwi_ornl(gdf, fecha_inicio, fecha_fin):
-    """
-    Calcula NDWI real usando bandas NIR (banda 2) y SWIR (banda 5) del producto MOD09GA.
-    NDWI = (NIR - SWIR) / (NIR + SWIR)
-    """
-    try:
+                valor = np.mean([v["value"] for v in data["values"]]) * 0.0001
+                valores.append((lon, lat, valor))
+        except Exception as e:
+            continue
+    
+    if len(valores) == 0:
         centroide = gdf.geometry.unary_union.centroid
-        lat = centroide.y
-        lon = centroide.x
-        product = "MOD09GA"
-        band_nir = "sur_reflect_b02"  # NIR, 841-876 nm
-        band_swir = "sur_reflect_b05" # SWIR, 1230-1250 nm
-        start = fecha_inicio.strftime("%Y-%m-%d")
-        end = fecha_fin.strftime("%Y-%m-%d")
-        km_ab = 1
-        km_lr = 1
-        url = "https://modis.ornl.gov/rst/api/v1/"
-        
-        dates_url = f"{url}/{product}/dates"
-        params = {"latitude": lat, "longitude": lon, "startDate": start, "endDate": end}
-        resp = requests.get(dates_url, params=params, timeout=30).json()
-        if not resp.get("dates"):
-            raise Exception("No hay fechas disponibles para NDWI")
-        
-        ndwi_vals = []
-        for date_obj in resp["dates"][:5]:
-            modis_date = date_obj["modis_date"]
-            cv_url = f"{url}/{product}/values"
-            params_nir = {
-                "latitude": lat,
-                "longitude": lon,
-                "band": band_nir,
-                "startDate": modis_date,
-                "endDate": modis_date,
-                "kmAboveBelow": km_ab,
-                "kmLeftRight": km_lr
-            }
-            data_nir = requests.get(cv_url, params=params_nir, timeout=30).json()
-            params_swir = params_nir.copy()
-            params_swir["band"] = band_swir
-            data_swir = requests.get(cv_url, params=params_swir, timeout=30).json()
-            
-            if data_nir.get("values") and data_swir.get("values"):
-                nir = np.mean([v["value"] for v in data_nir["values"]]) * 0.0001
-                swir = np.mean([v["value"] for v in data_swir["values"]]) * 0.0001
-                if (nir + swir) != 0:
-                    ndwi = (nir - swir) / (nir + swir)
-                    ndwi_vals.append(ndwi)
-        
-        ndwi_promedio = np.mean(ndwi_vals) if ndwi_vals else 0.35
-        gdf_out = gdf.copy()
-        gdf_out["ndwi_modis"] = round(ndwi_promedio, 3)
-        return gdf_out, ndwi_promedio
-    except Exception as e:
-        st.warning(f"Error en ORNL NDWI: {str(e)[:100]}. Usando valores simulados.")
-        gdf_out = gdf.copy()
-        gdf_out["ndwi_modis"] = 0.35
-        return gdf_out, 0.35
+        base = 0.65
+        for lon, lat in puntos:
+            variacion = 0.1 * math.sin(lon * 10) * math.cos(lat * 10)
+            valor = base + variacion
+            valores.append((lon, lat, valor))
+        st.warning("No se pudieron obtener datos MODIS reales. Usando valores simulados con variabilidad espacial.")
+    
+    return valores
 
-# Nota: NDRE no puede calcularse con MODIS por falta de banda red edge.
-# Se omite este índice.
+def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
+    """
+    Obtiene NDVI real con variabilidad espacial y asigna valores a cada bloque.
+    """
+    producto = "MOD13Q1"
+    banda = "250m_16_days_NDVI"
+    gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
+    valores_puntos = obtener_valores_modis_en_area(gdf_union, fecha_inicio, fecha_fin, producto, banda, paso_m=100)
+    
+    if not valores_puntos:
+        for idx, row in gdf_dividido.iterrows():
+            gdf_dividido.loc[idx, 'ndvi_modis'] = 0.65
+        return gdf_dividido, 0.65
+    
+    puntos = np.array([[lon, lat] for lon, lat, _ in valores_puntos])
+    valores = np.array([v for _, _, v in valores_puntos])
+    tree = KDTree(puntos)
+    
+    ndvi_bloques = []
+    for idx, row in gdf_dividido.iterrows():
+        centro = (row.geometry.centroid.x, row.geometry.centroid.y)
+        dist, ind = tree.query(centro)
+        ndvi_bloques.append(valores[ind])
+    
+    gdf_dividido['ndvi_modis'] = [round(v, 3) for v in ndvi_bloques]
+    return gdf_dividido, np.mean(ndvi_bloques)
 
+def obtener_ndwi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
+    """
+    Obtiene NDWI real con variabilidad espacial (usando MOD09GA bandas NIR y SWIR).
+    """
+    producto = "MOD09GA"
+    banda_nir = "sur_reflect_b02"
+    banda_swir = "sur_reflect_b05"
+    
+    gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
+    valores_nir = obtener_valores_modis_en_area(gdf_union, fecha_inicio, fecha_fin, producto, banda_nir, paso_m=100)
+    valores_swir = obtener_valores_modis_en_area(gdf_union, fecha_inicio, fecha_fin, producto, banda_swir, paso_m=100)
+    
+    if not valores_nir or not valores_swir:
+        for idx, row in gdf_dividido.iterrows():
+            gdf_dividido.loc[idx, 'ndwi_modis'] = 0.35
+        return gdf_dividido, 0.35
+    
+    nir_dict = {(lon, lat): val for lon, lat, val in valores_nir}
+    swir_dict = {(lon, lat): val for lon, lat, val in valores_swir}
+    puntos_comunes = set(nir_dict.keys()) & set(swir_dict.keys())
+    
+    if not puntos_comunes:
+        centro = gdf_union.geometry.centroid
+        return gdf_dividido, 0.35
+    
+    lons, lats, ndwi_vals = [], [], []
+    for (lon, lat) in puntos_comunes:
+        nir = nir_dict[(lon, lat)]
+        swir = swir_dict[(lon, lat)]
+        if (nir + swir) != 0:
+            ndwi = (nir - swir) / (nir + swir)
+            lons.append(lon)
+            lats.append(lat)
+            ndwi_vals.append(ndwi)
+    
+    if len(ndwi_vals) == 0:
+        return gdf_dividido, 0.35
+    
+    puntos = np.array([lons, lats]).T
+    tree = KDTree(puntos)
+    ndwi_bloques = []
+    for idx, row in gdf_dividido.iterrows():
+        centro = (row.geometry.centroid.x, row.geometry.centroid.y)
+        dist, ind = tree.query(centro)
+        ndwi_bloques.append(ndwi_vals[ind])
+    
+    gdf_dividido['ndwi_modis'] = [round(v, 3) for v in ndwi_bloques]
+    return gdf_dividido, np.mean(ndwi_bloques)
+
+# ===== FUNCIONES CLIMÁTICAS (sin cambios, solo se incluyen por completitud) =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     try:
         centroide = gdf.geometry.unary_union.centroid
@@ -622,7 +652,7 @@ def ejecutar_deteccion_palmas():
         st.session_state.deteccion_ejecutada = True
         st.success(f"✅ Detección MEJORADA completada: {len(palmas_verificadas)} palmas detectadas")
 
-# ===== ANÁLISIS DE TEXTURA DE SUELO MEJORADO (CON SEMILLA CORREGIDA) =====
+# ===== ANÁLISIS DE TEXTURA DE SUELO MEJORADO =====
 def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
     resultados = []
     try:
@@ -779,13 +809,11 @@ def generar_mapa_fertilidad(gdf):
 def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_fields=None, tooltip_aliases=None):
     """
     Crea un mapa folium con capa base Esri Satélite y polígonos coloreados según columna_color.
-    (Esta función se mantiene para otros mapas, pero para índices usaremos la nueva función de calor)
     """
     if gdf is None or len(gdf) == 0:
         return None
     centroide = gdf.geometry.unary_union.centroid
     m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
-    # Capa base Esri Satélite
     folium.TileLayer(
         tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         attr='Esri, Maxar, Earthstar Geographics',
@@ -793,7 +821,6 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
         overlay=False,
         control=True
     ).add_to(m)
-    # Capa OSM como alternativa
     folium.TileLayer(
         tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
         attr='OpenStreetMap',
@@ -836,17 +863,13 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
     MiniMap(toggle_display=True).add_to(m)
     return m
 
-def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
+def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list):
     """
-    Crea un mapa de calor continuo a partir de los valores de los bloques.
-    Utiliza interpolación IDW para generar una cuadrícula regular que se extiende
-    un 10% más allá del bounding box del polígono.
+    Crea un mapa de calor continuo usando interpolación RBF (Radial Basis Function).
+    Genera una superficie más suave y realista, extendida un 10% más allá del polígono.
     """
-    # Obtener geometría unida de la plantación
     plantacion_union = gdf.unary_union
-    bounds = plantacion_union.bounds  # (minx, miny, maxx, maxy)
-    
-    # Expandir bounds un 10%
+    bounds = plantacion_union.bounds
     dx = bounds[2] - bounds[0]
     dy = bounds[3] - bounds[1]
     minx = bounds[0] - 0.1 * dx
@@ -854,13 +877,6 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     miny = bounds[1] - 0.1 * dy
     maxy = bounds[3] + 0.1 * dy
     
-    # Crear cuadrícula de puntos (200x200)
-    n = 200
-    xi = np.linspace(minx, maxx, n)
-    yi = np.linspace(miny, maxy, n)
-    XI, YI = np.meshgrid(xi, yi)
-    
-    # Obtener puntos de los centroides de los bloques y sus valores
     puntos = []
     valores = []
     for idx, row in gdf.iterrows():
@@ -870,7 +886,93 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     puntos = np.array(puntos)
     valores = np.array(valores)
     
-    # Interpolación IDW (Inverse Distance Weighting)
+    if len(puntos) < 4:
+        return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
+    
+    n = 300
+    xi = np.linspace(minx, maxx, n)
+    yi = np.linspace(miny, maxy, n)
+    XI, YI = np.meshgrid(xi, yi)
+    
+    try:
+        rbf = Rbf(puntos[:, 0], puntos[:, 1], valores, function='multiquadric', smooth=0.1)
+        ZI = rbf(XI, YI)
+    except Exception as e:
+        return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
+    
+    cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
+    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+    rgba = cmap(norm(ZI))
+    img = (rgba * 255).astype(np.uint8)
+    
+    img_bytes = io.BytesIO()
+    Image.fromarray(img).save(img_bytes, format='PNG')
+    img_bytes.seek(0)
+    img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+    img_data = f"data:image/png;base64,{img_base64}"
+    
+    centroide = plantacion_union.centroid
+    m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr='Esri, Maxar, Earthstar Geographics',
+        name='Satélite Esri',
+        overlay=False,
+        control=True
+    ).add_to(m)
+    
+    bounds_img = [[miny, minx], [maxy, maxx]]
+    folium.raster_layers.ImageOverlay(
+        image=img_data,
+        bounds=bounds_img,
+        opacity=0.7,
+        name=f'Calor {titulo}',
+        interactive=True,
+        zindex=1
+    ).add_to(m)
+    
+    folium.GeoJson(
+        gpd.GeoSeries(plantacion_union).to_json(),
+        name='Límite plantación',
+        style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
+        tooltip='Límite de la plantación'
+    ).add_to(m)
+    
+    colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
+    colormap.add_to(m)
+    
+    folium.LayerControl(collapsed=False).add_to(m)
+    Fullscreen().add_to(m)
+    MeasureControl().add_to(m)
+    MiniMap(toggle_display=True).add_to(m)
+    
+    return m
+
+def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list):
+    """Versión IDW de respaldo (con corrección base64)."""
+    plantacion_union = gdf.unary_union
+    bounds = plantacion_union.bounds
+    dx = bounds[2] - bounds[0]
+    dy = bounds[3] - bounds[1]
+    minx = bounds[0] - 0.1 * dx
+    maxx = bounds[2] + 0.1 * dx
+    miny = bounds[1] - 0.1 * dy
+    maxy = bounds[3] + 0.1 * dy
+    
+    puntos = []
+    valores = []
+    for idx, row in gdf.iterrows():
+        centroide = row.geometry.centroid
+        puntos.append([centroide.x, centroide.y])
+        valores.append(row[columna])
+    puntos = np.array(puntos)
+    valores = np.array(valores)
+    
+    n = 200
+    xi = np.linspace(minx, maxx, n)
+    yi = np.linspace(miny, maxy, n)
+    XI, YI = np.meshgrid(xi, yi)
+    
     tree = KDTree(puntos)
     k = min(8, len(puntos))
     distancias, indices = tree.query(np.column_stack((XI.ravel(), YI.ravel())), k=k)
@@ -882,21 +984,17 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     valores_interp = np.sum(pesos * valores_vecinos, axis=1) / suma_pesos
     ZI = valores_interp.reshape(XI.shape)
     
-    # Crear una imagen RGB a partir de ZI usando un colormap de matplotlib
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
     rgba = cmap(norm(ZI))
     img = (rgba * 255).astype(np.uint8)
     
-    # Guardar la imagen en un objeto BytesIO y codificarla en base64
     img_bytes = io.BytesIO()
     Image.fromarray(img).save(img_bytes, format='PNG')
     img_bytes.seek(0)
-    import base64
     img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
     img_data = f"data:image/png;base64,{img_base64}"
     
-    # Crear mapa base
     centroide = plantacion_union.centroid
     m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
     folium.TileLayer(
@@ -906,15 +1004,7 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
         overlay=False,
         control=True
     ).add_to(m)
-    folium.TileLayer(
-        tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-        attr='OpenStreetMap',
-        name='OpenStreetMap',
-        overlay=False,
-        control=True
-    ).add_to(m)
     
-    # Superponer la imagen de calor
     bounds_img = [[miny, minx], [maxy, maxx]]
     folium.raster_layers.ImageOverlay(
         image=img_data,
@@ -922,11 +1012,9 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
         opacity=0.7,
         name=f'Calor {titulo}',
         interactive=True,
-        cross_origin=False,
         zindex=1
     ).add_to(m)
     
-    # Añadir el contorno del polígono de la plantación
     folium.GeoJson(
         gpd.GeoSeries(plantacion_union).to_json(),
         name='Límite plantación',
@@ -934,7 +1022,6 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
         tooltip='Límite de la plantación'
     ).add_to(m)
     
-    # Añadir leyenda de color
     colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
     colormap.add_to(m)
     
@@ -947,14 +1034,12 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
 
 def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     """
-    Muestra mapa de calor interactivo y panel de estadísticas descriptivas.
+    Muestra mapa de calor RBF y panel de estadísticas descriptivas.
     """
-    # Mapa de calor
-    mapa_calor = crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
+    mapa_calor = crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
     if mapa_calor:
         folium_static(mapa_calor, width=1000, height=600)
     
-    # Estadísticas
     valores = gdf[columna].dropna()
     if len(valores) == 0:
         st.warning("No hay datos para este índice.")
@@ -972,7 +1057,6 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
     with col5:
         st.metric("Máximo", f"{valores.max():.3f}")
     
-    # Histograma interactivo
     fig_hist = go.Figure()
     fig_hist.add_trace(go.Histogram(
         x=valores,
@@ -990,7 +1074,6 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
     )
     st.plotly_chart(fig_hist, use_container_width=True)
     
-    # Tabla de valores por bloque
     st.markdown("#### Valores por bloque")
     df_tabla = gdf[['id_bloque', columna]].copy()
     df_tabla.columns = ['Bloque', titulo]
@@ -999,7 +1082,6 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
 def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre='YlOrRd'):
     """
     Crea un mapa interactivo para una variable de fertilidad (N, P, K, pH, MO).
-    gdf_fertilidad: GeoDataFrame con columnas 'id_bloque', variable, 'geometria' y recomendaciones.
     """
     info_var = {
         'N_kg_ha': {'titulo': 'Nitrógeno (N)', 'unidad': 'kg/ha', 'vmin': 40, 'vmax': 180, 'cmap': 'YlGnBu'},
@@ -1352,15 +1434,11 @@ def ejecutar_analisis_completo():
             areas_ha.append(float(calcular_superficie(area_gdf)))
         gdf_dividido['area_ha'] = areas_ha
         
-        st.info("🛰️ Consultando MODIS NDVI real (ORNL DAAC)...")
-        gdf_ndvi, ndvi_prom = obtener_ndvi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
-        gdf_dividido['ndvi_modis'] = gdf_ndvi['ndvi_modis']
+        st.info("🛰️ Consultando MODIS NDVI real con variabilidad espacial...")
+        gdf_dividido, ndvi_prom = obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin)
         
-        st.info("💧 Consultando MODIS NDWI real (bandas NIR/SWIR)...")
-        gdf_ndwi, ndwi_prom = obtener_ndwi_ornl(gdf_dividido, fecha_inicio, fecha_fin)
-        gdf_dividido['ndwi_modis'] = gdf_ndwi['ndwi_modis']
-        
-        st.info("⚠️ NDRE no puede calcularse con MODIS (requiere banda red edge). Se omite.")
+        st.info("💧 Consultando MODIS NDWI real con variabilidad espacial...")
+        gdf_dividido, ndwi_prom = obtener_ndwi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin)
         
         st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
         datos_clima = obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin)
@@ -1403,10 +1481,9 @@ def ejecutar_analisis_completo():
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
-# Inicializar estado de sesión
 init_session_state()
 
-# Mostrar advertencias de librerías opcionales (ahora después de set_page_config)
+# Mostrar advertencias de librerías opcionales
 if not CURVAS_OK:
     st.warning("Para curvas de nivel reales instala: rasterio y scikit-image")
 if not YOLO_AVAILABLE:
@@ -1482,7 +1559,6 @@ div[data-testid="metric-container"] {
 </style>
 """, unsafe_allow_html=True)
 
-# Banner
 st.markdown("""
 <div class="hero-banner">
     <h1 class="hero-title">🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL</h1>
