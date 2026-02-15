@@ -3,6 +3,7 @@
 # corrección en índices (NDWI real, NDRE no disponible) y panel de estadísticas.
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
+# CORREGIDO: Error de inicialización de sesión.
 
 import streamlit as st
 import geopandas as gpd
@@ -60,7 +61,7 @@ except ImportError:
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 warnings.filterwarnings('ignore')
 
-# ===== INICIALIZACIÓN DE SESIÓN =====
+# ===== INICIALIZACIÓN DE SESIÓN (se llamará después de st.set_page_config) =====
 def init_session_state():
     defaults = {
         'geojson_data': None,
@@ -85,8 +86,6 @@ def init_session_state():
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-
-init_session_state()
 
 # ===== CONFIGURACIONES =====
 VARIEDADES_PALMA_ACEITERA = [
@@ -1317,6 +1316,9 @@ def ejecutar_analisis_completo():
 
 # ===== INTERFAZ DE USUARIO =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
+
+# Ahora inicializamos el estado de sesión
+init_session_state()
 
 # ===== OCULTAR MENÚ GITHUB Y MEJORAR ESTILOS =====
 st.markdown("""
