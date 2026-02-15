@@ -1,15 +1,14 @@
-# app.py - Versión COMPLETA con MODIS REAL (ORNL DAAC), clima Open-Meteo + NASA POWER,
-# curvas de nivel SRTM (reales o simuladas), visualizaciones mejoradas,
-# índices NDVI y NDWI con variabilidad espacial (gradientes), eliminado NDRE.
-# Mapas base: Esri Satélite en todos los mapas interactivos.
-# Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
-# Mapas de calor con interpolación RBF, extendidos más allá del polígono.
+# app.py - Versión COMPLETA con MONETIZACIÓN (Mercado Pago)
 # 
-# MODIFICACIONES PARA RENDIMIENTO:
-# - Muestreo adaptativo de puntos MODIS (máx. 50 puntos, paso mínimo 500 m).
-# - Consulta conjunta de bandas NIR+SWIR para NDWI (una sola llamada por punto).
-# - Barra de progreso durante la consulta.
-# - Fallback a simulación con variabilidad si la API falla.
+# Incluye:
+# - Registro e inicio de sesión de usuarios.
+# - Suscripción mensual de 30 días.
+# - Pago con Mercado Pago (tarjeta/efectivo) o transferencia bancaria (CBU y alias proporcionados).
+# - Bloqueo de funcionalidades si no hay suscripción activa.
+# - Toda la funcionalidad previa (análisis satelital, índices, clima, detección YOLO, curvas de nivel, etc.)
+#
+# IMPORTANTE: Configurar variable de entorno MERCADOPAGO_ACCESS_TOKEN con tu Access Token de Mercado Pago.
+# Para pruebas, usa credenciales de prueba.
 
 import streamlit as st
 import geopandas as gpd
@@ -41,6 +40,236 @@ from PIL import Image
 from scipy.spatial import KDTree
 from scipy.interpolate import Rbf
 import base64
+
+# ===== NUEVAS IMPORTACIONES PARA AUTENTICACIÓN Y PAGOS =====
+import sqlite3
+import hashlib
+import secrets
+import mercadopago
+
+# ===== CONFIGURACIÓN DE MERCADO PAGO =====
+# Obtén tu access token desde https://www.mercadopago.com.ar/developers/panel
+# Recomendación: usar variable de entorno
+MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
+if not MERCADOPAGO_ACCESS_TOKEN:
+    st.error("❌ No se encontró la variable de entorno MERCADOPAGO_ACCESS_TOKEN. Configúrala para habilitar pagos.")
+    st.stop()
+
+sdk = mercadopago.SDK(MERCADOPAGO_ACCESS_TOKEN)
+
+# ===== BASE DE DATOS DE USUARIOS =====
+def init_db():
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  email TEXT UNIQUE,
+                  password_hash TEXT,
+                  subscription_expires TIMESTAMP,
+                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    conn.commit()
+    conn.close()
+
+init_db()  # Asegurar que la tabla existe
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, hash):
+    return hash_password(password) == hash
+
+def register_user(email, password):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    try:
+        password_hash = hash_password(password)
+        # Por defecto, sin suscripción activa
+        c.execute("INSERT INTO users (email, password_hash, subscription_expires) VALUES (?, ?, ?)",
+                  (email, password_hash, None))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def login_user(email, password):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT id, password_hash, subscription_expires FROM users WHERE email = ?", (email,))
+    row = c.fetchone()
+    conn.close()
+    if row and verify_password(password, row[1]):
+        return {'id': row[0], 'email': email, 'subscription_expires': row[2]}
+    return None
+
+def update_subscription(email, days=30):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    new_expiry = (datetime.now() + timedelta(days=days)).isoformat()
+    c.execute("UPDATE users SET subscription_expires = ? WHERE email = ?", (new_expiry, email))
+    conn.commit()
+    conn.close()
+    return new_expiry
+
+def get_user_by_email(email):
+    conn = sqlite3.connect('users.db')
+    c = conn.cursor()
+    c.execute("SELECT id, email, subscription_expires FROM users WHERE email = ?", (email,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {'id': row[0], 'email': row[1], 'subscription_expires': row[2]}
+    return None
+
+# ===== FUNCIONES DE MERCADO PAGO =====
+def create_preference(email, amount=500.0, description="Suscripción mensual - Analizador de Palma Aceitera"):
+    """
+    Crea una preferencia de pago en Mercado Pago.
+    Devuelve (init_point, preference_id)
+    """
+    # Obtener la URL base actual (para back_urls)
+    # En Streamlit Cloud, se puede obtener de st.secrets o usar una fija
+    # Por simplicidad, usamos una URL fija; en producción cámbiala
+    base_url = "https://tuapp.streamlit.app"  # Reemplazar con tu URL real
+    preference_data = {
+        "items": [
+            {
+                "title": description,
+                "quantity": 1,
+                "currency_id": "ARS",
+                "unit_price": amount
+            }
+        ],
+        "payer": {
+            "email": email
+        },
+        "back_urls": {
+            "success": f"{base_url}?payment=success",
+            "failure": f"{base_url}?payment=failure",
+            "pending": f"{base_url}?payment=pending"
+        },
+        "auto_return": "approved",
+        "external_reference": email,
+    }
+    preference_response = sdk.preference().create(preference_data)
+    preference = preference_response["response"]
+    return preference["init_point"], preference["id"]
+
+def check_payment_status(payment_id):
+    """
+    Consulta el estado de un pago por su ID (collection_id).
+    Si está aprobado, actualiza la suscripción del usuario (email en external_reference).
+    Retorna True si se actualizó.
+    """
+    try:
+        payment_info = sdk.payment().get(payment_id)
+        if payment_info["status"] == 200:
+            payment = payment_info["response"]
+            if payment["status"] == "approved":
+                email = payment.get("external_reference")
+                if email:
+                    new_expiry = update_subscription(email)
+                    return True
+    except Exception as e:
+        st.error(f"Error verificando pago: {e}")
+    return False
+
+# ===== FUNCIONES DE AUTENTICACIÓN EN STREAMLIT =====
+def show_login_signup():
+    with st.sidebar:
+        st.markdown("## 🔐 Acceso")
+        menu = st.radio("", ["Iniciar sesión", "Registrarse"], key="auth_menu")
+        email = st.text_input("Email", key="auth_email")
+        password = st.text_input("Contraseña", type="password", key="auth_password")
+        
+        if menu == "Registrarse":
+            if st.button("Registrar", key="register_btn"):
+                if register_user(email, password):
+                    st.success("Registro exitoso. Ahora inicia sesión.")
+                else:
+                    st.error("El email ya está registrado.")
+        else:
+            if st.button("Ingresar", key="login_btn"):
+                user = login_user(email, password)
+                if user:
+                    st.session_state.user = user
+                    st.success("Sesión iniciada")
+                    st.rerun()
+                else:
+                    st.error("Email o contraseña incorrectos")
+
+def logout():
+    if st.sidebar.button("Cerrar sesión"):
+        del st.session_state.user
+        st.rerun()
+
+def check_subscription():
+    """Verifica si el usuario tiene suscripción activa. Si no, muestra pantalla de pago."""
+    if 'user' not in st.session_state:
+        show_login_signup()
+        st.stop()  # No muestra el contenido principal
+    
+    # Mostrar usuario y botón de logout
+    with st.sidebar:
+        st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
+        logout()
+    
+    user = st.session_state.user
+    expiry = user.get('subscription_expires')
+    if expiry:
+        try:
+            expiry_date = datetime.fromisoformat(expiry)
+            if expiry_date > datetime.now():
+                # Suscripción activa
+                dias_restantes = (expiry_date - datetime.now()).days
+                st.sidebar.info(f"✅ Suscripción activa (vence en {dias_restantes} días)")
+                return True
+        except:
+            pass
+    
+    # Si no hay suscripción o expiró, mostrar pantalla de pago
+    st.warning("🔒 Tu suscripción ha expirado o no tienes una activa. Para usar la aplicación, debes adquirir una suscripción mensual.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### 💳 Pago con Mercado Pago")
+        st.write("Paga con tarjeta de crédito, débito o efectivo (Rapipago, PagoFácil).")
+        if st.button("💵 Pagar ahora $500 ARS"):
+            init_point, pref_id = create_preference(user['email'])
+            st.session_state.pref_id = pref_id
+            st.markdown(f"[Haz clic aquí para pagar]({init_point})")
+            st.info("Serás redirigido a Mercado Pago. Luego de pagar, regresa a esta página.")
+    with col2:
+        st.markdown("### 🏦 Transferencia bancaria")
+        st.write("También puedes pagar por transferencia a:")
+        st.code("CBU: 3220001888034378480018\nAlias: inflar.pacu.inaudita")
+        st.write("Luego envía el comprobante a **soporte@tudominio.com** para activar tu suscripción manualmente.")
+    
+    # Verificar si venimos de un pago exitoso (por query params)
+    query_params = st.query_params
+    if 'payment' in query_params and query_params['payment'] == 'success' and 'collection_id' in query_params:
+        payment_id = query_params['collection_id']
+        if check_payment_status(payment_id):
+            st.success("✅ ¡Pago aprobado! Tu suscripción ha sido activada por 30 días.")
+            # Recargar usuario para actualizar expiry
+            updated_user = get_user_by_email(user['email'])
+            if updated_user:
+                st.session_state.user = updated_user
+            st.rerun()
+        else:
+            st.error("No se pudo verificar el pago. Contacta a soporte.")
+    
+    st.stop()  # Detiene la ejecución del resto de la app
+
+# ===== CONFIGURACIÓN DE PÁGINA =====
+st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
+
+# Verificar suscripción ANTES de mostrar cualquier contenido
+check_subscription()
+
+# ===== A PARTIR DE AQUÍ CONTINÚA EL CÓDIGO ORIGINAL =====
+# (Todo el resto del código de la aplicación, sin modificaciones)
 
 # ===== LIBRERÍAS OPCIONALES (solo importar, sin warnings) =====
 try:
@@ -539,7 +768,7 @@ def obtener_ndwi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     gdf_dividido['ndwi_modis'] = [round(v, 3) for v in ndwi_bloques]
     return gdf_dividido, np.mean(ndwi_bloques)
 
-# ===== FUNCIONES CLIMÁTICAS (sin cambios, solo se incluyen por completitud) =====
+# ===== FUNCIONES CLIMÁTICAS (sin cambios) =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     try:
         centroide = gdf.geometry.unary_union.centroid
@@ -1080,7 +1309,7 @@ def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
     return m
 
 def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list):
-    """Versión IDW de respaldo (con corrección base64)."""
+    """Versión IDW de respaldo."""
     plantacion_union = gdf.unary_union
     bounds = plantacion_union.bounds
     dx = bounds[2] - bounds[0]
@@ -1609,12 +1838,10 @@ def ejecutar_analisis_completo():
         st.session_state.analisis_completado = True
         st.success("✅ Análisis completado con datos MODIS reales, Open-Meteo y NASA POWER!")
 
-# ===== INTERFAZ DE USUARIO =====
-st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
-
+# ===== INICIALIZACIÓN DE SESIÓN =====
 init_session_state()
 
-# Mostrar advertencias de librerías opcionales
+# Mostrar advertencias de librerías opcionales (después de la verificación de suscripción)
 if not CURVAS_OK:
     st.warning("Para curvas de nivel reales instala: rasterio y scikit-image")
 if not YOLO_AVAILABLE:
@@ -1699,7 +1926,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ===== SIDEBAR =====
+# ===== SIDEBAR (parte de autenticación ya está integrada en check_subscription) =====
 with st.sidebar:
     st.markdown("## 🌴 CONFIGURACIÓN")
     variedad = st.selectbox("Variedad de palma:", VARIEDADES_PALMA_ACEITERA, index=0)
