@@ -4,6 +4,12 @@
 # Mapas base: Esri Satélite en todos los mapas interactivos.
 # Incluye detección YOLO (enfermedades/plagas) y ocultamiento del menú GitHub.
 # Mapas de calor con interpolación RBF, extendidos más allá del polígono.
+# 
+# MODIFICACIONES PARA RENDIMIENTO:
+# - Muestreo adaptativo de puntos MODIS (máx. 50 puntos, paso mínimo 500 m).
+# - Consulta conjunta de bandas NIR+SWIR para NDWI (una sola llamada por punto).
+# - Barra de progreso durante la consulta.
+# - Fallback a simulación con variabilidad si la API falla.
 
 import streamlit as st
 import geopandas as gpd
@@ -272,39 +278,76 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE DATOS SATELITALES CON VARIABILIDAD ESPACIAL =====
-def obtener_valores_modis_en_area(gdf, fecha_inicio, fecha_fin, producto, banda, paso_m=100):
+# ===== FUNCIONES DE DATOS SATELITALES CON VARIABILIDAD ESPACIAL (OPTIMIZADAS) =====
+def obtener_puntos_muestreo(gdf, paso_m=500, max_puntos=50):
     """
-    Consulta valores MODIS en una cuadrícula regular dentro del polígono.
-    Retorna una lista de puntos (lon, lat, valor).
+    Genera una lista de puntos (lon, lat) dentro del polígono,
+    ajustando el paso para no exceder max_puntos.
     """
     bounds = gdf.total_bounds
     minx, miny, maxx, maxy = bounds
+    # Estimación de área aproximada en grados
+    ancho_grados = maxx - minx
+    alto_grados = maxy - miny
+    # Convertir paso a grados (aprox 111 km por grado)
     paso_grados = paso_m / 111000.0
+    
+    # Número aproximado de puntos si usamos cuadrícula regular
+    n_aprox = (ancho_grados / paso_grados) * (alto_grados / paso_grados)
+    if n_aprox > max_puntos:
+        # Ajustar paso para que no supere max_puntos (relación cuadrática)
+        factor = (n_aprox / max_puntos) ** 0.5
+        paso_grados = paso_grados * factor
+    
+    # Generar puntos en cuadrícula
     lons = np.arange(minx, maxx, paso_grados)
     lats = np.arange(miny, maxy, paso_grados)
-    puntos = []
+    
+    puntos_dentro = []
     for lon in lons:
         for lat in lats:
             punto = Point(lon, lat)
             if gdf.contains(punto).any():
-                puntos.append((lon, lat))
+                puntos_dentro.append((lon, lat))
+            if len(puntos_dentro) >= max_puntos:
+                break
+        if len(puntos_dentro) >= max_puntos:
+            break
     
-    if len(puntos) == 0:
+    # Si no hay puntos (polígono muy pequeño o forma irregular), usar centroide
+    if len(puntos_dentro) == 0:
         centroide = gdf.geometry.unary_union.centroid
-        puntos = [(centroide.x, centroide.y)]
+        puntos_dentro = [(centroide.x, centroide.y)]
     
-    url = "https://modis.ornl.gov/rst/api/v1/"
+    return puntos_dentro
+
+def obtener_valores_modis_banda(gdf, fecha_inicio, fecha_fin, producto, banda, paso_m=500, max_puntos=50):
+    """
+    Consulta una banda MODIS en los puntos de muestreo.
+    Retorna lista de (lon, lat, valor).
+    """
+    puntos = obtener_puntos_muestreo(gdf, paso_m, max_puntos)
     valores = []
-    for lon, lat in puntos:
+    progreso = st.progress(0, text="Consultando datos MODIS...")
+    
+    for i, (lon, lat) in enumerate(puntos):
         try:
-            dates_url = f"{url}/{producto}/dates"
-            params = {"latitude": lat, "longitude": lon, "startDate": fecha_inicio.strftime("%Y-%m-%d"), "endDate": fecha_fin.strftime("%Y-%m-%d")}
+            # Obtener fechas disponibles
+            dates_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/dates"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "startDate": fecha_inicio.strftime("%Y-%m-%d"),
+                "endDate": fecha_fin.strftime("%Y-%m-%d")
+            }
             resp = requests.get(dates_url, params=params, timeout=30).json()
             if not resp.get("dates"):
                 continue
+            # Usar la fecha más reciente
             modis_date = resp["dates"][-1]["modis_date"]
-            cv_url = f"{url}/{producto}/values"
+            
+            # Consultar valor de la banda
+            cv_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/values"
             params_cv = {
                 "latitude": lat,
                 "longitude": lon,
@@ -316,21 +359,109 @@ def obtener_valores_modis_en_area(gdf, fecha_inicio, fecha_fin, producto, banda,
             }
             data = requests.get(cv_url, params=params_cv, timeout=30).json()
             if data.get("values"):
+                # El factor de escala para MODIS suele ser 0.0001
                 valor = np.mean([v["value"] for v in data["values"]]) * 0.0001
                 valores.append((lon, lat, valor))
         except Exception as e:
+            # Si falla un punto, continuar con el siguiente
             continue
+        
+        progreso.progress((i + 1) / len(puntos), text=f"Punto {i+1} de {len(puntos)}")
     
+    progreso.empty()
+    
+    # Si no se obtuvo ningún valor real, simular con variabilidad espacial
     if len(valores) == 0:
-        centroide = gdf.geometry.unary_union.centroid
-        base = 0.65
+        st.warning(f"No se pudieron obtener datos MODIS reales para {producto}/{banda}. Usando simulación.")
+        # Simular valores basados en el centroide con gradiente
+        centro = gdf.geometry.unary_union.centroid
+        base = 0.65 if banda == "250m_16_days_NDVI" else 0.3  # valores típicos
         for lon, lat in puntos:
             variacion = 0.1 * math.sin(lon * 10) * math.cos(lat * 10)
             valor = base + variacion
+            # Asegurar rango válido
+            valor = max(0.0, min(1.0, valor))
             valores.append((lon, lat, valor))
-        st.warning("No se pudieron obtener datos MODIS reales. Usando valores simulados con variabilidad espacial.")
     
     return valores
+
+def obtener_valores_modis_multibanda(gdf, fecha_inicio, fecha_fin, producto, bandas, paso_m=500, max_puntos=50):
+    """
+    Consulta múltiples bandas en una sola llamada por punto.
+    bandas: lista de nombres de bandas, ej. ["sur_reflect_b02", "sur_reflect_b05"].
+    Retorna una lista de diccionarios: {lon, lat, valores: {banda: valor}}.
+    """
+    puntos = obtener_puntos_muestreo(gdf, paso_m, max_puntos)
+    resultados = []
+    progreso = st.progress(0, text="Consultando datos MODIS (multibanda)...")
+    
+    for i, (lon, lat) in enumerate(puntos):
+        try:
+            dates_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/dates"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "startDate": fecha_inicio.strftime("%Y-%m-%d"),
+                "endDate": fecha_fin.strftime("%Y-%m-%d")
+            }
+            resp = requests.get(dates_url, params=params, timeout=30).json()
+            if not resp.get("dates"):
+                continue
+            modis_date = resp["dates"][-1]["modis_date"]
+            
+            # Consultar todas las bandas juntas (separadas por comas)
+            cv_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/values"
+            bandas_str = ",".join(bandas)
+            params_cv = {
+                "latitude": lat,
+                "longitude": lon,
+                "band": bandas_str,
+                "startDate": modis_date,
+                "endDate": modis_date,
+                "kmAboveBelow": 0,
+                "kmLeftRight": 0
+            }
+            data = requests.get(cv_url, params=params_cv, timeout=30).json()
+            if data.get("values") and len(data["values"]) == len(bandas):
+                # data["values"] es una lista con un dict por banda
+                valores_banda = {}
+                for j, b in enumerate(bandas):
+                    # Aplicar factor de escala 0.0001
+                    valores_banda[b] = data["values"][j]["value"] * 0.0001
+                resultados.append({
+                    "lon": lon,
+                    "lat": lat,
+                    "valores": valores_banda
+                })
+        except Exception as e:
+            continue
+        
+        progreso.progress((i + 1) / len(puntos), text=f"Punto {i+1} de {len(puntos)}")
+    
+    progreso.empty()
+    
+    # Si no se obtuvieron datos reales, simular con variabilidad
+    if len(resultados) == 0:
+        st.warning(f"No se pudieron obtener datos MODIS reales para {producto}. Usando simulación.")
+        centro = gdf.geometry.unary_union.centroid
+        for lon, lat in puntos:
+            variacion = 0.1 * math.sin(lon * 10) * math.cos(lat * 10)
+            valores_sim = {}
+            for b in bandas:
+                if "b02" in b:  # NIR
+                    base = 0.5
+                elif "b05" in b:  # SWIR
+                    base = 0.2
+                else:
+                    base = 0.4
+                valores_sim[b] = base + variacion
+            resultados.append({
+                "lon": lon,
+                "lat": lat,
+                "valores": valores_sim
+            })
+    
+    return resultados
 
 def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     """
@@ -338,14 +469,18 @@ def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     """
     producto = "MOD13Q1"
     banda = "250m_16_days_NDVI"
+    # Usar el polígono unido para muestrear
     gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
-    valores_puntos = obtener_valores_modis_en_area(gdf_union, fecha_inicio, fecha_fin, producto, banda, paso_m=100)
+    valores_puntos = obtener_valores_modis_banda(gdf_union, fecha_inicio, fecha_fin, producto, banda,
+                                                  paso_m=500, max_puntos=50)
     
     if not valores_puntos:
+        # Fallback: asignar valor constante a todos los bloques
         for idx, row in gdf_dividido.iterrows():
             gdf_dividido.loc[idx, 'ndvi_modis'] = 0.65
         return gdf_dividido, 0.65
     
+    # Construir KDTree para interpolar al centroide de cada bloque
     puntos = np.array([[lon, lat] for lon, lat, _ in valores_puntos])
     valores = np.array([v for _, _, v in valores_puntos])
     tree = KDTree(puntos)
@@ -353,6 +488,7 @@ def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     ndvi_bloques = []
     for idx, row in gdf_dividido.iterrows():
         centro = (row.geometry.centroid.x, row.geometry.centroid.y)
+        # Buscar el punto más cercano
         dist, ind = tree.query(centro)
         ndvi_bloques.append(valores[ind])
     
@@ -362,43 +498,38 @@ def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
 def obtener_ndwi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real con variabilidad espacial (usando MOD09GA bandas NIR y SWIR).
+    Consulta ambas bandas en una sola llamada por punto.
     """
     producto = "MOD09GA"
-    banda_nir = "sur_reflect_b02"
-    banda_swir = "sur_reflect_b05"
-    
+    bandas = ["sur_reflect_b02", "sur_reflect_b05"]  # NIR, SWIR
     gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
-    valores_nir = obtener_valores_modis_en_area(gdf_union, fecha_inicio, fecha_fin, producto, banda_nir, paso_m=100)
-    valores_swir = obtener_valores_modis_en_area(gdf_union, fecha_inicio, fecha_fin, producto, banda_swir, paso_m=100)
+    resultados_multibanda = obtener_valores_modis_multibanda(gdf_union, fecha_inicio, fecha_fin,
+                                                              producto, bandas, paso_m=500, max_puntos=50)
     
-    if not valores_nir or not valores_swir:
+    if not resultados_multibanda:
+        # Fallback: asignar valor constante
         for idx, row in gdf_dividido.iterrows():
             gdf_dividido.loc[idx, 'ndwi_modis'] = 0.35
         return gdf_dividido, 0.35
     
-    nir_dict = {(lon, lat): val for lon, lat, val in valores_nir}
-    swir_dict = {(lon, lat): val for lon, lat, val in valores_swir}
-    puntos_comunes = set(nir_dict.keys()) & set(swir_dict.keys())
-    
-    if not puntos_comunes:
-        centro = gdf_union.geometry.centroid
-        return gdf_dividido, 0.35
-    
-    lons, lats, ndwi_vals = [], [], []
-    for (lon, lat) in puntos_comunes:
-        nir = nir_dict[(lon, lat)]
-        swir = swir_dict[(lon, lat)]
+    # Extraer puntos y calcular NDWI
+    puntos = []
+    ndwi_vals = []
+    for r in resultados_multibanda:
+        lon, lat = r["lon"], r["lat"]
+        nir = r["valores"][bandas[0]]
+        swir = r["valores"][bandas[1]]
         if (nir + swir) != 0:
             ndwi = (nir - swir) / (nir + swir)
-            lons.append(lon)
-            lats.append(lat)
+            puntos.append([lon, lat])
             ndwi_vals.append(ndwi)
     
     if len(ndwi_vals) == 0:
         return gdf_dividido, 0.35
     
-    puntos = np.array([lons, lats]).T
+    puntos = np.array(puntos)
     tree = KDTree(puntos)
+    
     ndwi_bloques = []
     for idx, row in gdf_dividido.iterrows():
         centro = (row.geometry.centroid.x, row.geometry.centroid.y)
