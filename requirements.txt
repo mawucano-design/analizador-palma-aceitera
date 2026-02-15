@@ -27,3 +27,4 @@ plotly
 xarray 
 netCDF4 
 rasterio 
+ultralytics
