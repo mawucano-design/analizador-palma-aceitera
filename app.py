@@ -871,34 +871,30 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     valores = np.array(valores)
     
     # Interpolación IDW (Inverse Distance Weighting)
-    # Construir árbol KD para búsqueda rápida de vecinos
     tree = KDTree(puntos)
-    # Para cada punto de la cuadrícula, encontrar los k vecinos más cercanos
-    k = min(8, len(puntos))  # número de vecinos a considerar
+    k = min(8, len(puntos))
     distancias, indices = tree.query(np.column_stack((XI.ravel(), YI.ravel())), k=k)
     
-    # Calcular pesos (inverso de la distancia, con un epsilon para evitar división por cero)
     epsilon = 1e-6
     pesos = 1.0 / (distancias + epsilon)
-    # Normalizar pesos
     suma_pesos = np.sum(pesos, axis=1)
-    # Valor interpolado = suma(pesos * valores_vecinos) / suma_pesos
     valores_vecinos = valores[indices]
     valores_interp = np.sum(pesos * valores_vecinos, axis=1) / suma_pesos
-    # Reconstruir cuadrícula
     ZI = valores_interp.reshape(XI.shape)
     
     # Crear una imagen RGB a partir de ZI usando un colormap de matplotlib
     cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
     norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
     rgba = cmap(norm(ZI))
-    # Convertir a imagen (uint8) para folium. Folium espera una imagen con canales RGBA, valores 0-255.
     img = (rgba * 255).astype(np.uint8)
     
-    # Guardar la imagen en un objeto BytesIO
+    # Guardar la imagen en un objeto BytesIO y codificarla en base64
     img_bytes = io.BytesIO()
     Image.fromarray(img).save(img_bytes, format='PNG')
     img_bytes.seek(0)
+    import base64
+    img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+    img_data = f"data:image/png;base64,{img_base64}"
     
     # Crear mapa base
     centroide = plantacion_union.centroid
@@ -919,11 +915,9 @@ def crear_mapa_calor_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     ).add_to(m)
     
     # Superponer la imagen de calor
-    # Las coordenadas de la imagen son (minx, miny, maxx, maxy) en el orden (lon_min, lat_min, lon_max, lat_max)
-    # Folium espera ((lat_min, lon_min), (lat_max, lon_max)) para el bounding box.
     bounds_img = [[miny, minx], [maxy, maxx]]
     folium.raster_layers.ImageOverlay(
-        image=img_bytes,
+        image=img_data,
         bounds=bounds_img,
         opacity=0.7,
         name=f'Calor {titulo}',
