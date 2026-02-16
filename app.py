@@ -2,14 +2,14 @@
 # 
 # Incluye:
 # - Registro e inicio de sesión de usuarios.
-# - Suscripción mensual de 30 días.
-# - Pago con Mercado Pago (tarjeta/efectivo) o transferencia bancaria (CBU y alias proporcionados).
+# - Suscripción mensual de 30 días (precio: 150 USD).
+# - Pago con Mercado Pago (tarjeta/efectivo) en USD.
 # - Modo DEMO para usuarios sin suscripción: datos simulados y funcionalidad limitada.
 # - Modo PREMIUM con datos reales y todas las funciones.
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
 # IMPORTANTE: Configurar variable de entorno MERCADOPAGO_ACCESS_TOKEN con tu Access Token de Mercado Pago.
-# Para pruebas, usa credenciales de prueba.
+# Asegúrate de que tu cuenta de Mercado Pago acepte transacciones en USD.
 
 import streamlit as st
 import geopandas as gpd
@@ -141,7 +141,7 @@ def get_user_by_email(email):
     return None
 
 # ===== FUNCIONES DE MERCADO PAGO =====
-def create_preference(email, amount=500.0, description="Suscripción mensual - Analizador de Palma Aceitera"):
+def create_preference(email, amount=150.0, description="Suscripción mensual - Analizador de Palma Aceitera"):
     """
     Crea una preferencia de pago en Mercado Pago.
     Devuelve (init_point, preference_id)
@@ -155,7 +155,7 @@ def create_preference(email, amount=500.0, description="Suscripción mensual - A
             {
                 "title": description,
                 "quantity": 1,
-                "currency_id": "ARS",
+                "currency_id": "USD",      # Cambiado a USD
                 "unit_price": amount
             }
         ],
@@ -258,7 +258,7 @@ def check_subscription():
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("#### 💳 Pagar ahora")
-        st.write("Obtén acceso completo a datos satelitales reales y todas las funciones por $500 ARS/mes.")
+        st.write("Obtén acceso completo a datos satelitales reales y todas las funciones por **150 USD/mes**.")
         if st.button("💵 Ir a pagar", key="pay_now"):
             st.session_state.payment_intent = True
             st.rerun()
@@ -272,15 +272,15 @@ def check_subscription():
     # Si el usuario eligió pagar, mostrar la interfaz de pago
     if st.session_state.get('payment_intent', False):
         st.markdown("### 💳 Pago con Mercado Pago")
-        st.write("Paga con tarjeta de crédito, débito o efectivo (Rapipago, PagoFácil).")
-        if st.button("💵 Pagar ahora $500 ARS", key="pay_mp"):
+        st.write("Paga con tarjeta de crédito, débito o efectivo (en USD).")
+        if st.button("💵 Pagar ahora 150 USD", key="pay_mp"):
             init_point, pref_id = create_preference(user['email'])
             st.session_state.pref_id = pref_id
             st.markdown(f"[Haz clic aquí para pagar]({init_point})")
             st.info("Serás redirigido a Mercado Pago. Luego de pagar, regresa a esta página.")
         
         st.markdown("### 🏦 Transferencia bancaria")
-        st.write("También puedes pagar por transferencia a:")
+        st.write("También puedes pagar por transferencia (USD) a:")
         st.code("CBU: 3220001888034378480018\nAlias: inflar.pacu.inaudita")
         st.write("Luego envía el comprobante a **soporte@tudominio.com** para activar tu suscripción manualmente.")
         
@@ -1595,6 +1595,14 @@ def mostrar_comparacion_ndvi_ndwi(gdf):
     
     st.markdown("### 🔍 Comparación NDVI vs NDWI")
     
+    # Verificar disponibilidad de statsmodels para la línea de tendencia
+    try:
+        import statsmodels.api as sm
+        statsmodels_ok = True
+    except ImportError:
+        statsmodels_ok = False
+        st.info("ℹ️ Para ver la línea de tendencia, instala 'statsmodels' con: pip install statsmodels")
+    
     # Scatter plot con Plotly
     fig = px.scatter(
         df, x='ndvi_modis', y='ndwi_modis', color='salud',
@@ -1607,7 +1615,8 @@ def mostrar_comparacion_ndvi_ndwi(gdf):
             'Moderada': '#91cf60',
             'Buena': '#1a9850'
         },
-        trendline='ols', trendline_color_override='gray'
+        trendline='ols' if statsmodels_ok else None,
+        trendline_color_override='gray'
     )
     fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
     fig.update_layout(height=500)
