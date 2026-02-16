@@ -1358,177 +1358,200 @@ def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
     Crea un mapa de calor continuo usando interpolación RBF (Radial Basis Function).
     Genera una superficie más suave y realista, extendida un 10% más allá del polígono.
     """
-    plantacion_union = gdf.unary_union
-    bounds = plantacion_union.bounds
-    dx = bounds[2] - bounds[0]
-    dy = bounds[3] - bounds[1]
-    minx = bounds[0] - 0.1 * dx
-    maxx = bounds[2] + 0.1 * dx
-    miny = bounds[1] - 0.1 * dy
-    maxy = bounds[3] + 0.1 * dy
-    
-    puntos = []
-    valores = []
-    for idx, row in gdf.iterrows():
-        centroide = row.geometry.centroid
-        puntos.append([centroide.x, centroide.y])
-        valores.append(row[columna])
-    puntos = np.array(puntos)
-    valores = np.array(valores)
-    
-    if len(puntos) < 4:
-        return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
-    
-    n = 300
-    xi = np.linspace(minx, maxx, n)
-    yi = np.linspace(miny, maxy, n)
-    XI, YI = np.meshgrid(xi, yi)
-    
     try:
-        rbf = Rbf(puntos[:, 0], puntos[:, 1], valores, function='multiquadric', smooth=0.1)
-        ZI = rbf(XI, YI)
+        plantacion_union = gdf.unary_union
+        bounds = plantacion_union.bounds
+        dx = bounds[2] - bounds[0]
+        dy = bounds[3] - bounds[1]
+        minx = bounds[0] - 0.1 * dx
+        maxx = bounds[2] + 0.1 * dx
+        miny = bounds[1] - 0.1 * dy
+        maxy = bounds[3] + 0.1 * dy
+        
+        puntos = []
+        valores = []
+        for idx, row in gdf.iterrows():
+            centroide = row.geometry.centroid
+            puntos.append([centroide.x, centroide.y])
+            valores.append(row[columna])
+        puntos = np.array(puntos)
+        valores = np.array(valores)
+        
+        if len(puntos) < 4:
+            return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
+        
+        n = 300
+        xi = np.linspace(minx, maxx, n)
+        yi = np.linspace(miny, maxy, n)
+        XI, YI = np.meshgrid(xi, yi)
+        
+        try:
+            rbf = Rbf(puntos[:, 0], puntos[:, 1], valores, function='multiquadric', smooth=0.1)
+            ZI = rbf(XI, YI)
+        except Exception as e:
+            return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
+        
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
+        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+        rgba = cmap(norm(ZI))
+        img = (rgba * 255).astype(np.uint8)
+        
+        img_bytes = io.BytesIO()
+        Image.fromarray(img).save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+        img_data = f"data:image/png;base64,{img_base64}"
+        
+        centroide = plantacion_union.centroid
+        m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri, Maxar, Earthstar Geographics',
+            name='Satélite Esri',
+            overlay=False,
+            control=True
+        ).add_to(m)
+        
+        bounds_img = [[miny, minx], [maxy, maxx]]
+        folium.raster_layers.ImageOverlay(
+            image=img_data,
+            bounds=bounds_img,
+            opacity=0.7,
+            name=f'Calor {titulo}',
+            interactive=True,
+            zindex=1
+        ).add_to(m)
+        
+        folium.GeoJson(
+            gpd.GeoSeries(plantacion_union).to_json(),
+            name='Límite plantación',
+            style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
+            tooltip='Límite de la plantación'
+        ).add_to(m)
+        
+        colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
+        colormap.add_to(m)
+        
+        folium.LayerControl(collapsed=False).add_to(m)
+        Fullscreen().add_to(m)
+        MeasureControl().add_to(m)
+        MiniMap(toggle_display=True).add_to(m)
+        
+        return m
     except Exception as e:
-        return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
-    
-    cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
-    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
-    rgba = cmap(norm(ZI))
-    img = (rgba * 255).astype(np.uint8)
-    
-    img_bytes = io.BytesIO()
-    Image.fromarray(img).save(img_bytes, format='PNG')
-    img_bytes.seek(0)
-    img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-    img_data = f"data:image/png;base64,{img_base64}"
-    
-    centroide = plantacion_union.centroid
-    m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
-    folium.TileLayer(
-        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        attr='Esri, Maxar, Earthstar Geographics',
-        name='Satélite Esri',
-        overlay=False,
-        control=True
-    ).add_to(m)
-    
-    bounds_img = [[miny, minx], [maxy, maxx]]
-    folium.raster_layers.ImageOverlay(
-        image=img_data,
-        bounds=bounds_img,
-        opacity=0.7,
-        name=f'Calor {titulo}',
-        interactive=True,
-        zindex=1
-    ).add_to(m)
-    
-    folium.GeoJson(
-        gpd.GeoSeries(plantacion_union).to_json(),
-        name='Límite plantación',
-        style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
-        tooltip='Límite de la plantación'
-    ).add_to(m)
-    
-    colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
-    colormap.add_to(m)
-    
-    folium.LayerControl(collapsed=False).add_to(m)
-    Fullscreen().add_to(m)
-    MeasureControl().add_to(m)
-    MiniMap(toggle_display=True).add_to(m)
-    
-    return m
+        # Si ocurre cualquier error, retornar None para que se use el fallback
+        return None
 
 def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list):
     """Versión IDW de respaldo."""
-    plantacion_union = gdf.unary_union
-    bounds = plantacion_union.bounds
-    dx = bounds[2] - bounds[0]
-    dy = bounds[3] - bounds[1]
-    minx = bounds[0] - 0.1 * dx
-    maxx = bounds[2] + 0.1 * dx
-    miny = bounds[1] - 0.1 * dy
-    maxy = bounds[3] + 0.1 * dy
-    
-    puntos = []
-    valores = []
-    for idx, row in gdf.iterrows():
-        centroide = row.geometry.centroid
-        puntos.append([centroide.x, centroide.y])
-        valores.append(row[columna])
-    puntos = np.array(puntos)
-    valores = np.array(valores)
-    
-    n = 200
-    xi = np.linspace(minx, maxx, n)
-    yi = np.linspace(miny, maxy, n)
-    XI, YI = np.meshgrid(xi, yi)
-    
-    tree = KDTree(puntos)
-    k = min(8, len(puntos))
-    distancias, indices = tree.query(np.column_stack((XI.ravel(), YI.ravel())), k=k)
-    
-    epsilon = 1e-6
-    pesos = 1.0 / (distancias + epsilon)
-    suma_pesos = np.sum(pesos, axis=1)
-    valores_vecinos = valores[indices]
-    valores_interp = np.sum(pesos * valores_vecinos, axis=1) / suma_pesos
-    ZI = valores_interp.reshape(XI.shape)
-    
-    cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
-    norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
-    rgba = cmap(norm(ZI))
-    img = (rgba * 255).astype(np.uint8)
-    
-    img_bytes = io.BytesIO()
-    Image.fromarray(img).save(img_bytes, format='PNG')
-    img_bytes.seek(0)
-    img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-    img_data = f"data:image/png;base64,{img_base64}"
-    
-    centroide = plantacion_union.centroid
-    m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
-    folium.TileLayer(
-        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        attr='Esri, Maxar, Earthstar Geographics',
-        name='Satélite Esri',
-        overlay=False,
-        control=True
-    ).add_to(m)
-    
-    bounds_img = [[miny, minx], [maxy, maxx]]
-    folium.raster_layers.ImageOverlay(
-        image=img_data,
-        bounds=bounds_img,
-        opacity=0.7,
-        name=f'Calor {titulo}',
-        interactive=True,
-        zindex=1
-    ).add_to(m)
-    
-    folium.GeoJson(
-        gpd.GeoSeries(plantacion_union).to_json(),
-        name='Límite plantación',
-        style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
-        tooltip='Límite de la plantación'
-    ).add_to(m)
-    
-    colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
-    colormap.add_to(m)
-    
-    folium.LayerControl(collapsed=False).add_to(m)
-    Fullscreen().add_to(m)
-    MeasureControl().add_to(m)
-    MiniMap(toggle_display=True).add_to(m)
-    
-    return m
+    try:
+        plantacion_union = gdf.unary_union
+        bounds = plantacion_union.bounds
+        dx = bounds[2] - bounds[0]
+        dy = bounds[3] - bounds[1]
+        minx = bounds[0] - 0.1 * dx
+        maxx = bounds[2] + 0.1 * dx
+        miny = bounds[1] - 0.1 * dy
+        maxy = bounds[3] + 0.1 * dy
+        
+        puntos = []
+        valores = []
+        for idx, row in gdf.iterrows():
+            centroide = row.geometry.centroid
+            puntos.append([centroide.x, centroide.y])
+            valores.append(row[columna])
+        puntos = np.array(puntos)
+        valores = np.array(valores)
+        
+        n = 200
+        xi = np.linspace(minx, maxx, n)
+        yi = np.linspace(miny, maxy, n)
+        XI, YI = np.meshgrid(xi, yi)
+        
+        tree = KDTree(puntos)
+        k = min(8, len(puntos))
+        distancias, indices = tree.query(np.column_stack((XI.ravel(), YI.ravel())), k=k)
+        
+        epsilon = 1e-6
+        pesos = 1.0 / (distancias + epsilon)
+        suma_pesos = np.sum(pesos, axis=1)
+        valores_vecinos = valores[indices]
+        valores_interp = np.sum(pesos * valores_vecinos, axis=1) / suma_pesos
+        ZI = valores_interp.reshape(XI.shape)
+        
+        cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
+        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
+        rgba = cmap(norm(ZI))
+        img = (rgba * 255).astype(np.uint8)
+        
+        img_bytes = io.BytesIO()
+        Image.fromarray(img).save(img_bytes, format='PNG')
+        img_bytes.seek(0)
+        img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
+        img_data = f"data:image/png;base64,{img_base64}"
+        
+        centroide = plantacion_union.centroid
+        m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
+        folium.TileLayer(
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri, Maxar, Earthstar Geographics',
+            name='Satélite Esri',
+            overlay=False,
+            control=True
+        ).add_to(m)
+        
+        bounds_img = [[miny, minx], [maxy, maxx]]
+        folium.raster_layers.ImageOverlay(
+            image=img_data,
+            bounds=bounds_img,
+            opacity=0.7,
+            name=f'Calor {titulo}',
+            interactive=True,
+            zindex=1
+        ).add_to(m)
+        
+        folium.GeoJson(
+            gpd.GeoSeries(plantacion_union).to_json(),
+            name='Límite plantación',
+            style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
+            tooltip='Límite de la plantación'
+        ).add_to(m)
+        
+        colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
+        colormap.add_to(m)
+        
+        folium.LayerControl(collapsed=False).add_to(m)
+        Fullscreen().add_to(m)
+        MeasureControl().add_to(m)
+        MiniMap(toggle_display=True).add_to(m)
+        
+        return m
+    except Exception as e:
+        return None
 
 def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     """
     Muestra mapa de calor RBF y panel de estadísticas descriptivas.
+    Si el mapa falla, muestra un gráfico de barras simple.
     """
-    mapa_calor = crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
+    # Intentar generar mapa de calor
+    mapa_calor = None
+    try:
+        mapa_calor = crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
+    except:
+        mapa_calor = None
+    
     if mapa_calor:
         folium_static(mapa_calor, width=1000, height=600)
+    else:
+        st.warning("No se pudo generar el mapa de calor. Mostrando gráfico de barras.")
+        fig, ax = plt.subplots(figsize=(10,4))
+        ax.bar(range(len(gdf)), gdf[columna].values, color='steelblue')
+        ax.set_xlabel('Bloque')
+        ax.set_ylabel(titulo)
+        ax.set_title(f'Valores de {titulo} por bloque')
+        st.pyplot(fig)
+        plt.close(fig)
     
     valores = gdf[columna].dropna()
     if len(valores) == 0:
@@ -2247,16 +2270,21 @@ if st.session_state.analisis_completado:
             st.caption(f"Fuente: {st.session_state.datos_modis.get('fuente', 'MODIS ORNL')}")
             
             st.markdown("### 🌿 NDVI")
-            mostrar_estadisticas_indice(gdf_completo, 'ndvi_modis', 'NDVI', 0.3, 0.9, ['red','yellow','green'])
+            if 'ndvi_modis' in gdf_completo.columns:
+                mostrar_estadisticas_indice(gdf_completo, 'ndvi_modis', 'NDVI', 0.3, 0.9, ['red','yellow','green'])
+            else:
+                st.error("No hay datos de NDVI disponibles.")
             
             st.markdown("---")
             st.markdown("### 💧 NDWI")
             st.info("NDWI calculado como (NIR - SWIR)/(NIR+SWIR) con bandas reales de MODIS (producto MOD09GA).")
-            mostrar_estadisticas_indice(gdf_completo, 'ndwi_modis', 'NDWI', 0.1, 0.7, ['brown','yellow','blue'])
+            if 'ndwi_modis' in gdf_completo.columns:
+                mostrar_estadisticas_indice(gdf_completo, 'ndwi_modis', 'NDWI', 0.1, 0.7, ['brown','yellow','blue'])
+            else:
+                st.error("No hay datos de NDWI disponibles.")
             
             st.markdown("---")
-            st.markdown("### ⚠️ NDRE")
-            st.warning("El índice NDRE requiere una banda de red edge, no disponible en MODIS. Para obtenerlo, se recomienda usar imágenes Sentinel-2.")
+            # Sección NDRE eliminada
             
             st.markdown("### 📥 EXPORTAR")
             try:
@@ -2267,7 +2295,8 @@ if st.session_state.analisis_completado:
                 col_dl1, col_dl2 = st.columns(2)
                 with col_dl1: st.download_button("🗺️ GeoJSON", geojson_indices, f"indices_{datetime.now():%Y%m%d}.geojson", "application/geo+json")
                 with col_dl2: st.download_button("📊 CSV", csv_indices, f"indices_{datetime.now():%Y%m%d}.csv", "text/csv")
-            except: st.info("No se pudieron exportar los datos")
+            except Exception as e:
+                st.info(f"No se pudieron exportar los datos: {e}")
         
         with tab4:
             st.subheader("🌤️ DATOS CLIMÁTICOS")
