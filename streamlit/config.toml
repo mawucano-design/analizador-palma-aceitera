@@ -28,22 +28,16 @@ showErrorDetails = true
 showfileUploaderEncoding = false
 showImageFormat = false
 
-# Configuración específica para mapas y datos geoespaciales
 [mapbox]
 token = ""
 
-# Configuración para mejorar el rendimiento con datos grandes
 [global]
 developmentMode = false
 enableStaticServing = true
 
-# Configuración de caché para mejor rendimiento
 [cache]
-# Tiempo de vida de la caché en segundos (1 hora)
 ttl = 3600
-# Tamaño máximo de la caché en bytes (500MB)
 maxSize = 500000000
 
-# Logger configuration
 [logger]
 level = "info"
