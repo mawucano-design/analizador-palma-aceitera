@@ -1,4 +1,3 @@
-# requirements.txt
 streamlit==1.28.0
 geopandas==0.13.0
 pandas==2.0.3
@@ -20,13 +19,12 @@ scipy==1.11.0
 fastkml==0.12
 pykml==0.2.0
 lxml==4.9.3
-streamlit_folium
-folium
-branca 
-plotly 
-xarray 
-netCDF4 
-rasterio 
-ultralytics
-netCDF4
+streamlit-folium==0.26.1
+folium==0.20.0
+branca==0.8.2
+plotly==6.5.2
+xarray==2024.7.0
+netCDF4==1.7.4
+rasterio==1.4.4
+ultralytics==8.4.14
 mercadopago==2.2.0
