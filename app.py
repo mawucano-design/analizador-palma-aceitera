@@ -57,6 +57,12 @@ if not MERCADOPAGO_ACCESS_TOKEN:
 sdk = mercadopago.SDK(MERCADOPAGO_ACCESS_TOKEN)
 
 # ===== BASE DE DATOS DE USUARIOS =====
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password, hash):
+    return hash_password(password) == hash
+
 def init_db():
     conn = sqlite3.connect('users.db')
     c = conn.cursor()
@@ -71,17 +77,14 @@ def init_db():
     admin_email = "mawucano@gmail.com"
     far_future = "2100-01-01 00:00:00"  # Fecha de expiración lejana
 
-    # Verificar si el usuario ya existe
     c.execute("SELECT id FROM users WHERE email = ?", (admin_email,))
     existing = c.fetchone()
 
     if existing:
-        # Si existe, solo actualizar la suscripción (sin cambiar contraseña)
         c.execute("UPDATE users SET subscription_expires = ? WHERE email = ?", (far_future, admin_email))
         print("Usuario admin actualizado con suscripción permanente.")
     else:
-        # Si no existe, crearlo con una contraseña por defecto (cámbiala si quieres)
-        default_password = "admin123"  # Puedes cambiarla aquí o leerla de una variable de entorno
+        default_password = "admin123"
         password_hash = hash_password(default_password)
         c.execute("INSERT INTO users (email, password_hash, subscription_expires) VALUES (?, ?, ?)",
                   (admin_email, password_hash, far_future))
@@ -92,12 +95,6 @@ def init_db():
     conn.close()
 
 init_db()  # Asegurar que la tabla existe
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(password, hash):
-    return hash_password(password) == hash
 
 def register_user(email, password):
     conn = sqlite3.connect('users.db')
