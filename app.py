@@ -827,7 +827,7 @@ def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     Obtiene NDVI real con variabilidad espacial y asigna valores a cada bloque.
     """
     producto = "MOD13Q1"
-    banda = "250m_16_days_NDVI"
+    banda = "_250m_16_days_NDVI"
     # Usar el polígono unido para muestrear
     gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
     valores_puntos = obtener_valores_modis_banda(gdf_union, fecha_inicio, fecha_fin, producto, banda,
