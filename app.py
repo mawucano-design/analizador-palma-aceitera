@@ -1533,6 +1533,7 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
     """
     Muestra mapa de calor RBF y panel de estadísticas descriptivas.
     Si el mapa falla, muestra un gráfico de barras simple.
+    Ya no incluye histograma.
     """
     # Intentar generar mapa de calor
     mapa_calor = None
@@ -1570,27 +1571,71 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
     with col5:
         st.metric("Máximo", f"{valores.max():.3f}")
     
-    fig_hist = go.Figure()
-    fig_hist.add_trace(go.Histogram(
-        x=valores,
-        nbinsx=20,
-        marker_color='steelblue',
-        opacity=0.7,
-        name='Frecuencia'
-    ))
-    fig_hist.update_layout(
-        title=f'Distribución de {titulo}',
-        xaxis_title=titulo,
-        yaxis_title='Número de bloques',
-        height=300,
-        margin=dict(l=20, r=20, t=40, b=20)
-    )
-    st.plotly_chart(fig_hist, use_container_width=True)
-    
     st.markdown("#### Valores por bloque")
     df_tabla = gdf[['id_bloque', columna]].copy()
     df_tabla.columns = ['Bloque', titulo]
     st.dataframe(df_tabla.style.format({titulo: '{:.3f}'}), use_container_width=True)
+
+def mostrar_comparacion_ndvi_ndwi(gdf):
+    """
+    Crea un gráfico de dispersión NDVI vs NDWI, coloreado por salud,
+    y tablas con los valores extremos.
+    """
+    if gdf is None or len(gdf) == 0:
+        st.warning("No hay datos para la comparación.")
+        return
+    
+    # Preparar datos
+    df = gdf[['id_bloque', 'ndvi_modis', 'ndwi_modis', 'salud', 'area_ha']].copy()
+    df = df.dropna()
+    
+    if len(df) == 0:
+        st.warning("Datos insuficientes para la comparación.")
+        return
+    
+    st.markdown("### 🔍 Comparación NDVI vs NDWI")
+    
+    # Scatter plot con Plotly
+    fig = px.scatter(
+        df, x='ndvi_modis', y='ndwi_modis', color='salud',
+        size='area_ha', hover_data=['id_bloque'],
+        labels={'ndvi_modis': 'NDVI', 'ndwi_modis': 'NDWI', 'salud': 'Salud'},
+        title='Relación entre NDVI y NDWI por bloque',
+        color_discrete_map={
+            'Crítica': '#d73027',
+            'Baja': '#fee08b',
+            'Moderada': '#91cf60',
+            'Buena': '#1a9850'
+        },
+        trendline='ols', trendline_color_override='gray'
+    )
+    fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
+    fig.update_layout(height=500)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Tablas con extremos
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### Top 5 NDVI")
+        top_ndvi = df.nlargest(5, 'ndvi_modis')[['id_bloque', 'ndvi_modis', 'salud']]
+        top_ndvi.columns = ['Bloque', 'NDVI', 'Salud']
+        st.dataframe(top_ndvi.style.format({'NDVI': '{:.3f}'}), use_container_width=True)
+        
+        st.markdown("#### Bottom 5 NDVI")
+        bottom_ndvi = df.nsmallest(5, 'ndvi_modis')[['id_bloque', 'ndvi_modis', 'salud']]
+        bottom_ndvi.columns = ['Bloque', 'NDVI', 'Salud']
+        st.dataframe(bottom_ndvi.style.format({'NDVI': '{:.3f}'}), use_container_width=True)
+    
+    with col2:
+        st.markdown("#### Top 5 NDWI")
+        top_ndwi = df.nlargest(5, 'ndwi_modis')[['id_bloque', 'ndwi_modis', 'salud']]
+        top_ndwi.columns = ['Bloque', 'NDWI', 'Salud']
+        st.dataframe(top_ndwi.style.format({'NDWI': '{:.3f}'}), use_container_width=True)
+        
+        st.markdown("#### Bottom 5 NDWI")
+        bottom_ndwi = df.nsmallest(5, 'ndwi_modis')[['id_bloque', 'ndwi_modis', 'salud']]
+        bottom_ndwi.columns = ['Bloque', 'NDWI', 'Salud']
+        st.dataframe(bottom_ndwi.style.format({'NDWI': '{:.3f}'}), use_container_width=True)
 
 def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre='YlOrRd'):
     """
@@ -2202,37 +2247,138 @@ if st.session_state.analisis_completado:
         ])
         
         with tab1:
-            st.subheader("RESUMEN GENERAL")
-            col1, col2, col3, col4 = st.columns(4)
-            with col1: st.metric("Área Total", f"{resultados.get('area_total', 0):.1f} ha")
-            with col2:
-                try: edad_prom = gdf_completo['edad_anios'].mean(); st.metric("Edad Promedio", f"{edad_prom:.1f} años")
-                except: st.metric("Edad Promedio", "N/A")
-            with col3:
-                try: ndvi_prom = gdf_completo['ndvi_modis'].mean(); st.metric("NDVI Promedio", f"{ndvi_prom:.3f}")
-                except: st.metric("NDVI Promedio", "N/A")
-            with col4:
-                try:
-                    bloques_salud_buena = (gdf_completo['salud'] == 'Buena').sum()
-                    total_bloques = len(gdf_completo)
-                    porcentaje_bueno = (bloques_salud_buena / total_bloques) * 100
-                    st.metric("Salud Buena", f"{porcentaje_bueno:.1f}%")
-                except: st.metric("Salud Buena", "N/A")
-            st.subheader("📋 RESUMEN POR BLOQUE")
+            st.subheader("📊 DASHBOARD DE RESUMEN")
+            
+            # Calcular métricas adicionales
+            area_total = resultados.get('area_total', 0)
+            edad_prom = gdf_completo['edad_anios'].mean() if 'edad_anios' in gdf_completo.columns else np.nan
+            ndvi_prom = gdf_completo['ndvi_modis'].mean() if 'ndvi_modis' in gdf_completo.columns else np.nan
+            ndwi_prom = gdf_completo['ndwi_modis'].mean() if 'ndwi_modis' in gdf_completo.columns else np.nan
+            total_bloques = len(gdf_completo)
+            salud_counts = gdf_completo['salud'].value_counts() if 'salud' in gdf_completo.columns else pd.Series()
+            pct_buena = (salud_counts.get('Buena', 0) / total_bloques * 100) if total_bloques > 0 else 0
+            
+            # Estimación simple de productividad (ejemplo)
+            if not np.isnan(ndvi_prom) and not np.isnan(edad_prom):
+                # Suponiendo que productividad máxima a los 10 años con NDVI > 0.8
+                productividad = (ndvi_prom / 0.8) * min(edad_prom / 10, 1) * 100
+                productividad = min(productividad, 100)
+            else:
+                productividad = np.nan
+            
+            # Fila de métricas (6 columnas)
+            col_m1, col_m2, col_m3, col_m4, col_m5, col_m6 = st.columns(6)
+            with col_m1:
+                st.metric("Área Total", f"{area_total:.1f} ha")
+            with col_m2:
+                st.metric("Bloques", f"{total_bloques}")
+            with col_m3:
+                st.metric("Edad Prom.", f"{edad_prom:.1f} años" if not np.isnan(edad_prom) else "N/A")
+            with col_m4:
+                st.metric("NDVI Prom.", f"{ndvi_prom:.3f}" if not np.isnan(ndvi_prom) else "N/A")
+            with col_m5:
+                st.metric("NDWI Prom.", f"{ndwi_prom:.3f}" if not np.isnan(ndwi_prom) else "N/A")
+            with col_m6:
+                st.metric("Salud Buena", f"{pct_buena:.1f}%")
+            
+            st.markdown("---")
+            
+            # Segunda fila: gráficos
+            col_g1, col_g2 = st.columns(2)
+            
+            with col_g1:
+                st.markdown("#### 🌡️ Distribución de Salud")
+                if not salud_counts.empty:
+                    fig_pie, ax_pie = plt.subplots(figsize=(5,3))
+                    colors_pie = {'Crítica': '#d73027', 'Baja': '#fee08b', 'Moderada': '#91cf60', 'Buena': '#1a9850'}
+                    pie_colors = [colors_pie.get(c, '#cccccc') for c in salud_counts.index]
+                    wedges, texts, autotexts = ax_pie.pie(
+                        salud_counts.values, labels=salud_counts.index, autopct='%1.1f%%',
+                        colors=pie_colors, startangle=90, textprops={'fontsize': 9}
+                    )
+                    ax_pie.set_title("Clasificación de salud", fontsize=10)
+                    st.pyplot(fig_pie)
+                    plt.close(fig_pie)
+                else:
+                    st.info("Sin datos de salud")
+            
+            with col_g2:
+                st.markdown("#### 📊 Histograma de NDVI y Edad")
+                if 'ndvi_modis' in gdf_completo.columns and 'edad_anios' in gdf_completo.columns:
+                    fig_hist, ax_hist = plt.subplots(figsize=(5,3))
+                    ax_hist.hist(gdf_completo['ndvi_modis'].dropna(), bins=15, alpha=0.7, label='NDVI', color='green')
+                    ax_hist.set_xlabel('NDVI')
+                    ax_hist.set_ylabel('Frecuencia', color='green')
+                    ax_hist.tick_params(axis='y', labelcolor='green')
+                    
+                    ax2 = ax_hist.twinx()
+                    ax2.hist(gdf_completo['edad_anios'].dropna(), bins=15, alpha=0.5, label='Edad', color='orange')
+                    ax2.set_ylabel('Frecuencia (Edad)', color='orange')
+                    ax2.tick_params(axis='y', labelcolor='orange')
+                    
+                    ax_hist.set_title('Distribución de NDVI y Edad')
+                    fig_hist.tight_layout()
+                    st.pyplot(fig_hist)
+                    plt.close(fig_hist)
+                else:
+                    st.info("Datos insuficientes para histograma")
+            
+            st.markdown("---")
+            
+            # Mapa rápido de la plantación coloreado por salud
+            st.markdown("#### 🗺️ Mapa de Salud por Bloque")
             try:
-                columnas = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 'ndwi_modis', 'salud']
-                tabla = gdf_completo[columnas].copy()
+                # Crear un mapa simple con matplotlib
+                fig_map, ax_map = plt.subplots(figsize=(10,5))
+                gdf_completo.plot(column='salud', ax=ax_map, legend=True,
+                                  categorical=True, cmap='RdYlGn', 
+                                  edgecolor='black', linewidth=0.3,
+                                  legend_kwds={'title': 'Salud', 'loc': 'lower right'})
+                ax_map.set_title("Distribución espacial de la salud")
+                ax_map.set_xlabel("Longitud")
+                ax_map.set_ylabel("Latitud")
+                st.pyplot(fig_map)
+                plt.close(fig_map)
+            except Exception as e:
+                st.warning(f"No se pudo generar el mapa de salud: {e}")
+            
+            st.markdown("---")
+            
+            # Tabla resumen mejorada
+            st.markdown("#### 📋 Resumen detallado por bloque")
+            try:
+                columnas_tabla = ['id_bloque', 'area_ha', 'edad_anios', 'ndvi_modis', 'ndwi_modis', 'salud']
+                tabla = gdf_completo[columnas_tabla].copy()
                 tabla.columns = ['Bloque', 'Área (ha)', 'Edad (años)', 'NDVI', 'NDWI', 'Salud']
+                
+                # Aplicar formato condicional a la columna Salud
                 def color_salud(val):
-                    if val == 'Crítica': return 'color: #d73027; font-weight: bold'
-                    elif val == 'Baja': return 'color: #fee08b'
-                    elif val == 'Moderada': return 'color: #91cf60'
-                    else: return 'color: #1a9850; font-weight: bold'
-                st.dataframe(
-                    tabla.style.format({
-                        'Área (ha)': '{:.2f}', 'Edad (años)': '{:.1f}',
-                        'NDVI': '{:.3f}', 'NDWI': '{:.3f}'
-                    }).applymap(color_salud, subset=['Salud'])
+                    if val == 'Crítica':
+                        return 'background-color: #d73027; color: white'
+                    elif val == 'Baja':
+                        return 'background-color: #fee08b'
+                    elif val == 'Moderada':
+                        return 'background-color: #91cf60'
+                    elif val == 'Buena':
+                        return 'background-color: #1a9850; color: white'
+                    return ''
+                
+                styled_tabla = tabla.style.format({
+                    'Área (ha)': '{:.2f}',
+                    'Edad (años)': '{:.1f}',
+                    'NDVI': '{:.3f}',
+                    'NDWI': '{:.3f}'
+                }).applymap(color_salud, subset=['Salud'])
+                
+                st.dataframe(styled_tabla, use_container_width=True, height=400)
+                
+                # Botón de exportación
+                csv_tabla = tabla.to_csv(index=False)
+                st.download_button(
+                    label="📥 Exportar tabla a CSV",
+                    data=csv_tabla,
+                    file_name=f"resumen_plantacion_{datetime.now():%Y%m%d}.csv",
+                    mime="text/csv"
                 )
             except Exception as e:
                 st.warning(f"No se pudo mostrar la tabla de bloques: {e}")
@@ -2284,7 +2430,8 @@ if st.session_state.analisis_completado:
                 st.error("No hay datos de NDWI disponibles.")
             
             st.markdown("---")
-            # Sección NDRE eliminada
+            # Añadir la comparación después de mostrar ambos índices
+            mostrar_comparacion_ndvi_ndwi(gdf_completo)
             
             st.markdown("### 📥 EXPORTAR")
             try:
