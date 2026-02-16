@@ -29,3 +29,4 @@ netCDF4
 rasterio 
 ultralytics
 netCDF4
+mercadopago==2.2.0
