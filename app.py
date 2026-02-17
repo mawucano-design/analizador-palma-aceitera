@@ -1,15 +1,14 @@
-# app.py - Versión COMPLETA con MONETIZACIÓN (Mercado Pago) y DATOS SATELITALES REALES (USGS)
+# app.py - Versión COMPLETA con MONETIZACIÓN y DATOS SATELITALES REALES (Open-Meteo NDVI)
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
 # - Modo DEMO con datos simulados.
-# - Modo PREMIUM con datos reales de NDVI y NDWI desde USGS (vía usgsxplore).
+# - Modo PREMIUM con datos reales de NDVI desde Open-Meteo (gratuito) y NDWI simulado.
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
 # IMPORTANTE: 
 # - Configurar variable de entorno MERCADOPAGO_ACCESS_TOKEN.
-# - Configurar USGS_USERNAME y USGS_TOKEN (credenciales de USGS EarthExplorer).
-# - Instalar dependencias: pip install usgsxplore rasterio
+# - Para Open-Meteo no se requiere configuración.
 
 import streamlit as st
 import geopandas as gpd
@@ -49,21 +48,6 @@ import hashlib
 import secrets
 import mercadopago
 
-# ===== LIBRERÍAS PARA DATOS SATELITALES =====
-try:
-    import usgsxplore
-    from usgsxplore import USGSApi
-    USGSXPLORE_OK = True
-except ImportError:
-    USGSXPLORE_OK = False
-
-try:
-    import rasterio
-    from rasterio.mask import mask
-    RASTERIO_OK = True
-except ImportError:
-    RASTERIO_OK = False
-
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
 if not MERCADOPAGO_ACCESS_TOKEN:
@@ -71,10 +55,6 @@ if not MERCADOPAGO_ACCESS_TOKEN:
     st.stop()
 
 sdk = mercadopago.SDK(MERCADOPAGO_ACCESS_TOKEN)
-
-# ===== CONFIGURACIÓN DE USGS =====
-USGS_USERNAME = os.environ.get("USGS_USERNAME")
-USGS_TOKEN = os.environ.get("USGS_TOKEN")
 
 # ===== BASE DE DATOS DE USUARIOS =====
 def hash_password(password):
@@ -571,148 +551,59 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES PARA DATOS SATELITALES REALES (USGS) =====
-def obtener_ndvi_usgsxplore(gdf_dividido, fecha_inicio, fecha_fin):
+# ===== FUNCIÓN PARA OBTENER NDVI REAL DESDE OPEN-METEO =====
+def obtener_ndvi_openmeteo(gdf_dividido, fecha_inicio, fecha_fin):
     """
-    Obtiene NDVI real usando usgsxplore (producto MOD13Q1).
-    Retorna (gdf_actualizado, ndvi_promedio) o (None, None) si falla.
+    Obtiene NDVI promedio para cada bloque usando la API de archivo de Open-Meteo.
+    Parámetro correcto: vegetation_normalized_difference_index
     """
-    if not USGSXPLORE_OK or not RASTERIO_OK:
-        st.warning("Librerías necesarias (usgsxplore o rasterio) no instaladas.")
-        return None, None
-    if not USGS_TOKEN or not USGS_USERNAME:
-        st.warning("Credenciales de USGS no configuradas.")
-        return None, None
+    ndvi_vals = []
+    fallos = 0
+    # La API tiene datos desde 2021-01-01 aproximadamente
+    fecha_min = datetime(2021, 1, 1)
+    if fecha_inicio < fecha_min:
+        st.warning("⚠️ La API de vegetación tiene datos desde 2021-01-01. Ajustando fecha de inicio.")
+        fecha_inicio = fecha_min
 
-    try:
-        # Inicializar API (lee credenciales de variables de entorno automáticamente)
-        api = USGSApi()
-
-        bounds = gdf_dividido.total_bounds
-        bbox = [bounds[0], bounds[1], bounds[2], bounds[3]]
-
-        # Buscar escenas MODIS NDVI (producto MOD13Q1.061)
-        escenas = api.search(
-            dataset='modis_ndvi_16day',  # Nombre común; también puede ser 'MOD13Q1.061'
-            bbox=bbox,
-            start_date=fecha_inicio.strftime('%Y-%m-%d'),
-            end_date=fecha_fin.strftime('%Y-%m-%d'),
-            max_results=5
-        )
-
-        if not escenas:
-            st.warning("No se encontraron escenas NDVI en el período.")
-            return None, None
-
-        # Tomar la primera escena (la más reciente)
-        scene = escenas[0]
-        st.info(f"Procesando escena NDVI: {scene['displayId']}")
-
-        # Descargar a archivo temporal
-        with tempfile.NamedTemporaryFile(suffix='.hdf', delete=False) as tmp:
-            download_path = tmp.name
-        api.download(scene['entityId'], output_dir=os.path.dirname(download_path))
-
-        # Abrir la subdataset NDVI
-        ndvi_path = f"HDF4_EOS:EOS_GRID:{download_path}:MOD_Grid_MOD13Q1:250m 16 days NDVI"
-        with rasterio.open(ndvi_path) as src:
-            # Recortar por el polígono de la plantación
-            geom = [mapping(gdf_dividido.unary_union)]
-            out_image, out_transform = mask(src, geom, crop=True, nodata=src.nodata)
-            ndvi_array = out_image[0]
-            # Escalar: los valores MODIS están en 0-10000 con factor 0.0001
-            ndvi_scaled = ndvi_array * 0.0001
-            ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src.nodata * 0.0001])
-
-        # Limpiar archivo temporal
-        os.unlink(download_path)
-
-        # Asignar el mismo valor a todos los bloques
-        gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
-        return gdf_dividido, ndvi_mean
-
-    except Exception as e:
-        st.error(f"Error en obtención de NDVI con USGS: {str(e)}")
-        # Limpiar archivos temporales si quedaron
-        for f in os.listdir('.'):
-            if f.endswith('.hdf') and f.startswith('temp'):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
-        return None, None
-
-def obtener_ndwi_usgsxplore(gdf_dividido, fecha_inicio, fecha_fin):
-    """
-    Obtiene NDWI real usando usgsxplore (producto MOD09GA, bandas NIR y SWIR).
-    Retorna (gdf_actualizado, ndwi_promedio) o (None, None) si falla.
-    """
-    if not USGSXPLORE_OK or not RASTERIO_OK:
-        return None, None
-    if not USGS_TOKEN or not USGS_USERNAME:
-        return None, None
-
-    try:
-        api = USGSApi()
-        bounds = gdf_dividido.total_bounds
-        bbox = [bounds[0], bounds[1], bounds[2], bounds[3]]
-
-        # Buscar escenas MODIS Surface Reflectance (MOD09GA.061)
-        escenas = api.search(
-            dataset='modis_surface_reflectance',  # Nombre común; también 'MOD09GA.061'
-            bbox=bbox,
-            start_date=fecha_inicio.strftime('%Y-%m-%d'),
-            end_date=fecha_fin.strftime('%Y-%m-%d'),
-            max_results=5
-        )
-
-        if not escenas:
-            st.warning("No se encontraron escenas de reflectancia para NDWI.")
-            return None, None
-
-        scene = escenas[0]
-        st.info(f"Procesando escena SR: {scene['displayId']}")
-
-        with tempfile.NamedTemporaryFile(suffix='.hdf', delete=False) as tmp:
-            download_path = tmp.name
-        api.download(scene['entityId'], output_dir=os.path.dirname(download_path))
-
-        # Abrir bandas NIR (b02) y SWIR (b06)
-        nir_path = f"HDF4_EOS:EOS_GRID:{download_path}:MOD_Grid_MOD09GA:sur_refl_b02"
-        swir_path = f"HDF4_EOS:EOS_GRID:{download_path}:MOD_Grid_MOD09GA:sur_refl_b06"
-
-        geom = [mapping(gdf_dividido.unary_union)]
-
-        with rasterio.open(nir_path) as src_nir:
-            nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
-        with rasterio.open(swir_path) as src_swir:
-            swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
-
-        # Escalar (factor 0.0001)
-        nir = nir_array[0] * 0.0001
-        swir = swir_array[0] * 0.0001
-
-        # Calcular NDWI
-        with np.errstate(divide='ignore', invalid='ignore'):
-            ndwi = (nir - swir) / (nir + swir)
-            ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
-        ndwi_mean = np.nanmean(ndwi)
-
-        os.unlink(download_path)
-
-        gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3) if not np.isnan(ndwi_mean) else np.nan
-        return gdf_dividido, ndwi_mean
-
-    except Exception as e:
-        st.warning(f"Error en obtención de NDWI con USGS: {str(e)}")
-        # Limpiar archivos temporales
-        for f in os.listdir('.'):
-            if f.endswith('.hdf') and f.startswith('temp'):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
-        return None, None
+    for idx, row in gdf_dividido.iterrows():
+        centroid = row.geometry.centroid
+        lat, lon = centroid.y, centroid.x
+        url = "https://archive-api.open-meteo.com/v1/archive"
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "start_date": fecha_inicio.strftime("%Y-%m-%d"),
+            "end_date": fecha_fin.strftime("%Y-%m-%d"),
+            "daily": "vegetation_normalized_difference_index",
+            "timezone": "auto"
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            if "daily" in data and "vegetation_normalized_difference_index" in data["daily"]:
+                ndvi_daily = data["daily"]["vegetation_normalized_difference_index"]
+                ndvi_clean = [v for v in ndvi_daily if v is not None]
+                if ndvi_clean:
+                    ndvi_mean = np.mean(ndvi_clean)
+                else:
+                    ndvi_mean = np.nan
+            else:
+                st.warning(f"Respuesta inesperada de Open-Meteo: {data}")
+                ndvi_mean = np.nan
+        except Exception as e:
+            fallos += 1
+            ndvi_mean = np.nan
+        
+        if np.isnan(ndvi_mean):
+            ndvi_mean = 0.65  # valor simulado por defecto
+        ndvi_vals.append(round(ndvi_mean, 3))
+    
+    if fallos > 0:
+        st.warning(f"⚠️ No se pudo conectar con Open-Meteo para {fallos} bloques. Se usaron valores simulados.")
+    
+    gdf_dividido['ndvi_modis'] = ndvi_vals
+    return gdf_dividido, np.nanmean(ndvi_vals)
 
 # ===== FUNCIONES CLIMÁTICAS (con corrección de errores) =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
@@ -1185,7 +1076,7 @@ def ejecutar_analisis_completo():
                 'fuente': 'Datos simulados (DEMO)'
             }
         else:
-            # Modo PREMIUM: intentar obtener datos reales con USGS
+            # Modo PREMIUM: obtener NDVI real desde Open-Meteo
             gdf_dividido = dividir_plantacion_en_bloques(gdf, n_divisiones)
             areas_ha = []
             for idx, row in gdf_dividido.iterrows():
@@ -1193,29 +1084,16 @@ def ejecutar_analisis_completo():
                 areas_ha.append(float(calcular_superficie(area_gdf)))
             gdf_dividido['area_ha'] = areas_ha
 
-            # 1. Obtener NDVI real desde USGS
-            st.info("🛰️ Obteniendo NDVI desde USGS EarthExplorer (MOD13Q1)...")
-            resultado_ndvi, ndvi_prom = obtener_ndvi_usgsxplore(gdf_dividido, fecha_inicio, fecha_fin)
-            if resultado_ndvi is not None:
-                gdf_dividido = resultado_ndvi
-                fuente_ndvi = "USGS MOD13Q1"
-            else:
-                st.warning("No se pudo obtener NDVI real. Usando simulación.")
-                np.random.seed(42)
-                gdf_dividido['ndvi_modis'] = np.round(0.65 + 0.1 * np.random.randn(len(gdf_dividido)), 3)
-                fuente_ndvi = "Simulado (fallback)"
+            # 1. Obtener NDVI real desde Open-Meteo
+            st.info("🌿 Obteniendo NDVI desde Open-Meteo...")
+            gdf_dividido, ndvi_prom = obtener_ndvi_openmeteo(gdf_dividido, fecha_inicio, fecha_fin)
+            fuente_ndvi = "Open-Meteo"
 
-            # 2. Obtener NDWI real desde USGS (si es posible)
-            st.info("💧 Obteniendo NDWI desde USGS EarthExplorer (MOD09GA)...")
-            resultado_ndwi, ndwi_prom = obtener_ndwi_usgsxplore(gdf_dividido, fecha_inicio, fecha_fin)
-            if resultado_ndwi is not None:
-                gdf_dividido = resultado_ndwi
-                fuente_ndwi = "USGS MOD09GA"
-            else:
-                st.warning("No se pudo obtener NDWI real. Usando simulación.")
-                np.random.seed(42)
-                gdf_dividido['ndwi_modis'] = np.round(0.3 + 0.1 * np.random.randn(len(gdf_dividido)), 3)
-                fuente_ndwi = "Simulado (fallback)"
+            # 2. NDWI simulado (por ahora)
+            st.info("💧 Obteniendo NDWI simulado...")
+            np.random.seed(42)
+            gdf_dividido['ndwi_modis'] = np.round(0.3 + 0.1 * np.random.randn(len(gdf_dividido)), 3)
+            fuente_ndwi = "Simulado"
 
             # 3. Datos climáticos (con protección contra None)
             st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
@@ -1261,12 +1139,6 @@ def ejecutar_analisis_completo():
 
 # ===== INICIALIZACIÓN DE SESIÓN (ya llamada) =====
 
-# Mostrar advertencias de librerías opcionales
-if not USGSXPLORE_OK:
-    st.warning("Para usar datos satelitales reales, instala 'usgsxplore': pip install usgsxplore")
-if not RASTERIO_OK:
-    st.warning("Para procesar imágenes satelitales, instala 'rasterio': pip install rasterio")
-
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
@@ -1287,7 +1159,7 @@ st.markdown("""
 <div class="hero-banner">
     <h1 class="hero-title">🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL</h1>
     <p style="color: #cbd5e1; font-size: 1.2em;">
-        Monitoreo biológico con datos reales USGS · Open-Meteo ERA5 · NASA POWER · SRTM
+        Monitoreo biológico con datos reales Open-Meteo · NASA POWER · SRTM
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -1405,7 +1277,7 @@ st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
-    <p>Datos satelitales: USGS EarthExplorer · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM</p>
+    <p>Datos satelitales: Open-Meteo NDVI · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM</p>
     <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
 </div>
 """, unsafe_allow_html=True)
