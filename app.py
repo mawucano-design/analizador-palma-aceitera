@@ -1999,24 +1999,79 @@ if not EARTHDATA_OK:
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-/* OCULTAR TODO EL MENÚ SUPERIOR Y FOOTER DE STREAMLIT */
+/* Ocultar menú principal (tres puntos) */
 #MainMenu {visibility: hidden !important;}
+
+/* Ocultar footer de Streamlit */
 footer {visibility: hidden !important;}
+
+/* Ocultar header completo */
 header {visibility: hidden !important;}
 .stApp header {display: none !important;}
-header[data-testid="stHeader"] {display: none !important;}
-div[data-testid="stToolbar"] {display: none !important;}
-section[data-testid="stSidebar"] > div:first-child {display: none;} /* opcional, si quieres ocultar algo más */
-.st-emotion-cache-1avcm0n {display: none !important;}
-.st-emotion-cache-18ni7ap {display: none !important;}
 
-/* TUS ESTILOS PERSONALIZADOS */
-.hero-banner { background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); padding: 1.5em; border-radius: 15px; margin-bottom: 1em; border: 1px solid rgba(76, 175, 80, 0.3); text-align: center; }
-.hero-title { color: #ffffff; font-size: 2em; font-weight: 800; margin-bottom: 0.5em; background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.stButton > button { background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; color: white !important; border: none !important; padding: 0.8em 1.5em !important; border-radius: 12px !important; font-weight: 700 !important; font-size: 1em !important; margin: 5px 0 !important; transition: all 0.3s ease !important; }
-.stButton > button:hover { transform: translateY(-2px) !important; box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; }
-.stTabs [data-baseweb="tab-list"] { background: rgba(30, 41, 59, 0.7) !important; backdrop-filter: blur(10px) !important; padding: 8px 16px !important; border-radius: 16px !important; border: 1px solid rgba(76, 175, 80, 0.3) !important; margin-top: 1.5em !important; }
-div[data-testid="metric-container"] { background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; backdrop-filter: blur(10px) !important; border-radius: 18px !important; padding: 22px !important; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; border: 1px solid rgba(76, 175, 80, 0.25) !important; }
+/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
+.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+
+/* Ocultar elementos específicos del toolbar */
+[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
+
+/* Ocultar otros elementos de UI de Streamlit */
+.st-emotion-cache-1avcm0n {display: none !important;}
+.st-emotion-cache-16txtl3 {display: none !important;}
+.st-emotion-cache-12fmjuu {display: none !important;}
+
+/* Estilos personalizados de la app */
+.hero-banner { 
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
+    padding: 1.5em; 
+    border-radius: 15px; 
+    margin-bottom: 1em; 
+    border: 1px solid rgba(76, 175, 80, 0.3); 
+    text-align: center; 
+}
+.hero-title { 
+    color: #ffffff; 
+    font-size: 2em; 
+    font-weight: 800; 
+    margin-bottom: 0.5em; 
+    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); 
+    -webkit-background-clip: text; 
+    -webkit-text-fill-color: transparent; 
+}
+.stButton > button { 
+    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; 
+    color: white !important; 
+    border: none !important; 
+    padding: 0.8em 1.5em !important; 
+    border-radius: 12px !important; 
+    font-weight: 700 !important; 
+    font-size: 1em !important; 
+    margin: 5px 0 !important; 
+    transition: all 0.3s ease !important; 
+}
+.stButton > button:hover { 
+    transform: translateY(-2px) !important; 
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; 
+}
+.stTabs [data-baseweb="tab-list"] { 
+    background: rgba(30, 41, 59, 0.7) !important; 
+    backdrop-filter: blur(10px) !important; 
+    padding: 8px 16px !important; 
+    border-radius: 16px !important; 
+    border: 1px solid rgba(76, 175, 80, 0.3) !important; 
+    margin-top: 1.5em !important; 
+}
+div[data-testid="metric-container"] { 
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; 
+    backdrop-filter: blur(10px) !important; 
+    border-radius: 18px !important; 
+    padding: 22px !important; 
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; 
+    border: 1px solid rgba(76, 175, 80, 0.25) !important; 
+}
 </style>
 """, unsafe_allow_html=True)
 
