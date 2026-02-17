@@ -569,7 +569,7 @@ def cargar_archivo_plantacion(uploaded_file):
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real usando earthaccess (producto MOD13Q1 de MODIS).
-    Retorna (gdf_actualizado, ndvi_promedio) o (None, None) si falla.
+    Descarga el archivo HDF temporalmente y procesa con rasterio.
     """
     if not EARTHDATA_OK:
         st.warning("Librerías earthaccess/xarray/rioxarray no instaladas.")
@@ -602,43 +602,47 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
             st.warning("No se encontraron escenas MOD13Q1 en el período.")
             return None, None
 
-        # Usar la primera escena (la más reciente)
+        # Usar la primera escena
         granule = results[0]
         st.info(f"Procesando escena NDVI: {granule['umm']['GranuleUR']}")
 
-        # Acceder al archivo en la nube
-        files = earthaccess.open([granule])
+        # Descargar a archivo temporal
+        with tempfile.NamedTemporaryFile(suffix='.hdf', delete=False) as tmp:
+            download_path = tmp.name
+        earthaccess.download(granule, local_path=download_path)
 
-        # Abrir con rioxarray, seleccionar la banda de NDVI (banda 1)
-        with rioxarray.open_rasterio(files[0], group='MOD_Grid_MOD13Q1') as src:
-            ndvi_da = src.sel(band=1)
-            # Reprojectar a EPSG:4326
-            ndvi_da = ndvi_da.rio.reproject("EPSG:4326")
+        # Abrir la subdataset NDVI
+        ndvi_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD13Q1:250m 16 days NDVI'
+        with rasterio.open(ndvi_path) as src:
+            # Recortar por el polígono unido de toda la plantación
+            geom = [mapping(gdf_dividido.unary_union)]
+            out_image, out_transform = mask(src, geom, crop=True, nodata=src.nodata)
+            ndvi_array = out_image[0]
+            # Escalar: los valores MODIS NDVI están en escala 0-10000 con factor 0.0001
+            ndvi_scaled = ndvi_array * 0.0001
+            ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src.nodata * 0.0001])
 
-            ndvi_vals = []
-            for idx, row in gdf_dividido.iterrows():
-                geom = row.geometry
-                # Recortar al polígono
-                clipped = ndvi_da.rio.clip([mapping(geom)], from_disk=True)
-                # Calcular media ignorando valores de relleno (típicamente -3000)
-                mean_val = clipped.where(clipped > -2000).mean().item()
-                if np.isnan(mean_val):
-                    mean_val = 0.65
-                else:
-                    mean_val = mean_val * 0.0001  # escala MODIS
-                ndvi_vals.append(round(mean_val, 3))
+        os.unlink(download_path)  # eliminar archivo temporal
 
-        gdf_dividido['ndvi_modis'] = ndvi_vals
-        return gdf_dividido, np.nanmean(ndvi_vals)
+        # Asignar el mismo valor a todos los bloques
+        gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
+        return gdf_dividido, ndvi_mean
 
     except Exception as e:
         st.error(f"Error en obtención de NDVI con earthaccess: {str(e)}")
+        # Limpiar archivos temporales si quedaron
+        for f in os.listdir('.'):
+            if f.endswith('.hdf') and f.startswith('temp'):
+                try:
+                    os.unlink(f)
+                except:
+                    pass
         return None, None
 
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real usando earthaccess (producto MOD09GA, bandas NIR y SWIR).
-    Retorna (gdf_actualizado, ndwi_promedio) o (None, None) si falla.
+    Descarga el archivo HDF temporalmente y procesa con rasterio.
     """
     if not EARTHDATA_OK:
         return None, None
@@ -670,47 +674,46 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         granule = results[0]
         st.info(f"Procesando escena SR: {granule['umm']['GranuleUR']}")
 
-        files = earthaccess.open([granule])
+        # Descargar a archivo temporal
+        with tempfile.NamedTemporaryFile(suffix='.hdf', delete=False) as tmp:
+            download_path = tmp.name
+        earthaccess.download(granule, local_path=download_path)
 
-        # Abrir el archivo y seleccionar bandas NIR (banda 2) y SWIR (banda 6)
-        with rioxarray.open_rasterio(files[0], group='MOD_Grid_MOD09GA') as src:
-            nir_da = src.sel(band=2)
-            swir_da = src.sel(band=6)
+        # Abrir bandas NIR (b02) y SWIR (b06)
+        nir_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD09GA:sur_refl_b02'
+        swir_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD09GA:sur_refl_b06'
 
-            # Reprojectar a EPSG:4326
-            nir_da = nir_da.rio.reproject("EPSG:4326")
-            swir_da = swir_da.rio.reproject("EPSG:4326")
+        geom = [mapping(gdf_dividido.unary_union)]
 
-            ndwi_vals = []
-            for idx, row in gdf_dividido.iterrows():
-                geom = row.geometry
-                nir_clip = nir_da.rio.clip([mapping(geom)], from_disk=True)
-                swir_clip = swir_da.rio.clip([mapping(geom)], from_disk=True)
+        with rasterio.open(nir_path) as src_nir:
+            nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
+        with rasterio.open(swir_path) as src_swir:
+            swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
 
-                nir_mean = nir_clip.where(nir_clip > -2000).mean().item()
-                swir_mean = swir_clip.where(swir_clip > -2000).mean().item()
+        # Escalar (factor 0.0001)
+        nir = nir_array[0] * 0.0001
+        swir = swir_array[0] * 0.0001
 
-                if np.isnan(nir_mean) or np.isnan(swir_mean):
-                    ndwi_mean = np.nan
-                else:
-                    nir = nir_mean * 0.0001
-                    swir = swir_mean * 0.0001
-                    if (nir + swir) != 0:
-                        ndwi_mean = (nir - swir) / (nir + swir)
-                    else:
-                        ndwi_mean = np.nan
+        # Calcular NDWI
+        with np.errstate(divide='ignore', invalid='ignore'):
+            ndwi = (nir - swir) / (nir + swir)
+            ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
+        ndwi_mean = np.nanmean(ndwi)
 
-                if np.isnan(ndwi_mean):
-                    ndwi_mean = 0.3
-                ndwi_vals.append(round(ndwi_mean, 3))
+        os.unlink(download_path)
 
-        gdf_dividido['ndwi_modis'] = ndwi_vals
-        return gdf_dividido, np.nanmean(ndwi_vals)
+        gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3) if not np.isnan(ndwi_mean) else np.nan
+        return gdf_dividido, ndwi_mean
 
     except Exception as e:
         st.error(f"Error en obtención de NDWI con earthaccess: {str(e)}")
+        for f in os.listdir('.'):
+            if f.endswith('.hdf') and f.startswith('temp'):
+                try:
+                    os.unlink(f)
+                except:
+                    pass
         return None, None
-
 # ===== FUNCIONES CLIMÁTICAS =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     try:
