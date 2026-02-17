@@ -234,9 +234,17 @@ def logout():
         st.rerun()
 
 def check_subscription():
+    # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
         show_login_signup()
         st.stop()
+    
+    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso ---
+    if st.session_state.get('demo_mode', False):
+        with st.sidebar:
+            st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
+            logout()
+        return  # Salimos de la función sin bloquear
     
     with st.sidebar:
         st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
