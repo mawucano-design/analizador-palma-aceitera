@@ -30,3 +30,4 @@ ultralytics==8.4.14
 mercadopago==2.2.0
 rich==13.9.4                       # Añadida para compatibilidad
 statsmodels
+usgsxplore
