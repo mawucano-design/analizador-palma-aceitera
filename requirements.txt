@@ -20,3 +20,5 @@ ultralytics
 mercadopago
 usgsxplore
 rich==13.7.1
+markdown-it-py
+mdurl
