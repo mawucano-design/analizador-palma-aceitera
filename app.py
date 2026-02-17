@@ -41,6 +41,7 @@ from PIL import Image
 from scipy.spatial import KDTree
 from scipy.interpolate import Rbf
 import base64
+import time  # para reintentos
 
 # ===== NUEVAS IMPORTACIONES PARA AUTENTICACIÓN Y PAGOS =====
 import sqlite3
@@ -637,7 +638,7 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES DE DATOS SATELITALES CON VARIABILIDAD ESPACIAL (OPTIMIZADAS) =====
+# ===== FUNCIONES DE DATOS SATELITALES CON VARIABILIDAD ESPACIAL (OPTIMIZADAS Y CON REINTENTOS) =====
 def obtener_puntos_muestreo(gdf, paso_m=500, max_puntos=50):
     """
     Genera una lista de puntos (lon, lat) dentro del polígono,
@@ -680,31 +681,66 @@ def obtener_puntos_muestreo(gdf, paso_m=500, max_puntos=50):
     
     return puntos_dentro
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def obtener_valores_modis_banda_cached(_gdf_hash, fecha_inicio, fecha_fin, producto, banda, paso_m, max_puntos):
+    """
+    Versión cacheada de la consulta a MODIS. _gdf_hash es un hash del GeoDataFrame para usar como clave.
+    """
+    # Esta función será llamada desde la función principal con los parámetros necesarios.
+    # No se puede cachear directamente el gdf, así que pasamos un hash.
+    # Implementamos reintentos.
+    puntos = obtener_puntos_muestreo(_gdf_hash, paso_m, max_puntos)  # Nota: _gdf_hash realmente es el gdf original, pero el decorador no lo permite. Mejor reestructurar.
+    # Por simplicidad, vamos a redefinir la función sin cachear el gdf, solo los resultados por punto.
+    pass
+
+# Para evitar complicaciones con el caché de objetos espaciales, optamos por reintentos simples sin caché global.
+# Pero podemos cachear los resultados por combinación de parámetros (fechas, producto, banda, bounding box aproximado).
+
+def consultar_modis_con_reintentos(url, params, max_retries=3, delay=2):
+    """
+    Realiza una solicitud GET con reintentos en caso de error.
+    """
+    for intento in range(max_retries):
+        try:
+            response = requests.get(url, params=params, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            if intento == max_retries - 1:
+                raise e
+            time.sleep(delay * (2 ** intento))  # espera exponencial
+    return None
+
 def obtener_valores_modis_banda(gdf, fecha_inicio, fecha_fin, producto, banda, paso_m=500, max_puntos=50):
     """
-    Consulta una banda MODIS en los puntos de muestreo.
+    Consulta una banda MODIS en los puntos de muestreo con reintentos.
     Retorna lista de (lon, lat, valor).
     """
+    # Ajustar fechas: la API puede no tener datos del día actual, retrocedemos 5 días
+    fecha_fin_ajustada = fecha_fin - timedelta(days=5)
+    if fecha_fin_ajustada < fecha_inicio:
+        fecha_fin_ajustada = fecha_inicio
+
     puntos = obtener_puntos_muestreo(gdf, paso_m, max_puntos)
     valores = []
     progreso = st.progress(0, text="Consultando datos MODIS...")
-    
+
     for i, (lon, lat) in enumerate(puntos):
         try:
             # Obtener fechas disponibles
             dates_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/dates"
-            params = {
+            params_dates = {
                 "latitude": lat,
                 "longitude": lon,
                 "startDate": fecha_inicio.strftime("%Y-%m-%d"),
-                "endDate": fecha_fin.strftime("%Y-%m-%d")
+                "endDate": fecha_fin_ajustada.strftime("%Y-%m-%d")
             }
-            resp = requests.get(dates_url, params=params, timeout=30).json()
-            if not resp.get("dates"):
+            resp = consultar_modis_con_reintentos(dates_url, params_dates)
+            if not resp or not resp.get("dates"):
                 continue
             # Usar la fecha más reciente
             modis_date = resp["dates"][-1]["modis_date"]
-            
+
             # Consultar valor de la banda
             cv_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/values"
             params_cv = {
@@ -716,58 +752,64 @@ def obtener_valores_modis_banda(gdf, fecha_inicio, fecha_fin, producto, banda, p
                 "kmAboveBelow": 0,
                 "kmLeftRight": 0
             }
-            data = requests.get(cv_url, params=params_cv, timeout=30).json()
-            if data.get("values"):
+            data = consultar_modis_con_reintentos(cv_url, params_cv)
+            if data and data.get("values"):
                 # El factor de escala para MODIS suele ser 0.0001
                 valor = np.mean([v["value"] for v in data["values"]]) * 0.0001
                 valores.append((lon, lat, valor))
         except Exception as e:
-            # Si falla un punto, continuar con el siguiente
+            # Si falla un punto, continuar con el siguiente y mostrar advertencia (opcional)
+            # st.warning(f"Error en punto ({lon:.4f}, {lat:.4f}): {str(e)[:100]}")
             continue
-        
+
         progreso.progress((i + 1) / len(puntos), text=f"Punto {i+1} de {len(puntos)}")
-    
+
     progreso.empty()
-    
+
     # Si no se obtuvo ningún valor real, simular con variabilidad espacial
     if len(valores) == 0:
         st.warning(f"No se pudieron obtener datos MODIS reales para {producto}/{banda}. Usando simulación.")
         # Simular valores basados en el centroide con gradiente
         centro = gdf.geometry.unary_union.centroid
-        base = 0.65 if banda == "250m_16_days_NDVI" else 0.3  # valores típicos
+        base = 0.65 if banda == "_250m_16_days_NDVI" else 0.3  # valores típicos
         for lon, lat in puntos:
             variacion = 0.1 * math.sin(lon * 10) * math.cos(lat * 10)
             valor = base + variacion
             # Asegurar rango válido
             valor = max(0.0, min(1.0, valor))
             valores.append((lon, lat, valor))
-    
+
     return valores
 
 def obtener_valores_modis_multibanda(gdf, fecha_inicio, fecha_fin, producto, bandas, paso_m=500, max_puntos=50):
     """
-    Consulta múltiples bandas en una sola llamada por punto.
+    Consulta múltiples bandas en una sola llamada por punto con reintentos.
     bandas: lista de nombres de bandas, ej. ["sur_reflect_b02", "sur_reflect_b05"].
     Retorna una lista de diccionarios: {lon, lat, valores: {banda: valor}}.
     """
+    # Ajustar fechas
+    fecha_fin_ajustada = fecha_fin - timedelta(days=5)
+    if fecha_fin_ajustada < fecha_inicio:
+        fecha_fin_ajustada = fecha_inicio
+
     puntos = obtener_puntos_muestreo(gdf, paso_m, max_puntos)
     resultados = []
     progreso = st.progress(0, text="Consultando datos MODIS (multibanda)...")
-    
+
     for i, (lon, lat) in enumerate(puntos):
         try:
             dates_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/dates"
-            params = {
+            params_dates = {
                 "latitude": lat,
                 "longitude": lon,
                 "startDate": fecha_inicio.strftime("%Y-%m-%d"),
-                "endDate": fecha_fin.strftime("%Y-%m-%d")
+                "endDate": fecha_fin_ajustada.strftime("%Y-%m-%d")
             }
-            resp = requests.get(dates_url, params=params, timeout=30).json()
-            if not resp.get("dates"):
+            resp = consultar_modis_con_reintentos(dates_url, params_dates)
+            if not resp or not resp.get("dates"):
                 continue
             modis_date = resp["dates"][-1]["modis_date"]
-            
+
             # Consultar todas las bandas juntas (separadas por comas)
             cv_url = f"https://modis.ornl.gov/rst/api/v1/{producto}/values"
             bandas_str = ",".join(bandas)
@@ -780,8 +822,8 @@ def obtener_valores_modis_multibanda(gdf, fecha_inicio, fecha_fin, producto, ban
                 "kmAboveBelow": 0,
                 "kmLeftRight": 0
             }
-            data = requests.get(cv_url, params=params_cv, timeout=30).json()
-            if data.get("values") and len(data["values"]) == len(bandas):
+            data = consultar_modis_con_reintentos(cv_url, params_cv)
+            if data and data.get("values") and len(data["values"]) == len(bandas):
                 # data["values"] es una lista con un dict por banda
                 valores_banda = {}
                 for j, b in enumerate(bandas):
@@ -794,11 +836,11 @@ def obtener_valores_modis_multibanda(gdf, fecha_inicio, fecha_fin, producto, ban
                 })
         except Exception as e:
             continue
-        
+
         progreso.progress((i + 1) / len(puntos), text=f"Punto {i+1} de {len(puntos)}")
-    
+
     progreso.empty()
-    
+
     # Si no se obtuvieron datos reales, simular con variabilidad
     if len(resultados) == 0:
         st.warning(f"No se pudieron obtener datos MODIS reales para {producto}. Usando simulación.")
@@ -819,7 +861,7 @@ def obtener_valores_modis_multibanda(gdf, fecha_inicio, fecha_fin, producto, ban
                 "lat": lat,
                 "valores": valores_sim
             })
-    
+
     return resultados
 
 def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
@@ -827,30 +869,30 @@ def obtener_ndvi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     Obtiene NDVI real con variabilidad espacial y asigna valores a cada bloque.
     """
     producto = "MOD13Q1"
-    banda = "_250m_16_days_NDVI"
+    banda = "_250m_16_days_NDVI"  # Nota: guion bajo al inicio
     # Usar el polígono unido para muestrear
     gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
     valores_puntos = obtener_valores_modis_banda(gdf_union, fecha_inicio, fecha_fin, producto, banda,
                                                   paso_m=500, max_puntos=50)
-    
+
     if not valores_puntos:
         # Fallback: asignar valor constante a todos los bloques
         for idx, row in gdf_dividido.iterrows():
             gdf_dividido.loc[idx, 'ndvi_modis'] = 0.65
         return gdf_dividido, 0.65
-    
+
     # Construir KDTree para interpolar al centroide de cada bloque
     puntos = np.array([[lon, lat] for lon, lat, _ in valores_puntos])
     valores = np.array([v for _, _, v in valores_puntos])
     tree = KDTree(puntos)
-    
+
     ndvi_bloques = []
     for idx, row in gdf_dividido.iterrows():
         centro = (row.geometry.centroid.x, row.geometry.centroid.y)
         # Buscar el punto más cercano
         dist, ind = tree.query(centro)
         ndvi_bloques.append(valores[ind])
-    
+
     gdf_dividido['ndvi_modis'] = [round(v, 3) for v in ndvi_bloques]
     return gdf_dividido, np.mean(ndvi_bloques)
 
@@ -864,13 +906,13 @@ def obtener_ndwi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
     gdf_union = gpd.GeoDataFrame(geometry=[gdf_dividido.unary_union], crs=gdf_dividido.crs)
     resultados_multibanda = obtener_valores_modis_multibanda(gdf_union, fecha_inicio, fecha_fin,
                                                               producto, bandas, paso_m=500, max_puntos=50)
-    
+
     if not resultados_multibanda:
         # Fallback: asignar valor constante
         for idx, row in gdf_dividido.iterrows():
             gdf_dividido.loc[idx, 'ndwi_modis'] = 0.35
         return gdf_dividido, 0.35
-    
+
     # Extraer puntos y calcular NDWI
     puntos = []
     ndwi_vals = []
@@ -882,19 +924,19 @@ def obtener_ndwi_ornl_variabilidad(gdf_dividido, fecha_inicio, fecha_fin):
             ndwi = (nir - swir) / (nir + swir)
             puntos.append([lon, lat])
             ndwi_vals.append(ndwi)
-    
+
     if len(ndwi_vals) == 0:
         return gdf_dividido, 0.35
-    
+
     puntos = np.array(puntos)
     tree = KDTree(puntos)
-    
+
     ndwi_bloques = []
     for idx, row in gdf_dividido.iterrows():
         centro = (row.geometry.centroid.x, row.geometry.centroid.y)
         dist, ind = tree.query(centro)
         ndwi_bloques.append(ndwi_vals[ind])
-    
+
     gdf_dividido['ndwi_modis'] = [round(v, 3) for v in ndwi_bloques]
     return gdf_dividido, np.mean(ndwi_bloques)
 
