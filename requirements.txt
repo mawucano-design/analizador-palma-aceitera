@@ -18,6 +18,8 @@ rasterio
 scikit-image
 ultralytics
 mercadopago
-usgsxplore
 markdown-it-py
 mdurl
+earthaccess 
+xarray 
+rioxarray
