@@ -239,10 +239,15 @@ def check_subscription():
         show_login_signup()
         st.stop()
     
-    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso ---
+    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso y mostrar botón de pago ---
     if st.session_state.get('demo_mode', False):
         with st.sidebar:
             st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
+            # Botón para volver a la pantalla de pago
+            if st.button("💳 Actualizar a Premium", key="upgrade_from_demo"):
+                st.session_state.demo_mode = False
+                st.session_state.payment_intent = True
+                st.rerun()
             logout()
         return  # Salimos de la función sin bloquear
     
