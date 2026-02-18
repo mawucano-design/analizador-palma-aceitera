@@ -1981,10 +1981,18 @@ if not EARTHDATA_OK:
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-header {visibility: hidden;}
-.stApp { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; }
+/* OCULTAR TODO EL MENÚ SUPERIOR Y FOOTER DE STREAMLIT */
+#MainMenu {visibility: hidden !important;}
+footer {visibility: hidden !important;}
+header {visibility: hidden !important;}
+.stApp header {display: none !important;}
+header[data-testid="stHeader"] {display: none !important;}
+div[data-testid="stToolbar"] {display: none !important;}
+section[data-testid="stSidebar"] > div:first-child {display: none;} /* opcional, si quieres ocultar algo más */
+.st-emotion-cache-1avcm0n {display: none !important;}
+.st-emotion-cache-18ni7ap {display: none !important;}
+
+/* TUS ESTILOS PERSONALIZADOS */
 .hero-banner { background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); padding: 1.5em; border-radius: 15px; margin-bottom: 1em; border: 1px solid rgba(76, 175, 80, 0.3); text-align: center; }
 .hero-title { color: #ffffff; font-size: 2em; font-weight: 800; margin-bottom: 0.5em; background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .stButton > button { background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; color: white !important; border: none !important; padding: 0.8em 1.5em !important; border-radius: 12px !important; font-weight: 700 !important; font-size: 1em !important; margin: 5px 0 !important; transition: all 0.3s ease !important; }
