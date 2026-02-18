@@ -1,4 +1,4 @@
-# app.py - Versión definitiva con Earthaccess (MODIS desde NASA Earthdata)
+# app.py - Versión definitiva con Earthaccess (MODIS desde NASA Earthdata) y fallback a pyhdf
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
@@ -9,7 +9,7 @@
 # IMPORTANTE: 
 # - Configurar variables de entorno en secrets: MERCADOPAGO_ACCESS_TOKEN,
 #   EARTHDATA_USERNAME, EARTHDATA_PASSWORD, APP_BASE_URL.
-# - Instalar dependencias: pip install earthaccess xarray rioxarray rasterio
+# - Instalar dependencias: pip install earthaccess xarray rioxarray rasterio pyhdf
 
 import streamlit as st
 import geopandas as gpd
@@ -59,14 +59,22 @@ try:
 except ImportError:
     EARTHDATA_OK = False
 
-# ===== LIBRERÍAS PARA PROCESAMIENTO RASTER (rasterio) =====
+# ===== LIBRERÍAS PARA PROCESAMIENTO RASTER (rasterio y pyhdf) =====
 try:
     import rasterio
     from rasterio.mask import mask
     RASTERIO_OK = True
 except ImportError:
     RASTERIO_OK = False
-    st.warning("⚠️ rasterio no está instalado. No se podrán procesar datos satelitales reales. Instala: pip install rasterio")
+    st.warning("⚠️ rasterio no está instalado. Se usará pyhdf como fallback.")
+
+try:
+    from pyhdf.SD import SD, SDC
+    PYHDF_OK = True
+except ImportError:
+    PYHDF_OK = False
+    if not RASTERIO_OK:
+        st.warning("⚠️ pyhdf tampoco está instalado. No se podrán leer archivos HDF4.")
 
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
@@ -638,11 +646,11 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== NUEVAS FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS) =====
+# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS) =====
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real usando earthaccess (producto MOD13Q1 de MODIS).
-    Descarga el archivo HDF temporalmente y procesa con rasterio (o xarray como fallback).
+    Descarga el archivo HDF y lo procesa con rasterio o pyhdf (fallback).
     """
     if not EARTHDATA_OK:
         st.warning("Librerías earthaccess/xarray/rioxarray no instaladas.")
@@ -650,15 +658,12 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
         st.warning("Credenciales de Earthdata no configuradas.")
         return None, None
-    if not RASTERIO_OK:
-        st.warning("rasterio no está instalado. No se puede procesar el archivo HDF.")
-        return None, None
 
     try:
-        # Autenticar con Earthdata
-        auth = earthaccess.login(strategy="netrc")
+        # Autenticar con Earthdata usando credenciales explícitas
+        auth = earthaccess.login(username=EARTHDATA_USERNAME, password=EARTHDATA_PASSWORD)
         if not auth.authenticated:
-            st.error("No se pudo autenticar con Earthdata.")
+            st.error("No se pudo autenticar con Earthdata. Verifica usuario y contraseña.")
             return None, None
 
         # Bounding box de toda la plantación
@@ -681,28 +686,35 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         granule = results[0]
         st.info(f"Procesando escena NDVI: {granule['umm']['GranuleUR']}")
 
-        # Crear un directorio temporal único para esta descarga
+        # Crear directorio temporal único
         temp_dir = tempfile.mkdtemp()
         try:
-            # Descargar el archivo al directorio
             downloaded_files = earthaccess.download(granule, local_path=temp_dir)
             if not downloaded_files:
                 st.error("No se pudo descargar el archivo.")
                 return None, None
 
-            # Buscar el primer archivo .hdf (puede haber varios)
+            # Buscar archivo .hdf
             hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
             if not hdf_files:
                 st.error("No se encontró archivo HDF en la descarga.")
                 return None, None
             download_path = hdf_files[0]
 
-            # Verificar que el archivo no esté vacío
-            if os.path.getsize(download_path) < 1024:  # menos de 1KB
-                st.error("El archivo descargado es demasiado pequeño (posiblemente corrupto).")
-                return None, None
+            # Verificar que el archivo no sea demasiado pequeño (posible error HTML)
+            file_size = os.path.getsize(download_path)
+            if file_size < 10240:  # menos de 10 KB
+                with open(download_path, 'r', errors='ignore') as f:
+                    head = f.read(500).lower()
+                    if '<html' in head:
+                        st.error("El archivo descargado parece ser una página HTML de error. Verifica credenciales y disponibilidad del producto.")
+                        return None, None
+                    else:
+                        st.warning(f"Archivo muy pequeño ({file_size} bytes). Puede estar corrupto.")
+                        # Continuar de todas formas, puede ser un HDF pequeño
 
-            # Intentar abrir con rasterio
+            # Intentar leer con rasterio
+            ndvi_mean = None
             try:
                 with rasterio.open(download_path) as src:
                     subdatasets = src.subdatasets
@@ -710,92 +722,78 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                         st.error("El archivo HDF no contiene subdatasets.")
                         return None, None
 
-                    # Buscar el subdataset que contiene NDVI
-                    ndvi_subdataset = None
+                    # Buscar subdataset NDVI
+                    ndvi_sub = None
                     for sd in subdatasets:
                         if 'NDVI' in sd or 'ndvi' in sd.lower():
-                            ndvi_subdataset = sd
+                            ndvi_sub = sd
                             break
-                    if not ndvi_subdataset:
-                        st.error("No se encontró el subdataset NDVI en el archivo HDF.")
+                    if not ndvi_sub:
+                        st.error("No se encontró subdataset NDVI.")
                         return None, None
 
-                    # Abrir el subdataset NDVI
-                    with rasterio.open(ndvi_subdataset) as src_ndvi:
+                    with rasterio.open(ndvi_sub) as src_ndvi:
                         geom = [mapping(gdf_dividido.unary_union)]
-                        out_image, out_transform = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
+                        out_image, _ = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
                         ndvi_array = out_image[0]
-                        # Escalar: valores MODIS NDVI en escala 0-10000 con factor 0.0001
+                        # Escalar: MODIS NDVI está en escala 0-10000, factor 0.0001
                         ndvi_scaled = ndvi_array * 0.0001
                         ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
 
             except Exception as e_rasterio:
-                st.warning(f"No se pudo abrir con rasterio: {str(e_rasterio)}. Intentando con xarray...")
-                try:
-                    # Intentar abrir con xarray (puede requerir motor h5netcdf)
-                    import xarray as xr
-                    ds = xr.open_dataset(download_path, engine='h5netcdf')
-                    # Buscar variable de NDVI (común: "250m 16 days NDVI" o similar)
-                    ndvi_var = None
-                    for var in ds.data_vars:
-                        if 'NDVI' in var:
-                            ndvi_var = var
-                            break
-                    if ndvi_var is None:
-                        st.error("No se encontró variable NDVI en el archivo HDF con xarray.")
+                st.warning(f"No se pudo abrir con rasterio: {str(e_rasterio)}. Intentando con pyhdf...")
+                # Fallback a pyhdf
+                if PYHDF_OK:
+                    try:
+                        hdf = SD(download_path, SDC.READ)
+                        # Buscar dataset NDVI (normalmente "250m 16 days NDVI")
+                        ndvi_dataset = None
+                        for name in hdf.datasets().keys():
+                            if 'NDVI' in name:
+                                ndvi_dataset = name
+                                break
+                        if ndvi_dataset is None:
+                            st.error("No se encontró dataset NDVI con pyhdf.")
+                            return None, None
+                        ndvi_data = hdf.select(ndvi_dataset).get()
+                        # Escalar
+                        ndvi_scaled = ndvi_data * 0.0001
+                        # Enmascarar valores de relleno (normalmente -3000)
+                        ndvi_scaled = np.ma.masked_where(ndvi_scaled < -1, ndvi_scaled)
+                        ndvi_mean = np.nanmean(ndvi_scaled)
+                    except Exception as e_pyhdf:
+                        st.error(f"Error con pyhdf: {str(e_pyhdf)}")
                         return None, None
-                    
-                    # Recortar usando el polígono (xarray no recorta directamente, necesitamos rioxarray)
-                    # Si rioxarray está disponible, podemos usarlo
-                    if 'rioxarray' in sys.modules:
-                        ds_rio = ds.rio.write_crs("EPSG:4326")
-                        geom = [mapping(gdf_dividido.unary_union)]
-                        ds_clip = ds_rio.rio.clip(geom, drop=True)
-                        ndvi_data = ds_clip[ndvi_var].values
-                        ndvi_mean = np.nanmean(ndvi_data)
-                    else:
-                        # Si no, usamos el promedio global (aproximación)
-                        ndvi_data = ds[ndvi_var].values
-                        ndvi_mean = np.nanmean(ndvi_data)
-                        st.warning("rioxarray no disponible, usando promedio global de la escena.")
-                except Exception as e_xarray:
-                    st.error(f"Error al abrir con xarray: {str(e_xarray)}")
+                else:
+                    st.error("pyhdf no está instalado. No se puede leer HDF4.")
                     return None, None
 
-            # Asignar el mismo valor a todos los bloques
+            if ndvi_mean is None or np.isnan(ndvi_mean):
+                st.warning("No se pudo calcular NDVI (valor NaN).")
+                return None, None
+
+            # Asignar a todos los bloques
             gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
             return gdf_dividido, ndvi_mean
 
         finally:
-            # Eliminar el directorio temporal y todo su contenido
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
         st.error(f"Error en obtención de NDVI con earthaccess: {str(e)}")
-        # Limpiar cualquier resto (por si acaso)
-        for f in os.listdir('.'):
-            if f.endswith('.hdf') and f.startswith('temp'):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
         return None, None
 
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real usando earthaccess (producto MOD09GA, bandas NIR y SWIR).
-    Descarga el archivo HDF temporalmente y procesa con rasterio.
     """
     if not EARTHDATA_OK:
         return None, None
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
         return None, None
-    if not RASTERIO_OK:
-        st.warning("rasterio no está instalado. No se puede procesar el archivo HDF.")
-        return None, None
 
     try:
-        auth = earthaccess.login(strategy="netrc")
+        auth = earthaccess.login(username=EARTHDATA_USERNAME, password=EARTHDATA_PASSWORD)
         if not auth.authenticated:
             st.error("No se pudo autenticar con Earthdata.")
             return None, None
@@ -803,7 +801,6 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         bounds = gdf_dividido.total_bounds
         bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
 
-        # Buscar MOD09GA (reflectancia diaria)
         results = earthaccess.search_data(
             short_name='MOD09GA',
             version='061',
@@ -819,7 +816,6 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         granule = results[0]
         st.info(f"Procesando escena SR: {granule['umm']['GranuleUR']}")
 
-        # Crear directorio temporal único
         temp_dir = tempfile.mkdtemp()
         try:
             downloaded_files = earthaccess.download(granule, local_path=temp_dir)
@@ -829,48 +825,87 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
 
             hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
             if not hdf_files:
-                st.error("No se encontró archivo HDF en la descarga.")
+                st.error("No se encontró archivo HDF.")
                 return None, None
             download_path = hdf_files[0]
 
-            # Listar subdatasets
-            with rasterio.open(download_path) as src:
-                subdatasets = src.subdatasets
-                if not subdatasets:
-                    st.error("El archivo HDF no contiene subdatasets.")
+            # Verificar tamaño
+            file_size = os.path.getsize(download_path)
+            if file_size < 10240:
+                with open(download_path, 'r', errors='ignore') as f:
+                    head = f.read(500).lower()
+                    if '<html' in head:
+                        st.error("El archivo descargado es una página HTML de error.")
+                        return None, None
+
+            # Intentar con rasterio primero
+            nir = None
+            swir = None
+            try:
+                with rasterio.open(download_path) as src:
+                    subdatasets = src.subdatasets
+                    if not subdatasets:
+                        st.error("No hay subdatasets.")
+                        return None, None
+
+                    nir_sub = None
+                    swir_sub = None
+                    for sd in subdatasets:
+                        if 'sur_refl_b02' in sd:
+                            nir_sub = sd
+                        elif 'sur_refl_b06' in sd:
+                            swir_sub = sd
+                    if not nir_sub or not swir_sub:
+                        st.error("No se encontraron bandas NIR o SWIR.")
+                        return None, None
+
+                    geom = [mapping(gdf_dividido.unary_union)]
+                    with rasterio.open(nir_sub) as src_nir:
+                        nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
+                        nir = nir_array[0] * 0.0001
+                    with rasterio.open(swir_sub) as src_swir:
+                        swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+                        swir = swir_array[0] * 0.0001
+
+            except Exception as e_rasterio:
+                st.warning(f"rasterio falló: {e_rasterio}. Intentando con pyhdf...")
+                if PYHDF_OK:
+                    try:
+                        hdf = SD(download_path, SDC.READ)
+                        # Buscar datasets de reflectancia
+                        nir_data = None
+                        swir_data = None
+                        for name in hdf.datasets().keys():
+                            if 'sur_refl_b02' in name:
+                                nir_data = hdf.select(name).get()
+                            elif 'sur_refl_b06' in name:
+                                swir_data = hdf.select(name).get()
+                        if nir_data is None or swir_data is None:
+                            st.error("No se encontraron bandas NIR o SWIR con pyhdf.")
+                            return None, None
+                        nir = nir_data * 0.0001
+                        swir = swir_data * 0.0001
+                    except Exception as e_pyhdf:
+                        st.error(f"pyhdf falló: {e_pyhdf}")
+                        return None, None
+                else:
+                    st.error("pyhdf no instalado, no se puede leer HDF4.")
                     return None, None
 
-                # Buscar bandas NIR y SWIR
-                nir_subdataset = None
-                swir_subdataset = None
-                for sd in subdatasets:
-                    if 'sur_refl_b02' in sd:  # NIR
-                        nir_subdataset = sd
-                    elif 'sur_refl_b06' in sd:  # SWIR
-                        swir_subdataset = sd
+            if nir is None or swir is None:
+                return None, None
 
-                if not nir_subdataset or not swir_subdataset:
-                    st.error("No se encontraron las bandas NIR o SWIR en el archivo HDF.")
-                    return None, None
+            # Calcular NDWI
+            with np.errstate(divide='ignore', invalid='ignore'):
+                ndwi = (nir - swir) / (nir + swir)
+                ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
+            ndwi_mean = np.nanmean(ndwi)
 
-                geom = [mapping(gdf_dividido.unary_union)]
+            if np.isnan(ndwi_mean):
+                st.warning("NDWI calculado es NaN.")
+                return None, None
 
-                with rasterio.open(nir_subdataset) as src_nir:
-                    nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
-                with rasterio.open(swir_subdataset) as src_swir:
-                    swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
-
-                # Escalar (factor 0.0001)
-                nir = nir_array[0] * 0.0001
-                swir = swir_array[0] * 0.0001
-
-                # Calcular NDWI
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    ndwi = (nir - swir) / (nir + swir)
-                    ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
-                ndwi_mean = np.nanmean(ndwi)
-
-            gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3) if not np.isnan(ndwi_mean) else np.nan
+            gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3)
             return gdf_dividido, ndwi_mean
 
         finally:
@@ -878,12 +913,6 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
 
     except Exception as e:
         st.error(f"Error en obtención de NDWI con earthaccess: {str(e)}")
-        for f in os.listdir('.'):
-            if f.endswith('.hdf') and f.startswith('temp'):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
         return None, None
 
 # ===== FUNCIONES CLIMÁTICAS =====
@@ -2105,8 +2134,8 @@ def ejecutar_analisis_completo():
 # ===== Mostrar advertencias de librerías opcionales =====
 if not EARTHDATA_OK:
     st.warning("Para usar datos satelitales reales, instala 'earthaccess', 'xarray' y 'rioxarray': pip install earthaccess xarray rioxarray")
-if not RASTERIO_OK:
-    st.warning("⚠️ rasterio no está instalado. No se podrán procesar datos satelitales reales. Instala: pip install rasterio")
+if not RASTERIO_OK and not PYHDF_OK:
+    st.warning("⚠️ rasterio y pyhdf no están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
