@@ -2045,6 +2045,11 @@ div[data-testid="stDecoration"] {display: none !important;}
 [data-testid="stBottomBlock"] {display: none !important;}
 [data-testid="stSidebarUserContent"] {display: block !important;} /* asegurar que el sidebar se vea */
 
+/* Ocultar sidebar completamente (opcional) */
+section[data-testid="stSidebar"] {
+    display: none !important;
+}
+
 /* Eliminar márgenes superiores */
 #root > div:nth-child(1) > div > div > div > div > section > div {
     padding-top: 0px !important;
@@ -2062,6 +2067,21 @@ div[data-testid="stDecoration"] {display: none !important;}
     padding-top: 0px !important;
     margin-top: 0px !important;
 }
+
+/* ===== SCROLLBAR PERSONALIZADO ===== */
+::-webkit-scrollbar {
+    width: 6px;
+}
+::-webkit-scrollbar-thumb {
+    background: #555;
+    border-radius: 10px;
+}
+::-webkit-scrollbar-track {
+    background: #111;
+}
+
+/* ===== OCULTAR “Made with Streamlit” EN IFRAME ===== */
+iframe {border: none !important;}
 
 /* ===== ESTILOS PERSONALIZADOS DE LA APP ===== */
 .hero-banner { 
@@ -2113,6 +2133,26 @@ div[data-testid="metric-container"] {
     border: 1px solid rgba(76, 175, 80, 0.25) !important; 
 }
 </style>
+""", unsafe_allow_html=True)
+
+# ===== TÍTULO PERSONALIZADO ADICIONAL =====
+st.markdown("""
+<style>
+.app-title {
+    font-size: 32px;
+    font-weight: 700;
+    color: white;
+    padding: 10px 0;
+}
+.app-subtitle {
+    font-size: 14px;
+    color: #aaa;
+}
+</style>
+
+<div class="app-title">🌴 AgroAI Platform</div>
+<div class="app-subtitle">Satellite Intelligence for Agriculture</div>
+<hr>
 """, unsafe_allow_html=True)
 
 st.markdown("""
@@ -2723,7 +2763,7 @@ if st.session_state.analisis_completado:
                     else:
                         st.info("👆 Sube una imagen y un modelo YOLO para comenzar.")
 
-# ===== ELIMINAR TOOLBAR CON JAVASCRIPT (REFORZADO) =====
+# ===== ELIMINAR TOOLBAR Y BLOQUEAR INSPECCIÓN CON JAVASCRIPT =====
 st.markdown("""
 <script>
 // Función mejorada para eliminar el toolbar
@@ -2769,6 +2809,15 @@ observer.observe(document.body, { childList: true, subtree: true });
 window.addEventListener('load', () => {
     eliminarToolbarDefinitivamente();
 });
+
+// Bloquear menú contextual y teclas de inspección
+document.addEventListener('contextmenu', event => event.preventDefault());
+document.onkeydown = function(e) {
+  if(e.keyCode == 123) return false; // F12
+  if(e.ctrlKey && e.keyCode == 85) return false; // Ctrl+U
+  if(e.ctrlKey && e.keyCode == 83) return false; // Ctrl+S
+  if(e.ctrlKey && e.shiftKey && e.keyCode == 73) return false; // Ctrl+Shift+I
+};
 </script>
 """, unsafe_allow_html=True)
 
