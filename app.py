@@ -8,7 +8,7 @@
 #
 # IMPORTANTE: 
 # - Configurar variables de entorno en secrets: MERCADOPAGO_ACCESS_TOKEN,
-#   EARTHDATA_USERNAME, EARTHDATA_PASSWORD, APP_BASE_URL.
+#   EARTHDATA_USERNAME, EARTHDATA_PASSWORD.
 # - Instalar dependencias: pip install earthaccess xarray rioxarray
 
 import streamlit as st
@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
 import io
-from shapely.geometry import Polygon, Point, LineString, mapping, box
+from shapely.geometry import Polygon, Point, LineString, mapping
 import math
 import warnings
 from io import BytesIO
@@ -147,48 +147,21 @@ def get_user_by_email(email):
 
 # ===== FUNCIONES DE MERCADO PAGO =====
 def create_preference(email, amount=150.0, description="Suscripción mensual - Analizador de Palma Aceitera"):
-    """
-    Crea una preferencia de pago en Mercado Pago y retorna el init_point y el ID.
-    Maneja errores y retorna (None, None) si falla.
-    """
-    try:
-        # Obtener la URL base de la aplicación desde secrets o variable de entorno
-        base_url = os.environ.get("APP_BASE_URL")
-        if not base_url:
-            try:
-                base_url = st.secrets.get("APP_BASE_URL", "https://tuapp.streamlit.app")
-            except:
-                base_url = "https://tuapp.streamlit.app"
-
-        preference_data = {
-            "items": [{
-                "title": description,
-                "quantity": 1,
-                "currency_id": "USD",
-                "unit_price": amount
-            }],
-            "payer": {"email": email},
-            "back_urls": {
-                "success": f"{base_url}?payment=success",
-                "failure": f"{base_url}?payment=failure",
-                "pending": f"{base_url}?payment=pending"
-            },
-            "auto_return": "approved",
-            "external_reference": email,
-        }
-        preference_response = sdk.preference().create(preference_data)
-        
-        # Verificar que la respuesta sea exitosa (código 200 o 201)
-        if preference_response["status"] in [200, 201]:
-            preference = preference_response["response"]
-            return preference["init_point"], preference["id"]
-        else:
-            error_msg = preference_response.get("response", {}).get("message", "Error desconocido")
-            st.error(f"❌ Error al crear preferencia de pago: {error_msg}")
-            return None, None
-    except Exception as e:
-        st.error(f"❌ Error al conectar con Mercado Pago: {str(e)}")
-        return None, None
+    base_url = "https://tuapp.streamlit.app"  # Reemplazar con tu URL real
+    preference_data = {
+        "items": [{"title": description, "quantity": 1, "currency_id": "USD", "unit_price": amount}],
+        "payer": {"email": email},
+        "back_urls": {
+            "success": f"{base_url}?payment=success",
+            "failure": f"{base_url}?payment=failure",
+            "pending": f"{base_url}?payment=pending"
+        },
+        "auto_return": "approved",
+        "external_reference": email,
+    }
+    preference_response = sdk.preference().create(preference_data)
+    preference = preference_response["response"]
+    return preference["init_point"], preference["id"]
 
 def check_payment_status(payment_id):
     try:
@@ -233,41 +206,10 @@ def logout():
         del st.session_state.user
         st.rerun()
 
-def cargar_ejemplo_demo():
-    """Genera un polígono de ejemplo para el modo DEMO."""
-    # Crear un rectángulo de ejemplo (aprox. 100 ha) en coordenadas de Venezuela
-    minx, miny, maxx, maxy = -67.5, 8.5, -67.3, 8.7
-    polygon = box(minx, miny, maxx, maxy)
-    gdf = gpd.GeoDataFrame([{'geometry': polygon}], crs='EPSG:4326')
-    gdf['id_bloque'] = 1
-    return gdf
-
 def check_subscription():
-    # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
         show_login_signup()
         st.stop()
-    
-    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso y mostrar botón de pago ---
-    if st.session_state.get('demo_mode', False):
-        with st.sidebar:
-            st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
-            # Botón para volver a la pantalla de pago
-            if st.button("💳 Actualizar a Premium", key="upgrade_from_demo"):
-                st.session_state.demo_mode = False
-                st.session_state.payment_intent = True
-                st.rerun()
-            logout()
-        # Si no hay archivo cargado en DEMO, cargar uno de ejemplo automáticamente
-        if st.session_state.gdf_original is None:
-            with st.spinner("Cargando plantación de ejemplo..."):
-                gdf_ejemplo = cargar_ejemplo_demo()
-                st.session_state.gdf_original = gdf_ejemplo
-                st.session_state.archivo_cargado = True
-                st.session_state.analisis_completado = False
-                st.session_state.deteccion_ejecutada = False
-                st.rerun()
-        return  # Salimos de la función sin bloquear
     
     with st.sidebar:
         st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
@@ -299,8 +241,7 @@ def check_subscription():
     with col2:
         st.markdown("#### 🆓 Modo DEMO")
         st.write("Continúa con datos simulados y funcionalidad limitada. (Sin guardar resultados)")
-        # Cambiamos la key del botón para evitar conflicto con la variable de estado demo_mode
-        if st.button("🎮 Continuar con DEMO", key="demo_button"):
+        if st.button("🎮 Continuar con DEMO", key="demo_mode"):
             st.session_state.demo_mode = True
             st.rerun()
     
@@ -309,17 +250,14 @@ def check_subscription():
         st.write("Paga con tarjeta de crédito, débito o efectivo (en USD).")
         if st.button("💵 Pagar ahora 150 USD", key="pay_mp"):
             init_point, pref_id = create_preference(user['email'])
-            if init_point:
-                st.session_state.pref_id = pref_id
-                st.markdown(f"[Haz clic aquí para pagar]({init_point})")
-                st.info("Serás redirigido a Mercado Pago. Luego de pagar, regresa a esta página.")
-            else:
-                st.error("No se pudo generar el link de pago. Verifica la configuración de Mercado Pago.")
+            st.session_state.pref_id = pref_id
+            st.markdown(f"[Haz clic aquí para pagar]({init_point})")
+            st.info("Serás redirigido a Mercado Pago. Luego de pagar, regresa a esta página.")
         
         st.markdown("### 🏦 Transferencia bancaria")
         st.write("También puedes pagar por transferencia (USD) a:")
         st.code("CBU: 3220001888034378480018\nAlias: inflar.pacu.inaudita")
-        st.write("Luego envía el comprobante a **mawucano@gmail.com** para activar tu suscripción manualmente.")
+        st.write("Luego envía el comprobante a **soporte@tudominio.com** para activar tu suscripción manualmente.")
         
         query_params = st.query_params
         if 'payment' in query_params and query_params['payment'] == 'success' and 'collection_id' in query_params:
@@ -411,6 +349,8 @@ def generar_clima_simulado():
 # ===== CONFIGURACIÓN DE PÁGINA =====
 st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
+check_subscription()
+
 # ===== INICIALIZACIÓN DE SESIÓN =====
 def init_session_state():
     defaults = {
@@ -440,9 +380,6 @@ def init_session_state():
             st.session_state[key] = value
 
 init_session_state()
-
-# Verificar suscripción antes de continuar
-check_subscription()
 
 # ===== CONFIGURACIONES =====
 VARIEDADES_PALMA_ACEITERA = [
@@ -1992,86 +1929,25 @@ def ejecutar_analisis_completo():
         st.session_state.analisis_completado = True
         st.success("✅ Análisis completado!")
 
-# ===== Mostrar advertencias de librerías opcionales =====
+# ===== INICIALIZACIÓN DE SESIÓN (ya llamada) =====
+
+# Mostrar advertencias de librerías opcionales
 if not EARTHDATA_OK:
     st.warning("Para usar datos satelitales reales, instala 'earthaccess', 'xarray' y 'rioxarray': pip install earthaccess xarray rioxarray")
 
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-/* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important;}
-
-/* Ocultar footer de Streamlit */
-footer {visibility: hidden !important;}
-
-/* Ocultar header completo */
-header {visibility: hidden !important;}
-.stApp header {display: none !important;}
-
-/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
-.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-
-/* Ocultar elementos específicos del toolbar */
-[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
-
-/* Ocultar otros elementos de UI de Streamlit */
-.st-emotion-cache-1avcm0n {display: none !important;}
-.st-emotion-cache-16txtl3 {display: none !important;}
-.st-emotion-cache-12fmjuu {display: none !important;}
-
-/* Estilos personalizados de la app */
-.hero-banner { 
-    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
-    padding: 1.5em; 
-    border-radius: 15px; 
-    margin-bottom: 1em; 
-    border: 1px solid rgba(76, 175, 80, 0.3); 
-    text-align: center; 
-}
-.hero-title { 
-    color: #ffffff; 
-    font-size: 2em; 
-    font-weight: 800; 
-    margin-bottom: 0.5em; 
-    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); 
-    -webkit-background-clip: text; 
-    -webkit-text-fill-color: transparent; 
-}
-.stButton > button { 
-    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; 
-    color: white !important; 
-    border: none !important; 
-    padding: 0.8em 1.5em !important; 
-    border-radius: 12px !important; 
-    font-weight: 700 !important; 
-    font-size: 1em !important; 
-    margin: 5px 0 !important; 
-    transition: all 0.3s ease !important; 
-}
-.stButton > button:hover { 
-    transform: translateY(-2px) !important; 
-    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; 
-}
-.stTabs [data-baseweb="tab-list"] { 
-    background: rgba(30, 41, 59, 0.7) !important; 
-    backdrop-filter: blur(10px) !important; 
-    padding: 8px 16px !important; 
-    border-radius: 16px !important; 
-    border: 1px solid rgba(76, 175, 80, 0.3) !important; 
-    margin-top: 1.5em !important; 
-}
-div[data-testid="metric-container"] { 
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; 
-    backdrop-filter: blur(10px) !important; 
-    border-radius: 18px !important; 
-    padding: 22px !important; 
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; 
-    border: 1px solid rgba(76, 175, 80, 0.25) !important; 
-}
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+.stApp { background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%); color: #ffffff; }
+.hero-banner { background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); padding: 1.5em; border-radius: 15px; margin-bottom: 1em; border: 1px solid rgba(76, 175, 80, 0.3); text-align: center; }
+.hero-title { color: #ffffff; font-size: 2em; font-weight: 800; margin-bottom: 0.5em; background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.stButton > button { background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; color: white !important; border: none !important; padding: 0.8em 1.5em !important; border-radius: 12px !important; font-weight: 700 !important; font-size: 1em !important; margin: 5px 0 !important; transition: all 0.3s ease !important; }
+.stButton > button:hover { transform: translateY(-2px) !important; box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; }
+.stTabs [data-baseweb="tab-list"] { background: rgba(30, 41, 59, 0.7) !important; backdrop-filter: blur(10px) !important; padding: 8px 16px !important; border-radius: 16px !important; border: 1px solid rgba(76, 175, 80, 0.3) !important; margin-top: 1.5em !important; }
+div[data-testid="metric-container"] { background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; backdrop-filter: blur(10px) !important; border-radius: 18px !important; padding: 22px !important; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; border: 1px solid rgba(76, 175, 80, 0.25) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -2176,18 +2052,6 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
                 if st.button("🔍 DETECTAR PALMAS", use_container_width=True):
                     ejecutar_deteccion_palmas()
                     st.rerun()
-else:
-    # Si no hay archivo cargado, mostrar un mensaje amigable
-    st.info("👆 Por favor, sube un archivo de plantación en la barra lateral para comenzar.")
-    st.markdown("""
-    ### ¿Cómo empezar?
-    1. Inicia sesión o regístrate.
-    2. Sube un archivo con el polígono de tu plantación (formatos: Shapefile .zip, KML, KMZ, GeoJSON).
-    3. Configura los parámetros de análisis.
-    4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
-    """)
-    if st.session_state.demo_mode:
-        st.info("🎮 Estás en modo DEMO. Ya se ha cargado una plantación de ejemplo automáticamente. Puedes ejecutar el análisis o subir tu propio archivo.")
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
@@ -2689,6 +2553,6 @@ st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
     <p>Datos satelitales: NASA Earthdata · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM</p>
-    <p>Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com | +5493525 532313</p>
+    <p>Desarrollado por: Martin Ernesto Cano | Contacto: mawucano@gmail.com | +5493525 532313</p>
 </div>
 """, unsafe_allow_html=True)
