@@ -2007,15 +2007,20 @@ st.markdown("""
 /* Ocultar footer de Streamlit */
 footer {visibility: hidden !important; display: none !important;}
 .stFooter {visibility: hidden !important; display: none !important;}
+footer[data-testid="stFooter"] {display: none !important;}
 
 /* Ocultar header completo */
 header {visibility: hidden !important; display: none !important;}
 .stApp header {display: none !important;}
+header[data-testid="stHeader"] {display: none !important;}
+div[data-testid="stHeader"] {display: none !important;}
 
 /* OCULTAR TOOLBAR COMPLETO (Share, Edit, GitHub, Deploy) */
 .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
 .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
 .stApp [data-testid="stToolbar"] * {visibility: hidden !important; display: none !important;}
+section[data-testid="stToolbar"] {display: none !important;}
+div[data-testid="stToolbar"] {display: none !important;}
 
 /* Ocultar elementos específicos por aria-label */
 [data-testid="stToolbar"] [aria-label="Share"] {display: none !important; visibility: hidden !important;}
@@ -2026,6 +2031,8 @@ header {visibility: hidden !important; display: none !important;}
 /* Ocultar por clases específicas */
 .stAppDeployButton {display: none !important; visibility: hidden !important;}
 .stToolbar {display: none !important; visibility: hidden !important;}
+button[data-testid="stDeployButton"] {display: none !important;}
+button[data-testid="baseButton-header"] {display: none !important;}
 
 /* Ocultar otros elementos de UI */
 .st-emotion-cache-1avcm0n {display: none !important;}
@@ -2033,11 +2040,22 @@ header {visibility: hidden !important; display: none !important;}
 .st-emotion-cache-12fmjuu {display: none !important;}
 .st-emotion-cache-1v0mbd {display: none !important;}
 .st-emotion-cache-16id2kf {display: none !important;}
+.st-emotion-cache-1dp5vir {display: none !important;}
+.st-emotion-cache-1r6slb0 {display: none !important;}
+div[data-testid="stDecoration"] {display: none !important;}
+div[data-testid="stStatusWidget"] {display: none !important;}
+div[data-testid="stNotification"] {display: none !important;}
 
 /* Eliminar márgenes superiores */
 #root > div:nth-child(1) > div > div > div > div > section > div {
     padding-top: 0px !important;
     margin-top: -50px !important;
+}
+.main > div {
+    padding-top: 0rem !important;
+}
+.block-container {
+    padding-top: 0rem !important;
 }
 
 /* Ajustar contenedor principal */
