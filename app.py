@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
 import io
-from shapely.geometry import Polygon, Point, LineString, mapping
+from shapely.geometry import Polygon, Point, LineString, mapping, box
 import math
 import warnings
 from io import BytesIO
@@ -233,6 +233,15 @@ def logout():
         del st.session_state.user
         st.rerun()
 
+def cargar_ejemplo_demo():
+    """Genera un polígono de ejemplo para el modo DEMO."""
+    # Crear un rectángulo de ejemplo (aprox. 100 ha) en coordenadas de Venezuela
+    minx, miny, maxx, maxy = -67.5, 8.5, -67.3, 8.7
+    polygon = box(minx, miny, maxx, maxy)
+    gdf = gpd.GeoDataFrame([{'geometry': polygon}], crs='EPSG:4326')
+    gdf['id_bloque'] = 1
+    return gdf
+
 def check_subscription():
     # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
@@ -249,6 +258,15 @@ def check_subscription():
                 st.session_state.payment_intent = True
                 st.rerun()
             logout()
+        # Si no hay archivo cargado en DEMO, cargar uno de ejemplo automáticamente
+        if st.session_state.gdf_original is None:
+            with st.spinner("Cargando plantación de ejemplo..."):
+                gdf_ejemplo = cargar_ejemplo_demo()
+                st.session_state.gdf_original = gdf_ejemplo
+                st.session_state.archivo_cargado = True
+                st.session_state.analisis_completado = False
+                st.session_state.deteccion_ejecutada = False
+                st.rerun()
         return  # Salimos de la función sin bloquear
     
     with st.sidebar:
@@ -1981,24 +1999,130 @@ if not EARTHDATA_OK:
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-/* OCULTAR TODO EL MENÚ SUPERIOR Y FOOTER DE STREAMLIT */
-#MainMenu {visibility: hidden !important;}
-footer {visibility: hidden !important;}
-header {visibility: hidden !important;}
+/* ===== OCULTAR ELEMENTOS DE STREAMLIT DE FORMA AGRESIVA ===== */
+
+/* Ocultar menú principal (tres puntos) */
+#MainMenu {visibility: hidden !important; display: none !important;}
+
+/* Ocultar footer de Streamlit */
+footer {visibility: hidden !important; display: none !important;}
+.stFooter {visibility: hidden !important; display: none !important;}
+footer[data-testid="stFooter"] {display: none !important;}
+div[data-testid="stFooter"] {display: none !important;}
+
+/* Ocultar header completo */
+header {visibility: hidden !important; display: none !important;}
 .stApp header {display: none !important;}
 header[data-testid="stHeader"] {display: none !important;}
-div[data-testid="stToolbar"] {display: none !important;}
-section[data-testid="stSidebar"] > div:first-child {display: none;} /* opcional, si quieres ocultar algo más */
-.st-emotion-cache-1avcm0n {display: none !important;}
-.st-emotion-cache-18ni7ap {display: none !important;}
+div[data-testid="stHeader"] {display: none !important;}
 
-/* TUS ESTILOS PERSONALIZADOS */
-.hero-banner { background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); padding: 1.5em; border-radius: 15px; margin-bottom: 1em; border: 1px solid rgba(76, 175, 80, 0.3); text-align: center; }
-.hero-title { color: #ffffff; font-size: 2em; font-weight: 800; margin-bottom: 0.5em; background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.stButton > button { background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; color: white !important; border: none !important; padding: 0.8em 1.5em !important; border-radius: 12px !important; font-weight: 700 !important; font-size: 1em !important; margin: 5px 0 !important; transition: all 0.3s ease !important; }
-.stButton > button:hover { transform: translateY(-2px) !important; box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; }
-.stTabs [data-baseweb="tab-list"] { background: rgba(30, 41, 59, 0.7) !important; backdrop-filter: blur(10px) !important; padding: 8px 16px !important; border-radius: 16px !important; border: 1px solid rgba(76, 175, 80, 0.3) !important; margin-top: 1.5em !important; }
-div[data-testid="metric-container"] { background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; backdrop-filter: blur(10px) !important; border-radius: 18px !important; padding: 22px !important; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; border: 1px solid rgba(76, 175, 80, 0.25) !important; }
+/* OCULTAR TOOLBAR COMPLETO (Share, Edit, GitHub, Deploy) */
+.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] * {visibility: hidden !important; display: none !important;}
+section[data-testid="stToolbar"] {display: none !important;}
+div[data-testid="stToolbar"] {display: none !important;}
+[class*="stToolbar"] {display: none !important; visibility: hidden !important;}
+
+/* Ocultar elementos específicos por aria-label */
+[data-testid="stToolbar"] [aria-label="Share"] {display: none !important; visibility: hidden !important;}
+[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important; visibility: hidden !important;}
+[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important; visibility: hidden !important;}
+[data-testid="stToolbar"] [aria-label="Deploy"] {display: none !important; visibility: hidden !important;}
+
+/* Ocultar por clases específicas */
+.stAppDeployButton {display: none !important; visibility: hidden !important;}
+.stToolbar {display: none !important; visibility: hidden !important;}
+button[data-testid="stDeployButton"] {display: none !important;}
+button[data-testid="baseButton-header"] {display: none !important;}
+button[kind="header"] {display: none !important;}
+div[data-testid="stDecoration"] {display: none !important;}
+
+/* Ocultar cualquier contenedor que pueda contener elementos de la interfaz */
+[data-testid="stStatusWidget"] {display: none !important;}
+[data-testid="stNotification"] {display: none !important;}
+[data-testid="stBottom"] {display: none !important;}
+[data-testid="stBottomBlock"] {display: none !important;}
+[data-testid="stSidebarUserContent"] {display: block !important;} /* asegurar que el sidebar se vea */
+
+/* Ocultar clases dinámicas comunes de Streamlit */
+.st-emotion-cache-1avcm0n, .st-emotion-cache-16txtl3, .st-emotion-cache-12fmjuu,
+.st-emotion-cache-1v0mbd, .st-emotion-cache-16id2kf, .st-emotion-cache-1dp5vir,
+.st-emotion-cache-1r6slb0, .st-emotion-cache-1wmy9hl, .st-emotion-cache-1gwvy7v,
+.st-emotion-cache-1wbqy5l, .st-emotion-cache-1f3w3xw, .st-emotion-cache-1n8a3t5,
+.st-emotion-cache-1y4p8pa, .st-emotion-cache-1p1m4ay, .st-emotion-cache-1v0mbd,
+.st-emotion-cache-1bv8g3i, .st-emotion-cache-1h9gnzq, .st-emotion-cache-1wrcr25 {
+    display: none !important;
+    visibility: hidden !important;
+}
+
+/* Eliminar márgenes superiores */
+#root > div:nth-child(1) > div > div > div > div > section > div {
+    padding-top: 0px !important;
+    margin-top: -50px !important;
+}
+.main > div {
+    padding-top: 0rem !important;
+}
+.block-container {
+    padding-top: 0rem !important;
+}
+
+/* Ajustar contenedor principal */
+.stApp {
+    padding-top: 0px !important;
+    margin-top: 0px !important;
+}
+
+/* ===== ESTILOS PERSONALIZADOS DE LA APP ===== */
+.hero-banner { 
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
+    padding: 1.5em; 
+    border-radius: 15px; 
+    margin-bottom: 1em; 
+    border: 1px solid rgba(76, 175, 80, 0.3); 
+    text-align: center; 
+}
+.hero-title { 
+    color: #ffffff; 
+    font-size: 2em; 
+    font-weight: 800; 
+    margin-bottom: 0.5em; 
+    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); 
+    -webkit-background-clip: text; 
+    -webkit-text-fill-color: transparent; 
+}
+.stButton > button { 
+    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; 
+    color: white !important; 
+    border: none !important; 
+    padding: 0.8em 1.5em !important; 
+    border-radius: 12px !important; 
+    font-weight: 700 !important; 
+    font-size: 1em !important; 
+    margin: 5px 0 !important; 
+    transition: all 0.3s ease !important; 
+}
+.stButton > button:hover { 
+    transform: translateY(-2px) !important; 
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; 
+}
+.stTabs [data-baseweb="tab-list"] { 
+    background: rgba(30, 41, 59, 0.7) !important; 
+    backdrop-filter: blur(10px) !important; 
+    padding: 8px 16px !important; 
+    border-radius: 16px !important; 
+    border: 1px solid rgba(76, 175, 80, 0.3) !important; 
+    margin-top: 1.5em !important; 
+}
+div[data-testid="metric-container"] { 
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; 
+    backdrop-filter: blur(10px) !important; 
+    border-radius: 18px !important; 
+    padding: 22px !important; 
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; 
+    border: 1px solid rgba(76, 175, 80, 0.25) !important; 
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2103,6 +2227,18 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
                 if st.button("🔍 DETECTAR PALMAS", use_container_width=True):
                     ejecutar_deteccion_palmas()
                     st.rerun()
+else:
+    # Si no hay archivo cargado, mostrar un mensaje amigable
+    st.info("👆 Por favor, sube un archivo de plantación en la barra lateral para comenzar.")
+    st.markdown("""
+    ### ¿Cómo empezar?
+    1. Inicia sesión o regístrate.
+    2. Sube un archivo con el polígono de tu plantación (formatos: Shapefile .zip, KML, KMZ, GeoJSON).
+    3. Configura los parámetros de análisis.
+    4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
+    """)
+    if st.session_state.demo_mode:
+        st.info("🎮 Estás en modo DEMO. Ya se ha cargado una plantación de ejemplo automáticamente. Puedes ejecutar el análisis o subir tu propio archivo.")
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
