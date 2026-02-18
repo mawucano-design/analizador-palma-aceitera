@@ -9,7 +9,7 @@
 # IMPORTANTE: 
 # - Configurar variables de entorno en secrets: MERCADOPAGO_ACCESS_TOKEN,
 #   EARTHDATA_USERNAME, EARTHDATA_PASSWORD, APP_BASE_URL.
-# - Instalar dependencias: pip install earthaccess xarray rioxarray
+# - Instalar dependencias: pip install earthaccess xarray rioxarray rasterio
 
 import streamlit as st
 import geopandas as gpd
@@ -42,7 +42,7 @@ from scipy.spatial import KDTree
 from scipy.interpolate import Rbf
 import base64
 import time
-import shutil  # AÑADIDO PARA LIMPIEZA SEGURA
+import shutil
 
 # ===== AUTENTICACIÓN Y PAGOS =====
 import sqlite3
@@ -50,7 +50,7 @@ import hashlib
 import secrets
 import mercadopago
 
-# ===== NUEVAS LIBRERÍAS PARA DATOS SATELITALES (EARTHDATA) =====
+# ===== LIBRERÍAS PARA DATOS SATELITALES (EARTHDATA) =====
 try:
     import earthaccess
     import xarray as xr
@@ -58,6 +58,15 @@ try:
     EARTHDATA_OK = True
 except ImportError:
     EARTHDATA_OK = False
+
+# ===== LIBRERÍAS PARA PROCESAMIENTO RASTER (rasterio) =====
+try:
+    import rasterio
+    from rasterio.mask import mask
+    RASTERIO_OK = True
+except ImportError:
+    RASTERIO_OK = False
+    st.warning("⚠️ rasterio no está instalado. No se podrán procesar datos satelitales reales. Instala: pip install rasterio")
 
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
@@ -641,6 +650,9 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
         st.warning("Credenciales de Earthdata no configuradas.")
         return None, None
+    if not RASTERIO_OK:
+        st.warning("rasterio no está instalado. No se puede procesar el archivo HDF.")
+        return None, None
 
     try:
         # Autenticar con Earthdata
@@ -719,6 +731,9 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     if not EARTHDATA_OK:
         return None, None
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
+        return None, None
+    if not RASTERIO_OK:
+        st.warning("rasterio no está instalado. No se puede procesar el archivo HDF.")
         return None, None
 
     try:
@@ -2012,6 +2027,8 @@ def ejecutar_analisis_completo():
 # ===== Mostrar advertencias de librerías opcionales =====
 if not EARTHDATA_OK:
     st.warning("Para usar datos satelitales reales, instala 'earthaccess', 'xarray' y 'rioxarray': pip install earthaccess xarray rioxarray")
+if not RASTERIO_OK:
+    st.warning("⚠️ rasterio no está instalado. No se podrán procesar datos satelitales reales. Instala: pip install rasterio")
 
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
