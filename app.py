@@ -2045,17 +2045,6 @@ div[data-testid="stDecoration"] {display: none !important;}
 [data-testid="stBottomBlock"] {display: none !important;}
 [data-testid="stSidebarUserContent"] {display: block !important;} /* asegurar que el sidebar se vea */
 
-/* Ocultar clases dinámicas comunes de Streamlit */
-.st-emotion-cache-1avcm0n, .st-emotion-cache-16txtl3, .st-emotion-cache-12fmjuu,
-.st-emotion-cache-1v0mbd, .st-emotion-cache-16id2kf, .st-emotion-cache-1dp5vir,
-.st-emotion-cache-1r6slb0, .st-emotion-cache-1wmy9hl, .st-emotion-cache-1gwvy7v,
-.st-emotion-cache-1wbqy5l, .st-emotion-cache-1f3w3xw, .st-emotion-cache-1n8a3t5,
-.st-emotion-cache-1y4p8pa, .st-emotion-cache-1p1m4ay, .st-emotion-cache-1v0mbd,
-.st-emotion-cache-1bv8g3i, .st-emotion-cache-1h9gnzq, .st-emotion-cache-1wrcr25 {
-    display: none !important;
-    visibility: hidden !important;
-}
-
 /* Eliminar márgenes superiores */
 #root > div:nth-child(1) > div > div > div > div > section > div {
     padding-top: 0px !important;
@@ -2734,41 +2723,52 @@ if st.session_state.analisis_completado:
                     else:
                         st.info("👆 Sube una imagen y un modelo YOLO para comenzar.")
 
-# ===== ELIMINAR TOOLBAR CON JAVASCRIPT =====
+# ===== ELIMINAR TOOLBAR CON JAVASCRIPT (REFORZADO) =====
 st.markdown("""
 <script>
-// Función para eliminar el toolbar
-function eliminarToolbar() {
-    const toolbar = document.querySelector('[data-testid="stToolbar"]');
-    if (toolbar) {
-        toolbar.remove();
-        console.log('✅ Toolbar eliminado');
-        return true;
-    }
-    return false;
-}
-
-// Intentar eliminación inmediata
-if (!eliminarToolbar()) {
-    // Si no aparece, esperar un poco y reintentar (para elementos que cargan después)
-    setTimeout(() => {
-        eliminarToolbar();
-    }, 500);
+// Función mejorada para eliminar el toolbar
+function eliminarToolbarDefinitivamente() {
+    // Selectores múltiples para asegurar la captura
+    const selectores = [
+        '[data-testid="stToolbar"]',
+        '.stApp [data-testid="stToolbar"]',
+        'section[data-testid="stToolbar"]',
+        'div[data-testid="stToolbar"]',
+        '.stToolbar',
+        '.stAppDeployButton',
+        'button[data-testid="stDeployButton"]',
+        'button[kind="header"]'
+    ];
     
-    setTimeout(() => {
-        eliminarToolbar();
-    }, 1500);
+    let eliminado = false;
+    selectores.forEach(selector => {
+        document.querySelectorAll(selector).forEach(el => {
+            el.remove();
+            eliminado = true;
+        });
+    });
+    
+    if (eliminado) {
+        console.log('✅ Toolbar eliminado');
+    }
+    return eliminado;
 }
 
-// Observador de mutaciones para eliminar en cuanto aparezca
-const observer = new MutationObserver((mutations, obs) => {
-    if (eliminarToolbar()) {
-        obs.disconnect(); // dejar de observar una vez eliminado
-    }
+// Ejecutar inmediatamente
+eliminarToolbarDefinitivamente();
+
+// Reintentar después de cada cambio en el DOM
+const observer = new MutationObserver(() => {
+    eliminarToolbarDefinitivamente();
 });
 
-// Empezar a observar cambios en el body
+// Observar el body y sus descendientes
 observer.observe(document.body, { childList: true, subtree: true });
+
+// También ejecutar cuando la página se haya cargado completamente
+window.addEventListener('load', () => {
+    eliminarToolbarDefinitivamente();
+});
 </script>
 """, unsafe_allow_html=True)
 
