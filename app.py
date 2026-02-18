@@ -1,13 +1,4 @@
-app.py - Versión definitiva con Earthaccess (MODIS desde NASA Earthdata)
-- Registro e inicio de sesión de usuarios.
-- Suscripción mensual (150 USD) con Mercado Pago.
-- Modo DEMO con datos simulados.
-- Modo PREMIUM con datos reales de NDVI y NDWI desde Earthdata (MOD13Q1 y MOD09GA).
-- Usuario administrador mawucano@gmail.com con suscripción permanente.
-IMPORTANTE:
-- Configurar variables de entorno en secrets: MERCADOPAGO_ACCESS_TOKEN,
-EARTHDATA_USERNAME, EARTHDATA_PASSWORD, APP_BASE_URL.
-- Instalar dependencias: pip install earthaccess xarray rioxarray
+
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
