@@ -1999,82 +1999,31 @@ if not EARTHDATA_OK:
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-/* ===== OCULTAR ELEMENTOS DE STREAMLIT DE FORMA AGRESIVA ===== */
-
 /* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important; display: none !important;}
+#MainMenu {visibility: hidden !important;}
 
 /* Ocultar footer de Streamlit */
-footer {visibility: hidden !important; display: none !important;}
-.stFooter {visibility: hidden !important; display: none !important;}
-footer[data-testid="stFooter"] {display: none !important;}
-div[data-testid="stFooter"] {display: none !important;}
+footer {visibility: hidden !important;}
 
 /* Ocultar header completo */
-header {visibility: hidden !important; display: none !important;}
+header {visibility: hidden !important;}
 .stApp header {display: none !important;}
-header[data-testid="stHeader"] {display: none !important;}
-div[data-testid="stHeader"] {display: none !important;}
 
-/* OCULTAR TOOLBAR COMPLETO (Share, Edit, GitHub, Deploy) */
+/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
 .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
 .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-.stApp [data-testid="stToolbar"] * {visibility: hidden !important; display: none !important;}
-section[data-testid="stToolbar"] {display: none !important;}
-div[data-testid="stToolbar"] {display: none !important;}
-[class*="stToolbar"] {display: none !important; visibility: hidden !important;}
 
-/* Ocultar elementos específicos por aria-label */
-[data-testid="stToolbar"] [aria-label="Share"] {display: none !important; visibility: hidden !important;}
-[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important; visibility: hidden !important;}
-[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important; visibility: hidden !important;}
-[data-testid="stToolbar"] [aria-label="Deploy"] {display: none !important; visibility: hidden !important;}
+/* Ocultar elementos específicos del toolbar */
+[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
 
-/* Ocultar por clases específicas */
-.stAppDeployButton {display: none !important; visibility: hidden !important;}
-.stToolbar {display: none !important; visibility: hidden !important;}
-button[data-testid="stDeployButton"] {display: none !important;}
-button[data-testid="baseButton-header"] {display: none !important;}
-button[kind="header"] {display: none !important;}
-div[data-testid="stDecoration"] {display: none !important;}
+/* Ocultar otros elementos de UI de Streamlit */
+.st-emotion-cache-1avcm0n {display: none !important;}
+.st-emotion-cache-16txtl3 {display: none !important;}
+.st-emotion-cache-12fmjuu {display: none !important;}
 
-/* Ocultar cualquier contenedor que pueda contener elementos de la interfaz */
-[data-testid="stStatusWidget"] {display: none !important;}
-[data-testid="stNotification"] {display: none !important;}
-[data-testid="stBottom"] {display: none !important;}
-[data-testid="stBottomBlock"] {display: none !important;}
-[data-testid="stSidebarUserContent"] {display: block !important;} /* asegurar que el sidebar se vea */
-
-/* Ocultar clases dinámicas comunes de Streamlit */
-.st-emotion-cache-1avcm0n, .st-emotion-cache-16txtl3, .st-emotion-cache-12fmjuu,
-.st-emotion-cache-1v0mbd, .st-emotion-cache-16id2kf, .st-emotion-cache-1dp5vir,
-.st-emotion-cache-1r6slb0, .st-emotion-cache-1wmy9hl, .st-emotion-cache-1gwvy7v,
-.st-emotion-cache-1wbqy5l, .st-emotion-cache-1f3w3xw, .st-emotion-cache-1n8a3t5,
-.st-emotion-cache-1y4p8pa, .st-emotion-cache-1p1m4ay, .st-emotion-cache-1v0mbd,
-.st-emotion-cache-1bv8g3i, .st-emotion-cache-1h9gnzq, .st-emotion-cache-1wrcr25 {
-    display: none !important;
-    visibility: hidden !important;
-}
-
-/* Eliminar márgenes superiores */
-#root > div:nth-child(1) > div > div > div > div > section > div {
-    padding-top: 0px !important;
-    margin-top: -50px !important;
-}
-.main > div {
-    padding-top: 0rem !important;
-}
-.block-container {
-    padding-top: 0rem !important;
-}
-
-/* Ajustar contenedor principal */
-.stApp {
-    padding-top: 0px !important;
-    margin-top: 0px !important;
-}
-
-/* ===== ESTILOS PERSONALIZADOS DE LA APP ===== */
+/* Estilos personalizados de la app */
 .hero-banner { 
     background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
     padding: 1.5em; 
@@ -2733,44 +2682,6 @@ if st.session_state.analisis_completado:
                         os.unlink(ruta_modelo_tmp)
                     else:
                         st.info("👆 Sube una imagen y un modelo YOLO para comenzar.")
-
-# ===== ELIMINAR TOOLBAR CON JAVASCRIPT =====
-st.markdown("""
-<script>
-// Función para eliminar el toolbar
-function eliminarToolbar() {
-    const toolbar = document.querySelector('[data-testid="stToolbar"]');
-    if (toolbar) {
-        toolbar.remove();
-        console.log('✅ Toolbar eliminado');
-        return true;
-    }
-    return false;
-}
-
-// Intentar eliminación inmediata
-if (!eliminarToolbar()) {
-    // Si no aparece, esperar un poco y reintentar (para elementos que cargan después)
-    setTimeout(() => {
-        eliminarToolbar();
-    }, 500);
-    
-    setTimeout(() => {
-        eliminarToolbar();
-    }, 1500);
-}
-
-// Observador de mutaciones para eliminar en cuanto aparezca
-const observer = new MutationObserver((mutations, obs) => {
-    if (eliminarToolbar()) {
-        obs.disconnect(); // dejar de observar una vez eliminado
-    }
-});
-
-// Empezar a observar cambios en el body
-observer.observe(document.body, { childList: true, subtree: true });
-</script>
-""", unsafe_allow_html=True)
 
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
