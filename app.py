@@ -2124,6 +2124,44 @@ div[data-testid="metric-container"] {
     border: 1px solid rgba(76, 175, 80, 0.25) !important; 
 }
 </style>
+
+<!-- SCRIPT PARA ELIMINAR EL TOOLBAR DE STREAMLIT -->
+<script>
+// Función para eliminar el toolbar y cualquier elemento no deseado
+function eliminarToolbar() {
+    // Seleccionar por data-testid
+    const toolbar = document.querySelector('[data-testid="stToolbar"]');
+    if (toolbar) {
+        toolbar.remove();
+    }
+    
+    // Seleccionar por clase (por si acaso)
+    const toolbars = document.querySelectorAll('.stToolbar, .stAppDeployButton, [class*="stToolbar"]');
+    toolbars.forEach(el => el.remove());
+    
+    // Eliminar también el menú y footer por si acaso
+    const mainMenu = document.querySelector('#MainMenu');
+    if (mainMenu) mainMenu.remove();
+    
+    const footer = document.querySelector('footer');
+    if (footer) footer.remove();
+    
+    const header = document.querySelector('header');
+    if (header) header.remove();
+}
+
+// Ejecutar al cargar la página
+document.addEventListener('DOMContentLoaded', eliminarToolbar);
+
+// También ejecutar después de un pequeño retraso para asegurar que los elementos dinámicos se carguen
+setTimeout(eliminarToolbar, 500);
+setTimeout(eliminarToolbar, 1000);
+setTimeout(eliminarToolbar, 2000);
+
+// Y ejecutar cada vez que haya un cambio en el DOM (por si Streamlit reinserta algo)
+const observer = new MutationObserver(eliminarToolbar);
+observer.observe(document.body, { childList: true, subtree: true });
+</script>
 """, unsafe_allow_html=True)
 
 st.markdown("""
