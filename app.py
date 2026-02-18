@@ -647,6 +647,16 @@ def cargar_archivo_plantacion(uploaded_file):
         return None
 
 # ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS) =====
+def verificar_firma_hdf4(ruta_archivo):
+    """Verifica si el archivo tiene la firma de HDF4 (primeros 4 bytes: \x0e\x03\x13\x01)."""
+    try:
+        with open(ruta_archivo, 'rb') as f:
+            firma = f.read(4)
+        # Firma HDF4: 0x0e 0x03 0x13 0x01
+        return firma == b'\x0e\x03\x13\x01'
+    except:
+        return False
+
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real usando earthaccess (producto MOD13Q1 de MODIS).
@@ -701,17 +711,17 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 return None, None
             download_path = hdf_files[0]
 
-            # Verificar que el archivo no sea demasiado pequeño (posible error HTML)
-            file_size = os.path.getsize(download_path)
-            if file_size < 10240:  # menos de 10 KB
-                with open(download_path, 'r', errors='ignore') as f:
-                    head = f.read(500).lower()
-                    if '<html' in head:
-                        st.error("El archivo descargado parece ser una página HTML de error. Verifica credenciales y disponibilidad del producto.")
-                        return None, None
-                    else:
-                        st.warning(f"Archivo muy pequeño ({file_size} bytes). Puede estar corrupto.")
-                        # Continuar de todas formas, puede ser un HDF pequeño
+            # Verificar firma HDF4
+            if not verificar_firma_hdf4(download_path):
+                st.error("El archivo descargado no tiene firma HDF4. Puede ser una página HTML de error o un archivo corrupto.")
+                # Leer las primeras líneas para depuración
+                try:
+                    with open(download_path, 'r', errors='ignore') as f:
+                        head = f.read(500)
+                        st.error(f"Contenido del inicio del archivo: {head}")
+                except:
+                    pass
+                return None, None
 
             # Intentar leer con rasterio
             ndvi_mean = None
@@ -829,14 +839,16 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 return None, None
             download_path = hdf_files[0]
 
-            # Verificar tamaño
-            file_size = os.path.getsize(download_path)
-            if file_size < 10240:
-                with open(download_path, 'r', errors='ignore') as f:
-                    head = f.read(500).lower()
-                    if '<html' in head:
-                        st.error("El archivo descargado es una página HTML de error.")
-                        return None, None
+            # Verificar firma HDF4
+            if not verificar_firma_hdf4(download_path):
+                st.error("El archivo descargado no tiene firma HDF4. Puede ser una página HTML de error o un archivo corrupto.")
+                try:
+                    with open(download_path, 'r', errors='ignore') as f:
+                        head = f.read(500)
+                        st.error(f"Contenido del inicio del archivo: {head}")
+                except:
+                    pass
+                return None, None
 
             # Intentar con rasterio primero
             nir = None
