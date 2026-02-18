@@ -41,3 +41,10 @@ maxSize = 500000000
 
 [logger]
 level = "info"
+
+[client]
+toolbarMode = "minimal"
+showSidebarNavigation = false
+
+[ui]
+hideTopBar = true
