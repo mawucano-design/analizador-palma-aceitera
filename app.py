@@ -1,4 +1,4 @@
-# app.py - Versión definitiva con Earthaccess (MODIS desde NASA Earthdata)
+# app.py - Versión definitiva con Earthaccess (MODIS desde NASA Earthdata) y fallback a pyhdf
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
@@ -9,7 +9,7 @@
 # IMPORTANTE: 
 # - Configurar variables de entorno en secrets: MERCADOPAGO_ACCESS_TOKEN,
 #   EARTHDATA_USERNAME, EARTHDATA_PASSWORD, APP_BASE_URL.
-# - Instalar dependencias: pip install earthaccess xarray rioxarray
+# - Instalar dependencias: pip install earthaccess xarray rioxarray rasterio pyhdf
 
 import streamlit as st
 import geopandas as gpd
@@ -42,6 +42,7 @@ from scipy.spatial import KDTree
 from scipy.interpolate import Rbf
 import base64
 import time
+import shutil
 
 # ===== AUTENTICACIÓN Y PAGOS =====
 import sqlite3
@@ -49,7 +50,7 @@ import hashlib
 import secrets
 import mercadopago
 
-# ===== NUEVAS LIBRERÍAS PARA DATOS SATELITALES (EARTHDATA) =====
+# ===== LIBRERÍAS PARA DATOS SATELITALES (EARTHDATA) =====
 try:
     import earthaccess
     import xarray as xr
@@ -57,6 +58,23 @@ try:
     EARTHDATA_OK = True
 except ImportError:
     EARTHDATA_OK = False
+
+# ===== LIBRERÍAS PARA PROCESAMIENTO RASTER (rasterio y pyhdf) =====
+try:
+    import rasterio
+    from rasterio.mask import mask
+    RASTERIO_OK = True
+except ImportError:
+    RASTERIO_OK = False
+    st.warning("⚠️ rasterio no está instalado. Se usará pyhdf como fallback.")
+
+try:
+    from pyhdf.SD import SD, SDC
+    PYHDF_OK = True
+except ImportError:
+    PYHDF_OK = False
+    if not RASTERIO_OK:
+        st.warning("⚠️ pyhdf tampoco está instalado. No se podrán leer archivos HDF4.")
 
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
@@ -628,11 +646,11 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== NUEVAS FUNCIONES PARA DATOS SATELITALES CON EARTHDATA =====
+# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS) =====
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real usando earthaccess (producto MOD13Q1 de MODIS).
-    Descarga el archivo HDF temporalmente y procesa con rasterio.
+    Descarga el archivo HDF y lo procesa con rasterio o pyhdf (fallback).
     """
     if not EARTHDATA_OK:
         st.warning("Librerías earthaccess/xarray/rioxarray no instaladas.")
@@ -642,10 +660,10 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         return None, None
 
     try:
-        # Autenticar con Earthdata
-        auth = earthaccess.login(strategy="netrc")
+        # Autenticar con Earthdata usando credenciales de entorno
+        auth = earthaccess.login()
         if not auth.authenticated:
-            st.error("No se pudo autenticar con Earthdata.")
+            st.error("No se pudo autenticar con Earthdata. Verifica las credenciales en variables de entorno.")
             return None, None
 
         # Bounding box de toda la plantación
@@ -665,47 +683,109 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
             st.warning("No se encontraron escenas MOD13Q1 en el período.")
             return None, None
 
-        # Usar la primera escena
         granule = results[0]
         st.info(f"Procesando escena NDVI: {granule['umm']['GranuleUR']}")
 
-        # Descargar a archivo temporal
-        with tempfile.NamedTemporaryFile(suffix='.hdf', delete=False) as tmp:
-            download_path = tmp.name
-        earthaccess.download(granule, local_path=download_path)
+        # Crear directorio temporal único
+        temp_dir = tempfile.mkdtemp()
+        try:
+            downloaded_files = earthaccess.download(granule, local_path=temp_dir)
+            if not downloaded_files:
+                st.error("No se pudo descargar el archivo.")
+                return None, None
 
-        # Abrir la subdataset NDVI
-        ndvi_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD13Q1:250m 16 days NDVI'
-        with rasterio.open(ndvi_path) as src:
-            # Recortar por el polígono unido de toda la plantación
-            geom = [mapping(gdf_dividido.unary_union)]
-            out_image, out_transform = mask(src, geom, crop=True, nodata=src.nodata)
-            ndvi_array = out_image[0]
-            # Escalar: los valores MODIS NDVI están en escala 0-10000 con factor 0.0001
-            ndvi_scaled = ndvi_array * 0.0001
-            ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src.nodata * 0.0001])
+            # Buscar archivo .hdf
+            hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
+            if not hdf_files:
+                st.error("No se encontró archivo HDF en la descarga.")
+                return None, None
+            download_path = hdf_files[0]
 
-        os.unlink(download_path)  # eliminar archivo temporal
+            # Verificar que el archivo no sea demasiado pequeño (posible error HTML)
+            file_size = os.path.getsize(download_path)
+            if file_size < 10240:  # menos de 10 KB
+                with open(download_path, 'r', errors='ignore') as f:
+                    head = f.read(500).lower()
+                    if '<html' in head:
+                        st.error("El archivo descargado parece ser una página HTML de error. Verifica credenciales y disponibilidad del producto.")
+                        return None, None
+                    else:
+                        st.warning(f"Archivo muy pequeño ({file_size} bytes). Puede estar corrupto.")
+                        # Continuar de todas formas, puede ser un HDF pequeño
 
-        # Asignar el mismo valor a todos los bloques
-        gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
-        return gdf_dividido, ndvi_mean
+            # Intentar leer con rasterio
+            ndvi_mean = None
+            try:
+                with rasterio.open(download_path) as src:
+                    subdatasets = src.subdatasets
+                    if not subdatasets:
+                        st.error("El archivo HDF no contiene subdatasets.")
+                        return None, None
+
+                    # Buscar subdataset NDVI
+                    ndvi_sub = None
+                    for sd in subdatasets:
+                        if 'NDVI' in sd or 'ndvi' in sd.lower():
+                            ndvi_sub = sd
+                            break
+                    if not ndvi_sub:
+                        st.error("No se encontró subdataset NDVI.")
+                        return None, None
+
+                    with rasterio.open(ndvi_sub) as src_ndvi:
+                        geom = [mapping(gdf_dividido.unary_union)]
+                        out_image, _ = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
+                        ndvi_array = out_image[0]
+                        # Escalar: MODIS NDVI está en escala 0-10000, factor 0.0001
+                        ndvi_scaled = ndvi_array * 0.0001
+                        ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
+
+            except Exception as e_rasterio:
+                st.warning(f"No se pudo abrir con rasterio: {str(e_rasterio)}. Intentando con pyhdf...")
+                # Fallback a pyhdf
+                if PYHDF_OK:
+                    try:
+                        hdf = SD(download_path, SDC.READ)
+                        # Buscar dataset NDVI (normalmente "250m 16 days NDVI")
+                        ndvi_dataset = None
+                        for name in hdf.datasets().keys():
+                            if 'NDVI' in name:
+                                ndvi_dataset = name
+                                break
+                        if ndvi_dataset is None:
+                            st.error("No se encontró dataset NDVI con pyhdf.")
+                            return None, None
+                        ndvi_data = hdf.select(ndvi_dataset).get()
+                        # Escalar
+                        ndvi_scaled = ndvi_data * 0.0001
+                        # Enmascarar valores de relleno (normalmente -3000)
+                        ndvi_scaled = np.ma.masked_where(ndvi_scaled < -1, ndvi_scaled)
+                        ndvi_mean = np.nanmean(ndvi_scaled)
+                    except Exception as e_pyhdf:
+                        st.error(f"Error con pyhdf: {str(e_pyhdf)}")
+                        return None, None
+                else:
+                    st.error("pyhdf no está instalado. No se puede leer HDF4.")
+                    return None, None
+
+            if ndvi_mean is None or np.isnan(ndvi_mean):
+                st.warning("No se pudo calcular NDVI (valor NaN).")
+                return None, None
+
+            # Asignar a todos los bloques
+            gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
+            return gdf_dividido, ndvi_mean
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
         st.error(f"Error en obtención de NDVI con earthaccess: {str(e)}")
-        # Limpiar archivos temporales si quedaron
-        for f in os.listdir('.'):
-            if f.endswith('.hdf') and f.startswith('temp'):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
         return None, None
 
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real usando earthaccess (producto MOD09GA, bandas NIR y SWIR).
-    Descarga el archivo HDF temporalmente y procesa con rasterio.
     """
     if not EARTHDATA_OK:
         return None, None
@@ -713,15 +793,14 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         return None, None
 
     try:
-        auth = earthaccess.login(strategy="netrc")
+        auth = earthaccess.login()
         if not auth.authenticated:
-            st.error("No se pudo autenticar con Earthdata.")
+            st.error("No se pudo autenticar con Earthdata. Verifica las credenciales en variables de entorno.")
             return None, None
 
         bounds = gdf_dividido.total_bounds
         bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
 
-        # Buscar MOD09GA (reflectancia diaria)
         results = earthaccess.search_data(
             short_name='MOD09GA',
             version='061',
@@ -737,46 +816,105 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         granule = results[0]
         st.info(f"Procesando escena SR: {granule['umm']['GranuleUR']}")
 
-        # Descargar a archivo temporal
-        with tempfile.NamedTemporaryFile(suffix='.hdf', delete=False) as tmp:
-            download_path = tmp.name
-        earthaccess.download(granule, local_path=download_path)
+        temp_dir = tempfile.mkdtemp()
+        try:
+            downloaded_files = earthaccess.download(granule, local_path=temp_dir)
+            if not downloaded_files:
+                st.error("No se pudo descargar el archivo.")
+                return None, None
 
-        # Abrir bandas NIR (b02) y SWIR (b06)
-        nir_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD09GA:sur_refl_b02'
-        swir_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD09GA:sur_refl_b06'
+            hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
+            if not hdf_files:
+                st.error("No se encontró archivo HDF.")
+                return None, None
+            download_path = hdf_files[0]
 
-        geom = [mapping(gdf_dividido.unary_union)]
+            # Verificar tamaño
+            file_size = os.path.getsize(download_path)
+            if file_size < 10240:
+                with open(download_path, 'r', errors='ignore') as f:
+                    head = f.read(500).lower()
+                    if '<html' in head:
+                        st.error("El archivo descargado es una página HTML de error.")
+                        return None, None
 
-        with rasterio.open(nir_path) as src_nir:
-            nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
-        with rasterio.open(swir_path) as src_swir:
-            swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+            # Intentar con rasterio primero
+            nir = None
+            swir = None
+            try:
+                with rasterio.open(download_path) as src:
+                    subdatasets = src.subdatasets
+                    if not subdatasets:
+                        st.error("No hay subdatasets.")
+                        return None, None
 
-        # Escalar (factor 0.0001)
-        nir = nir_array[0] * 0.0001
-        swir = swir_array[0] * 0.0001
+                    nir_sub = None
+                    swir_sub = None
+                    for sd in subdatasets:
+                        if 'sur_refl_b02' in sd:
+                            nir_sub = sd
+                        elif 'sur_refl_b06' in sd:
+                            swir_sub = sd
+                    if not nir_sub or not swir_sub:
+                        st.error("No se encontraron bandas NIR o SWIR.")
+                        return None, None
 
-        # Calcular NDWI
-        with np.errstate(divide='ignore', invalid='ignore'):
-            ndwi = (nir - swir) / (nir + swir)
-            ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
-        ndwi_mean = np.nanmean(ndwi)
+                    geom = [mapping(gdf_dividido.unary_union)]
+                    with rasterio.open(nir_sub) as src_nir:
+                        nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
+                        nir = nir_array[0] * 0.0001
+                    with rasterio.open(swir_sub) as src_swir:
+                        swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+                        swir = swir_array[0] * 0.0001
 
-        os.unlink(download_path)
+            except Exception as e_rasterio:
+                st.warning(f"rasterio falló: {e_rasterio}. Intentando con pyhdf...")
+                if PYHDF_OK:
+                    try:
+                        hdf = SD(download_path, SDC.READ)
+                        # Buscar datasets de reflectancia
+                        nir_data = None
+                        swir_data = None
+                        for name in hdf.datasets().keys():
+                            if 'sur_refl_b02' in name:
+                                nir_data = hdf.select(name).get()
+                            elif 'sur_refl_b06' in name:
+                                swir_data = hdf.select(name).get()
+                        if nir_data is None or swir_data is None:
+                            st.error("No se encontraron bandas NIR o SWIR con pyhdf.")
+                            return None, None
+                        nir = nir_data * 0.0001
+                        swir = swir_data * 0.0001
+                    except Exception as e_pyhdf:
+                        st.error(f"pyhdf falló: {e_pyhdf}")
+                        return None, None
+                else:
+                    st.error("pyhdf no instalado, no se puede leer HDF4.")
+                    return None, None
 
-        gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3) if not np.isnan(ndwi_mean) else np.nan
-        return gdf_dividido, ndwi_mean
+            if nir is None or swir is None:
+                return None, None
+
+            # Calcular NDWI
+            with np.errstate(divide='ignore', invalid='ignore'):
+                ndwi = (nir - swir) / (nir + swir)
+                ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
+            ndwi_mean = np.nanmean(ndwi)
+
+            if np.isnan(ndwi_mean):
+                st.warning("NDWI calculado es NaN.")
+                return None, None
+
+            gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3)
+            return gdf_dividido, ndwi_mean
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
         st.error(f"Error en obtención de NDWI con earthaccess: {str(e)}")
-        for f in os.listdir('.'):
-            if f.endswith('.hdf') and f.startswith('temp'):
-                try:
-                    os.unlink(f)
-                except:
-                    pass
         return None, None
+
 # ===== FUNCIONES CLIMÁTICAS =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     try:
@@ -1139,6 +1277,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     plt.suptitle(f"Datos Climáticos - {fuente}", fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
     return fig
+
 # ===== ANÁLISIS DE TEXTURA DE SUELO MEJORADO =====
 def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
     resultados = []
@@ -1995,86 +2134,37 @@ def ejecutar_analisis_completo():
 # ===== Mostrar advertencias de librerías opcionales =====
 if not EARTHDATA_OK:
     st.warning("Para usar datos satelitales reales, instala 'earthaccess', 'xarray' y 'rioxarray': pip install earthaccess xarray rioxarray")
+if not RASTERIO_OK and not PYHDF_OK:
+    st.warning("⚠️ rasterio y pyhdf no están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
 # ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-/* ===== OCULTAR ELEMENTOS DE STREAMLIT DE FORMA AGRESIVA ===== */
-
 /* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important; display: none !important;}
+#MainMenu {visibility: hidden !important;}
 
 /* Ocultar footer de Streamlit */
-footer {visibility: hidden !important; display: none !important;}
-.stFooter {visibility: hidden !important; display: none !important;}
-footer[data-testid="stFooter"] {display: none !important;}
-div[data-testid="stFooter"] {display: none !important;}
+footer {visibility: hidden !important;}
 
 /* Ocultar header completo */
-header {visibility: hidden !important; display: none !important;}
+header {visibility: hidden !important;}
 .stApp header {display: none !important;}
-header[data-testid="stHeader"] {display: none !important;}
-div[data-testid="stHeader"] {display: none !important;}
 
-/* OCULTAR TOOLBAR COMPLETO (Share, Edit, GitHub, Deploy) */
+/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
 .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
 .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-.stApp [data-testid="stToolbar"] * {visibility: hidden !important; display: none !important;}
-section[data-testid="stToolbar"] {display: none !important;}
-div[data-testid="stToolbar"] {display: none !important;}
-[class*="stToolbar"] {display: none !important; visibility: hidden !important;}
 
-/* Ocultar elementos específicos por aria-label */
-[data-testid="stToolbar"] [aria-label="Share"] {display: none !important; visibility: hidden !important;}
-[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important; visibility: hidden !important;}
-[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important; visibility: hidden !important;}
-[data-testid="stToolbar"] [aria-label="Deploy"] {display: none !important; visibility: hidden !important;}
+/* Ocultar elementos específicos del toolbar */
+[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
 
-/* Ocultar por clases específicas */
-.stAppDeployButton {display: none !important; visibility: hidden !important;}
-.stToolbar {display: none !important; visibility: hidden !important;}
-button[data-testid="stDeployButton"] {display: none !important;}
-button[data-testid="baseButton-header"] {display: none !important;}
-button[kind="header"] {display: none !important;}
-div[data-testid="stDecoration"] {display: none !important;}
+/* Ocultar otros elementos de UI de Streamlit */
+.st-emotion-cache-1avcm0n {display: none !important;}
+.st-emotion-cache-16txtl3 {display: none !important;}
+.st-emotion-cache-12fmjuu {display: none !important;}
 
-/* Ocultar cualquier contenedor que pueda contener elementos de la interfaz */
-[data-testid="stStatusWidget"] {display: none !important;}
-[data-testid="stNotification"] {display: none !important;}
-[data-testid="stBottom"] {display: none !important;}
-[data-testid="stBottomBlock"] {display: none !important;}
-[data-testid="stSidebarUserContent"] {display: block !important;} /* asegurar que el sidebar se vea */
-
-/* Ocultar clases dinámicas comunes de Streamlit */
-.st-emotion-cache-1avcm0n, .st-emotion-cache-16txtl3, .st-emotion-cache-12fmjuu,
-.st-emotion-cache-1v0mbd, .st-emotion-cache-16id2kf, .st-emotion-cache-1dp5vir,
-.st-emotion-cache-1r6slb0, .st-emotion-cache-1wmy9hl, .st-emotion-cache-1gwvy7v,
-.st-emotion-cache-1wbqy5l, .st-emotion-cache-1f3w3xw, .st-emotion-cache-1n8a3t5,
-.st-emotion-cache-1y4p8pa, .st-emotion-cache-1p1m4ay, .st-emotion-cache-1v0mbd,
-.st-emotion-cache-1bv8g3i, .st-emotion-cache-1h9gnzq, .st-emotion-cache-1wrcr25 {
-    display: none !important;
-    visibility: hidden !important;
-}
-
-/* Eliminar márgenes superiores */
-#root > div:nth-child(1) > div > div > div > div > section > div {
-    padding-top: 0px !important;
-    margin-top: -50px !important;
-}
-.main > div {
-    padding-top: 0rem !important;
-}
-.block-container {
-    padding-top: 0rem !important;
-}
-
-/* Ajustar contenedor principal */
-.stApp {
-    padding-top: 0px !important;
-    margin-top: 0px !important;
-}
-
-/* ===== ESTILOS PERSONALIZADOS DE LA APP ===== */
+/* Estilos personalizados de la app */
 .hero-banner { 
     background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
     padding: 1.5em; 
