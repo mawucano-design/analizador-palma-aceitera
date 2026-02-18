@@ -2124,44 +2124,6 @@ div[data-testid="metric-container"] {
     border: 1px solid rgba(76, 175, 80, 0.25) !important; 
 }
 </style>
-
-<!-- SCRIPT PARA ELIMINAR EL TOOLBAR DE STREAMLIT -->
-<script>
-// Función para eliminar el toolbar y cualquier elemento no deseado
-function eliminarToolbar() {
-    // Seleccionar por data-testid
-    const toolbar = document.querySelector('[data-testid="stToolbar"]');
-    if (toolbar) {
-        toolbar.remove();
-    }
-    
-    // Seleccionar por clase (por si acaso)
-    const toolbars = document.querySelectorAll('.stToolbar, .stAppDeployButton, [class*="stToolbar"]');
-    toolbars.forEach(el => el.remove());
-    
-    // Eliminar también el menú y footer por si acaso
-    const mainMenu = document.querySelector('#MainMenu');
-    if (mainMenu) mainMenu.remove();
-    
-    const footer = document.querySelector('footer');
-    if (footer) footer.remove();
-    
-    const header = document.querySelector('header');
-    if (header) header.remove();
-}
-
-// Ejecutar al cargar la página
-document.addEventListener('DOMContentLoaded', eliminarToolbar);
-
-// También ejecutar después de un pequeño retraso para asegurar que los elementos dinámicos se carguen
-setTimeout(eliminarToolbar, 500);
-setTimeout(eliminarToolbar, 1000);
-setTimeout(eliminarToolbar, 2000);
-
-// Y ejecutar cada vez que haya un cambio en el DOM (por si Streamlit reinserta algo)
-const observer = new MutationObserver(eliminarToolbar);
-observer.observe(document.body, { childList: true, subtree: true });
-</script>
 """, unsafe_allow_html=True)
 
 st.markdown("""
@@ -2771,6 +2733,44 @@ if st.session_state.analisis_completado:
                         os.unlink(ruta_modelo_tmp)
                     else:
                         st.info("👆 Sube una imagen y un modelo YOLO para comenzar.")
+
+# ===== ELIMINAR TOOLBAR CON JAVASCRIPT =====
+st.markdown("""
+<script>
+// Función para eliminar el toolbar
+function eliminarToolbar() {
+    const toolbar = document.querySelector('[data-testid="stToolbar"]');
+    if (toolbar) {
+        toolbar.remove();
+        console.log('✅ Toolbar eliminado');
+        return true;
+    }
+    return false;
+}
+
+// Intentar eliminación inmediata
+if (!eliminarToolbar()) {
+    // Si no aparece, esperar un poco y reintentar (para elementos que cargan después)
+    setTimeout(() => {
+        eliminarToolbar();
+    }, 500);
+    
+    setTimeout(() => {
+        eliminarToolbar();
+    }, 1500);
+}
+
+// Observador de mutaciones para eliminar en cuanto aparezca
+const observer = new MutationObserver((mutations, obs) => {
+    if (eliminarToolbar()) {
+        obs.disconnect(); // dejar de observar una vez eliminado
+    }
+});
+
+// Empezar a observar cambios en el body
+observer.observe(document.body, { childList: true, subtree: true });
+</script>
+""", unsafe_allow_html=True)
 
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
