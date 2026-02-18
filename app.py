@@ -638,11 +638,11 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== NUEVAS FUNCIONES PARA DATOS SATELITALES CON EARTHDATA =====
+# ===== NUEVAS FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS) =====
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real usando earthaccess (producto MOD13Q1 de MODIS).
-    Descarga el archivo HDF temporalmente y procesa con rasterio.
+    Descarga el archivo HDF temporalmente y procesa con rasterio (o xarray como fallback).
     """
     if not EARTHDATA_OK:
         st.warning("Librerías earthaccess/xarray/rioxarray no instaladas.")
@@ -697,32 +697,70 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 return None, None
             download_path = hdf_files[0]
 
-            # Abrir el archivo HDF y listar subdatasets
-            with rasterio.open(download_path) as src:
-                subdatasets = src.subdatasets
-                if not subdatasets:
-                    st.error("El archivo HDF no contiene subdatasets.")
-                    return None, None
+            # Verificar que el archivo no esté vacío
+            if os.path.getsize(download_path) < 1024:  # menos de 1KB
+                st.error("El archivo descargado es demasiado pequeño (posiblemente corrupto).")
+                return None, None
 
-                # Buscar el subdataset que contiene NDVI (generalmente "250m 16 days NDVI")
-                ndvi_subdataset = None
-                for sd in subdatasets:
-                    if 'NDVI' in sd or 'ndvi' in sd.lower():
-                        ndvi_subdataset = sd
-                        break
-                if not ndvi_subdataset:
-                    st.error("No se encontró el subdataset NDVI en el archivo HDF.")
-                    return None, None
+            # Intentar abrir con rasterio
+            try:
+                with rasterio.open(download_path) as src:
+                    subdatasets = src.subdatasets
+                    if not subdatasets:
+                        st.error("El archivo HDF no contiene subdatasets.")
+                        return None, None
 
-                # Abrir el subdataset NDVI
-                with rasterio.open(ndvi_subdataset) as src_ndvi:
-                    # Recortar por el polígono unido de toda la plantación
-                    geom = [mapping(gdf_dividido.unary_union)]
-                    out_image, out_transform = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
-                    ndvi_array = out_image[0]
-                    # Escalar: los valores MODIS NDVI están en escala 0-10000 con factor 0.0001
-                    ndvi_scaled = ndvi_array * 0.0001
-                    ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
+                    # Buscar el subdataset que contiene NDVI
+                    ndvi_subdataset = None
+                    for sd in subdatasets:
+                        if 'NDVI' in sd or 'ndvi' in sd.lower():
+                            ndvi_subdataset = sd
+                            break
+                    if not ndvi_subdataset:
+                        st.error("No se encontró el subdataset NDVI en el archivo HDF.")
+                        return None, None
+
+                    # Abrir el subdataset NDVI
+                    with rasterio.open(ndvi_subdataset) as src_ndvi:
+                        geom = [mapping(gdf_dividido.unary_union)]
+                        out_image, out_transform = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
+                        ndvi_array = out_image[0]
+                        # Escalar: valores MODIS NDVI en escala 0-10000 con factor 0.0001
+                        ndvi_scaled = ndvi_array * 0.0001
+                        ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
+
+            except Exception as e_rasterio:
+                st.warning(f"No se pudo abrir con rasterio: {str(e_rasterio)}. Intentando con xarray...")
+                try:
+                    # Intentar abrir con xarray (puede requerir motor h5netcdf)
+                    import xarray as xr
+                    ds = xr.open_dataset(download_path, engine='h5netcdf')
+                    # Buscar variable de NDVI (común: "250m 16 days NDVI" o similar)
+                    ndvi_var = None
+                    for var in ds.data_vars:
+                        if 'NDVI' in var:
+                            ndvi_var = var
+                            break
+                    if ndvi_var is None:
+                        st.error("No se encontró variable NDVI en el archivo HDF con xarray.")
+                        return None, None
+                    
+                    # Recortar usando el polígono (xarray no recorta directamente, necesitamos rioxarray)
+                    # Si rioxarray está disponible, podemos usarlo
+                    if 'rioxarray' in sys.modules:
+                        ds_rio = ds.rio.write_crs("EPSG:4326")
+                        geom = [mapping(gdf_dividido.unary_union)]
+                        ds_clip = ds_rio.rio.clip(geom, drop=True)
+                        ndvi_data = ds_clip[ndvi_var].values
+                        ndvi_mean = np.nanmean(ndvi_data)
+                    else:
+                        # Si no, usamos el promedio global (aproximación)
+                        ndvi_data = ds[ndvi_var].values
+                        ndvi_mean = np.nanmean(ndvi_data)
+                        st.warning("rioxarray no disponible, usando promedio global de la escena.")
+                except Exception as e_xarray:
+                    st.error(f"Error al abrir con xarray: {str(e_xarray)}")
+                    return None, None
 
             # Asignar el mismo valor a todos los bloques
             gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
