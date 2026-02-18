@@ -684,25 +684,45 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         # Crear un directorio temporal único para esta descarga
         temp_dir = tempfile.mkdtemp()
         try:
-            # Descargar el archivo al directorio (earthaccess mantiene el nombre original)
+            # Descargar el archivo al directorio
             downloaded_files = earthaccess.download(granule, local_path=temp_dir)
             if not downloaded_files:
                 st.error("No se pudo descargar el archivo.")
                 return None, None
 
-            # Se asume que solo se descargó un archivo; tomamos el primero
-            download_path = downloaded_files[0]
+            # Buscar el primer archivo .hdf (puede haber varios)
+            hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
+            if not hdf_files:
+                st.error("No se encontró archivo HDF en la descarga.")
+                return None, None
+            download_path = hdf_files[0]
 
-            # Procesar la subdataset NDVI
-            ndvi_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD13Q1:250m 16 days NDVI'
-            with rasterio.open(ndvi_path) as src:
-                # Recortar por el polígono unido de toda la plantación
-                geom = [mapping(gdf_dividido.unary_union)]
-                out_image, out_transform = mask(src, geom, crop=True, nodata=src.nodata)
-                ndvi_array = out_image[0]
-                # Escalar: los valores MODIS NDVI están en escala 0-10000 con factor 0.0001
-                ndvi_scaled = ndvi_array * 0.0001
-                ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src.nodata * 0.0001])
+            # Abrir el archivo HDF y listar subdatasets
+            with rasterio.open(download_path) as src:
+                subdatasets = src.subdatasets
+                if not subdatasets:
+                    st.error("El archivo HDF no contiene subdatasets.")
+                    return None, None
+
+                # Buscar el subdataset que contiene NDVI (generalmente "250m 16 days NDVI")
+                ndvi_subdataset = None
+                for sd in subdatasets:
+                    if 'NDVI' in sd or 'ndvi' in sd.lower():
+                        ndvi_subdataset = sd
+                        break
+                if not ndvi_subdataset:
+                    st.error("No se encontró el subdataset NDVI en el archivo HDF.")
+                    return None, None
+
+                # Abrir el subdataset NDVI
+                with rasterio.open(ndvi_subdataset) as src_ndvi:
+                    # Recortar por el polígono unido de toda la plantación
+                    geom = [mapping(gdf_dividido.unary_union)]
+                    out_image, out_transform = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
+                    ndvi_array = out_image[0]
+                    # Escalar: los valores MODIS NDVI están en escala 0-10000 con factor 0.0001
+                    ndvi_scaled = ndvi_array * 0.0001
+                    ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
 
             # Asignar el mismo valor a todos los bloques
             gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
@@ -769,28 +789,48 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 st.error("No se pudo descargar el archivo.")
                 return None, None
 
-            download_path = downloaded_files[0]
+            hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
+            if not hdf_files:
+                st.error("No se encontró archivo HDF en la descarga.")
+                return None, None
+            download_path = hdf_files[0]
 
-            # Abrir bandas NIR (b02) y SWIR (b06)
-            nir_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD09GA:sur_refl_b02'
-            swir_path = f'HDF4_EOS:EOS_GRID:"{download_path}":MOD_Grid_MOD09GA:sur_refl_b06'
+            # Listar subdatasets
+            with rasterio.open(download_path) as src:
+                subdatasets = src.subdatasets
+                if not subdatasets:
+                    st.error("El archivo HDF no contiene subdatasets.")
+                    return None, None
 
-            geom = [mapping(gdf_dividido.unary_union)]
+                # Buscar bandas NIR y SWIR
+                nir_subdataset = None
+                swir_subdataset = None
+                for sd in subdatasets:
+                    if 'sur_refl_b02' in sd:  # NIR
+                        nir_subdataset = sd
+                    elif 'sur_refl_b06' in sd:  # SWIR
+                        swir_subdataset = sd
 
-            with rasterio.open(nir_path) as src_nir:
-                nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
-            with rasterio.open(swir_path) as src_swir:
-                swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+                if not nir_subdataset or not swir_subdataset:
+                    st.error("No se encontraron las bandas NIR o SWIR en el archivo HDF.")
+                    return None, None
 
-            # Escalar (factor 0.0001)
-            nir = nir_array[0] * 0.0001
-            swir = swir_array[0] * 0.0001
+                geom = [mapping(gdf_dividido.unary_union)]
 
-            # Calcular NDWI
-            with np.errstate(divide='ignore', invalid='ignore'):
-                ndwi = (nir - swir) / (nir + swir)
-                ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
-            ndwi_mean = np.nanmean(ndwi)
+                with rasterio.open(nir_subdataset) as src_nir:
+                    nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
+                with rasterio.open(swir_subdataset) as src_swir:
+                    swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+
+                # Escalar (factor 0.0001)
+                nir = nir_array[0] * 0.0001
+                swir = swir_array[0] * 0.0001
+
+                # Calcular NDWI
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    ndwi = (nir - swir) / (nir + swir)
+                    ndwi = np.where((nir + swir) == 0, np.nan, ndwi)
+                ndwi_mean = np.nanmean(ndwi)
 
             gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3) if not np.isnan(ndwi_mean) else np.nan
             return gdf_dividido, ndwi_mean
