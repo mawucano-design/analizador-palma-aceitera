@@ -2,7 +2,7 @@
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
-# - Modo DEMO con datos simulados.
+# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono (sin ejemplos precargados).
 # - Modo PREMIUM con datos reales de NDVI y NDWI desde Earthdata (MOD13Q1 y MOD09GA).
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
@@ -251,22 +251,13 @@ def logout():
         del st.session_state.user
         st.rerun()
 
-def cargar_ejemplo_demo():
-    """Genera un polígono de ejemplo para el modo DEMO."""
-    # Crear un rectángulo de ejemplo (aprox. 100 ha) en coordenadas de Venezuela
-    minx, miny, maxx, maxy = -67.5, 8.5, -67.3, 8.7
-    polygon = box(minx, miny, maxx, maxy)
-    gdf = gpd.GeoDataFrame([{'geometry': polygon}], crs='EPSG:4326')
-    gdf['id_bloque'] = 1
-    return gdf
-
 def check_subscription():
     # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
         show_login_signup()
         st.stop()
     
-    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso y mostrar botón de pago ---
+    # --- MODO DEMO: permitir acceso sin suscripción, SIN cargar ningún ejemplo ---
     if st.session_state.get('demo_mode', False):
         with st.sidebar:
             st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
@@ -276,16 +267,7 @@ def check_subscription():
                 st.session_state.payment_intent = True
                 st.rerun()
             logout()
-        # Si no hay archivo cargado en DEMO, cargar uno de ejemplo automáticamente
-        if st.session_state.gdf_original is None:
-            with st.spinner("Cargando plantación de ejemplo..."):
-                gdf_ejemplo = cargar_ejemplo_demo()
-                st.session_state.gdf_original = gdf_ejemplo
-                st.session_state.archivo_cargado = True
-                st.session_state.analisis_completado = False
-                st.session_state.deteccion_ejecutada = False
-                st.rerun()
-        return  # Salimos de la función sin bloquear
+        return  # Salimos sin cargar nada automáticamente
     
     with st.sidebar:
         st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
@@ -317,7 +299,6 @@ def check_subscription():
     with col2:
         st.markdown("#### 🆓 Modo DEMO")
         st.write("Continúa con datos simulados y funcionalidad limitada. (Sin guardar resultados)")
-        # Cambiamos la key del botón para evitar conflicto con la variable de estado demo_mode
         if st.button("🎮 Continuar con DEMO", key="demo_button"):
             st.session_state.demo_mode = True
             st.rerun()
@@ -2345,7 +2326,8 @@ with st.sidebar:
                                      help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)")
 
 # ===== ÁREA PRINCIPAL =====
-if uploaded_file and not st.session_state.archivo_cargado:
+# Si se sube un archivo, SIEMPRE cargarlo (reemplaza el anterior)
+if uploaded_file is not None:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
         if gdf is not None:
@@ -2408,8 +2390,9 @@ else:
     3. Configura los parámetros de análisis.
     4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
     """)
+    # Mensaje específico para modo DEMO
     if st.session_state.demo_mode:
-        st.info("🎮 Estás en modo DEMO. Ya se ha cargado una plantación de ejemplo automáticamente. Puedes ejecutar el análisis o subir tu propio archivo.")
+        st.info("🎮 Estás en modo DEMO. **Sube tu propio archivo** (KML, KMZ o ZIP con shapefile) para ejecutar el análisis con datos simulados.")
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
