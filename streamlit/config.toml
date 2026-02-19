@@ -48,3 +48,18 @@ showSidebarNavigation = false
 
 [ui]
 hideTopBar = true
+
+[theme]
+primaryColor = "#4caf50"
+backgroundColor = "#0f172a"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#ffffff"
+font = "sans serif"
+
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
