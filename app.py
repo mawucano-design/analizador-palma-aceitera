@@ -2,7 +2,7 @@
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
-# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono.
+# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono (sin ejemplos precargados).
 # - Modo PREMIUM con datos reales de NDVI y NDWI desde Earthdata (MOD13Q1 y MOD09GA).
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
@@ -263,22 +263,13 @@ def logout():
         del st.session_state.user
         st.rerun()
 
-def cargar_ejemplo_demo():
-    """Genera un polígono de ejemplo para el modo DEMO."""
-    # Crear un rectángulo de ejemplo (aprox. 100 ha) en coordenadas de Venezuela
-    minx, miny, maxx, maxy = -67.5, 8.5, -67.3, 8.7
-    polygon = box(minx, miny, maxx, maxy)
-    gdf = gpd.GeoDataFrame([{'geometry': polygon}], crs='EPSG:4326')
-    gdf['id_bloque'] = 1
-    return gdf
-
 def check_subscription():
     # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
         show_login_signup()
         st.stop()
     
-    # --- MODO DEMO: permitir acceso sin suscripción, sin cargar ejemplo automático ---
+    # --- MODO DEMO: permitir acceso sin suscripción, sin cargar ningún ejemplo ---
     if st.session_state.get('demo_mode', False):
         with st.sidebar:
             st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
@@ -287,15 +278,6 @@ def check_subscription():
                 st.session_state.demo_mode = False
                 st.session_state.payment_intent = True
                 st.rerun()
-            # Botón opcional para cargar un ejemplo si el usuario lo desea
-            if st.button("🌱 Cargar ejemplo predefinido", key="load_example_demo"):
-                with st.spinner("Cargando plantación de ejemplo..."):
-                    gdf_ejemplo = cargar_ejemplo_demo()
-                    st.session_state.gdf_original = gdf_ejemplo
-                    st.session_state.archivo_cargado = True
-                    st.session_state.analisis_completado = False
-                    st.session_state.deteccion_ejecutada = False
-                    st.rerun()
             logout()
         return  # Salimos de la función sin bloquear
     
@@ -2243,10 +2225,6 @@ header {visibility: hidden !important;}
 .stApp header {display: none !important;}
 
 /* NO ocultamos la toolbar de forma global; se oculta solo en login mediante CSS inyectado en show_login_signup() */
-/* Por lo tanto, las siguientes líneas están comentadas:
-   .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-   .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-*/
 
 /* Ocultar otros elementos residuales de la interfaz de Streamlit */
 .st-emotion-cache-1avcm0n {display: none !important;}
@@ -2417,8 +2395,7 @@ else:
     3. Configura los parámetros de análisis.
     4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
     """)
-    if st.session_state.demo_mode:
-        st.info("🎮 Estás en modo DEMO. Puedes subir tu propio archivo o usar el botón 'Cargar ejemplo predefinido' en la barra lateral.")
+    # En modo DEMO, no se carga ningún ejemplo automático; solo se muestra el mensaje.
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
