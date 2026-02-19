@@ -224,18 +224,6 @@ def check_payment_status(payment_id):
 
 # ===== FUNCIONES DE AUTENTICACIÓN EN STREAMLIT =====
 def show_login_signup():
-    # Inyectar CSS solo para ocultar toolbar en pantalla de login
-    st.markdown("""
-    <style>
-    /* Ocultar toolbar SOLO en login */
-    .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-    .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-    [data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
-    [data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
-    [data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
-    </style>
-    """, unsafe_allow_html=True)
-    
     with st.sidebar:
         st.markdown("## 🔐 Acceso")
         menu = st.radio("", ["Iniciar sesión", "Registrarse"], key="auth_menu")
@@ -2211,25 +2199,41 @@ if not EARTHDATA_OK:
 if not RASTERIO_OK and not PYHDF_OK:
     st.warning("⚠️ rasterio y pyhdf no están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
-# ===== ESTILOS Y CABECERA (Ocultar solo menú y footer, la toolbar se oculta condicionalmente en login) =====
+# ===== ESTILOS Y CABECERA (OCULTAMIENTO TOTAL DE LA INTERFAZ DE STREAMLIT) =====
 st.markdown("""
 <style>
-/* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important;}
-
-/* Ocultar footer de Streamlit */
-footer {visibility: hidden !important;}
-
-/* Ocultar header completo (la barra superior roja) */
-header {visibility: hidden !important;}
+/* ===== OCULTAR COMPLETAMENTE TOOLBAR Y GITHUB ===== */
+#MainMenu {visibility: hidden !important; display: none !important;}
+footer {visibility: hidden !important; display: none !important;}
+header {visibility: hidden !important; display: none !important;}
 .stApp header {display: none !important;}
 
-/* NO ocultamos la toolbar de forma global; se oculta solo en login mediante CSS inyectado en show_login_signup() */
+/* Toolbar completo */
+[data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] * {visibility: hidden !important; display: none !important;}
 
-/* Ocultar otros elementos residuales de la interfaz de Streamlit */
+/* Elementos específicos del toolbar */
+[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
+[data-testid="stToolbar"] button {display: none !important;}
+[data-testid="stToolbar"] a {display: none !important;}
+
+/* Enlaces de GitHub específicos */
+.stApp a[href*="github"] {display: none !important;}
+.stApp a[target="_blank"][rel="noopener noreferrer"] {display: none !important;}
+
+/* Otros elementos UI */
 .st-emotion-cache-1avcm0n {display: none !important;}
 .st-emotion-cache-16txtl3 {display: none !important;}
 .st-emotion-cache-12fmjuu {display: none !important;}
+.st-emotion-cache-1w71dyz {display: none !important;}
+.st-emotion-cache-ecx28m {display: none !important;}
+
+/* Botón de deploy */
+.stAppDeployButton {display: none !important;}
+[data-testid="stAppDeployButton"] {display: none !important;}
 
 /* Estilos personalizados de la app */
 .hero-banner { 
