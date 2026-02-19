@@ -2,7 +2,7 @@
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
-# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono (sin ejemplos precargados).
+# - Modo DEMO con datos simulados.
 # - Modo PREMIUM con datos reales de NDVI y NDWI desde Earthdata (MOD13Q1 y MOD09GA).
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
@@ -63,11 +63,10 @@ except ImportError:
 try:
     import rasterio
     from rasterio.mask import mask
-    from rasterio.warp import transform_bounds
     RASTERIO_OK = True
 except ImportError:
     RASTERIO_OK = False
-    st.warning("⚠️ rasterio no está instalado. Se usará pyhdf como fallback, pero el NDVI/NDWI no se recortará al polígono.")
+    st.warning("⚠️ rasterio no está instalado. Se usará pyhdf como fallback.")
 
 try:
     from pyhdf.SD import SD, SDC
@@ -252,13 +251,22 @@ def logout():
         del st.session_state.user
         st.rerun()
 
+def cargar_ejemplo_demo():
+    """Genera un polígono de ejemplo para el modo DEMO."""
+    # Crear un rectángulo de ejemplo (aprox. 100 ha) en coordenadas de Venezuela
+    minx, miny, maxx, maxy = -67.5, 8.5, -67.3, 8.7
+    polygon = box(minx, miny, maxx, maxy)
+    gdf = gpd.GeoDataFrame([{'geometry': polygon}], crs='EPSG:4326')
+    gdf['id_bloque'] = 1
+    return gdf
+
 def check_subscription():
     # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
         show_login_signup()
         st.stop()
     
-    # --- MODO DEMO: permitir acceso sin suscripción, SIN cargar ningún ejemplo ---
+    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso y mostrar botón de pago ---
     if st.session_state.get('demo_mode', False):
         with st.sidebar:
             st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
@@ -268,7 +276,16 @@ def check_subscription():
                 st.session_state.payment_intent = True
                 st.rerun()
             logout()
-        return  # Salimos sin cargar nada automáticamente
+        # Si no hay archivo cargado en DEMO, cargar uno de ejemplo automáticamente
+        if st.session_state.gdf_original is None:
+            with st.spinner("Cargando plantación de ejemplo..."):
+                gdf_ejemplo = cargar_ejemplo_demo()
+                st.session_state.gdf_original = gdf_ejemplo
+                st.session_state.archivo_cargado = True
+                st.session_state.analisis_completado = False
+                st.session_state.deteccion_ejecutada = False
+                st.rerun()
+        return  # Salimos de la función sin bloquear
     
     with st.sidebar:
         st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
@@ -300,6 +317,7 @@ def check_subscription():
     with col2:
         st.markdown("#### 🆓 Modo DEMO")
         st.write("Continúa con datos simulados y funcionalidad limitada. (Sin guardar resultados)")
+        # Cambiamos la key del botón para evitar conflicto con la variable de estado demo_mode
         if st.button("🎮 Continuar con DEMO", key="demo_button"):
             st.session_state.demo_mode = True
             st.rerun()
@@ -628,7 +646,7 @@ def cargar_archivo_plantacion(uploaded_file):
         st.error(f"❌ Error cargando archivo: {str(e)}")
         return None
 
-# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS CON RECORTE) =====
+# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS CON VERIFICACIÓN HDF) =====
 def es_archivo_hdf(ruta):
     """Verifica si el archivo tiene la firma HDF4."""
     try:
@@ -642,7 +660,7 @@ def es_archivo_hdf(ruta):
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real usando earthaccess (producto MOD13Q1 de MODIS).
-    Prioriza rasterio para recorte al polígono; si no está disponible, usa pyhdf (sin recorte) y advierte.
+    Prioriza pyhdf sobre rasterio para HDF4.
     """
     if not EARTHDATA_OK:
         st.warning("Librerías earthaccess/xarray/rioxarray no instaladas.")
@@ -700,54 +718,25 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     head = f.read(500).lower()
                     if '<html' in head:
                         st.error("El archivo descargado parece ser una página HTML de error. Verifica credenciales y disponibilidad del producto.")
+                        # Opcional: guardar para depuración
+                        # with open(f"debug_{datetime.now():%Y%m%d_%H%M%S}.html", 'w') as f_debug:
+                        #     f_debug.write(head)
                         return None, None
                     else:
                         st.warning(f"Archivo muy pequeño ({file_size} bytes). Puede estar corrupto.")
+                        # Continuar de todas formas, puede ser un HDF pequeño
 
             # Verificar firma HDF
             if not es_archivo_hdf(download_path):
                 st.error("El archivo descargado no es un HDF válido (firma incorrecta).")
                 return None, None
 
+            # Intentar leer con pyhdf primero (más fiable para HDF4)
             ndvi_mean = None
-
-            # Intentar con rasterio primero (permite recorte)
-            if RASTERIO_OK:
-                try:
-                    with rasterio.open(download_path) as src:
-                        subdatasets = src.subdatasets
-                        if not subdatasets:
-                            st.error("El archivo HDF no contiene subdatasets (rasterio).")
-                            return None, None
-                        # Buscar subdataset NDVI
-                        ndvi_sub = None
-                        for sd in subdatasets:
-                            if 'NDVI' in sd or 'ndvi' in sd.lower():
-                                ndvi_sub = sd
-                                break
-                        if not ndvi_sub:
-                            st.error("No se encontró subdataset NDVI (rasterio).")
-                            return None, None
-                        with rasterio.open(ndvi_sub) as src_ndvi:
-                            # Recortar al polígono de la plantación
-                            geom = [mapping(gdf_dividido.unary_union)]
-                            out_image, out_transform = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
-                            ndvi_array = out_image[0]
-                            # Escalar: valores MODIS NDVI en escala 0-10000, factor 0.0001
-                            ndvi_scaled = ndvi_array * 0.0001
-                            # Enmascarar valores de relleno (normalmente -3000)
-                            ndvi_scaled = np.ma.masked_where(ndvi_scaled < -1, ndvi_scaled)
-                            ndvi_mean = np.nanmean(ndvi_scaled)
-                            st.info("NDVI calculado con rasterio (recortado al polígono).")
-                except Exception as e_rasterio:
-                    st.warning(f"rasterio falló: {str(e_rasterio)}. Intentando con pyhdf (sin recorte).")
-                    RASTERIO_OK = False  # forzar fallback
-
-            # Si rasterio no está disponible o falló, intentar con pyhdf (sin recorte)
-            if ndvi_mean is None and PYHDF_OK:
+            if PYHDF_OK:
                 try:
                     hdf = SD(download_path, SDC.READ)
-                    # Buscar dataset NDVI
+                    # Buscar dataset NDVI (normalmente "250m 16 days NDVI")
                     ndvi_dataset = None
                     for name in hdf.datasets().keys():
                         if 'NDVI' in name:
@@ -757,24 +746,77 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                         st.error("No se encontró dataset NDVI con pyhdf.")
                         return None, None
                     ndvi_data = hdf.select(ndvi_dataset).get()
-                    # Escalar
+                    # Escalar: valores MODIS NDVI en escala 0-10000, factor 0.0001
                     ndvi_scaled = ndvi_data * 0.0001
-                    # Enmascarar valores de relleno
+                    # Enmascarar valores de relleno (normalmente -3000)
                     ndvi_scaled = np.ma.masked_where(ndvi_scaled < -1, ndvi_scaled)
                     ndvi_mean = np.nanmean(ndvi_scaled)
-                    st.warning("NDVI calculado con pyhdf (sin recorte al polígono). El valor puede ser menos preciso.")
                 except Exception as e_pyhdf:
-                    st.error(f"pyhdf también falló: {str(e_pyhdf)}")
+                    st.warning(f"pyhdf falló: {str(e_pyhdf)}. Intentando con rasterio...")
+                    # Fallback a rasterio
+                    if RASTERIO_OK:
+                        try:
+                            with rasterio.open(download_path) as src:
+                                subdatasets = src.subdatasets
+                                if not subdatasets:
+                                    st.error("El archivo HDF no contiene subdatasets (rasterio).")
+                                    return None, None
+                                # Buscar subdataset NDVI
+                                ndvi_sub = None
+                                for sd in subdatasets:
+                                    if 'NDVI' in sd or 'ndvi' in sd.lower():
+                                        ndvi_sub = sd
+                                        break
+                                if not ndvi_sub:
+                                    st.error("No se encontró subdataset NDVI (rasterio).")
+                                    return None, None
+                                with rasterio.open(ndvi_sub) as src_ndvi:
+                                    geom = [mapping(gdf_dividido.unary_union)]
+                                    out_image, _ = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
+                                    ndvi_array = out_image[0]
+                                    ndvi_scaled = ndvi_array * 0.0001
+                                    ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
+                        except Exception as e_rasterio:
+                            st.error(f"rasterio también falló: {str(e_rasterio)}")
+                            return None, None
+                    else:
+                        st.error("rasterio no está instalado.")
+                        return None, None
+            else:
+                st.warning("pyhdf no está instalado. Intentando con rasterio...")
+                if RASTERIO_OK:
+                    try:
+                        with rasterio.open(download_path) as src:
+                            subdatasets = src.subdatasets
+                            if not subdatasets:
+                                st.error("El archivo HDF no contiene subdatasets (rasterio).")
+                                return None, None
+                            ndvi_sub = None
+                            for sd in subdatasets:
+                                if 'NDVI' in sd or 'ndvi' in sd.lower():
+                                    ndvi_sub = sd
+                                    break
+                            if not ndvi_sub:
+                                st.error("No se encontró subdataset NDVI (rasterio).")
+                                return None, None
+                            with rasterio.open(ndvi_sub) as src_ndvi:
+                                geom = [mapping(gdf_dividido.unary_union)]
+                                out_image, _ = mask(src_ndvi, geom, crop=True, nodata=src_ndvi.nodata)
+                                ndvi_array = out_image[0]
+                                ndvi_scaled = ndvi_array * 0.0001
+                                ndvi_mean = np.nanmean(ndvi_scaled[ndvi_scaled != src_ndvi.nodata * 0.0001])
+                    except Exception as e_rasterio:
+                        st.error(f"rasterio falló: {str(e_rasterio)}")
+                        return None, None
+                else:
+                    st.error("Ni pyhdf ni rasterio están instalados. No se puede leer HDF4.")
                     return None, None
-            elif ndvi_mean is None:
-                st.error("No se pudo leer el archivo HDF (ni rasterio ni pyhdf disponibles).")
-                return None, None
 
             if ndvi_mean is None or np.isnan(ndvi_mean):
                 st.warning("No se pudo calcular NDVI (valor NaN).")
                 return None, None
 
-            # Asignar a todos los bloques (mismo valor promedio para toda la plantación)
+            # Asignar a todos los bloques
             gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
             return gdf_dividido, ndvi_mean
 
@@ -788,7 +830,7 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real usando earthaccess (producto MOD09GA, bandas NIR y SWIR).
-    Prioriza rasterio para recorte al polígono; si no está disponible, usa pyhdf (sin recorte) y advierte.
+    Prioriza pyhdf.
     """
     if not EARTHDATA_OK:
         return None, None
@@ -848,41 +890,11 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
 
             nir = None
             swir = None
-            ndwi_mean = None
 
-            # Intentar con rasterio primero (recorte)
-            if RASTERIO_OK:
-                try:
-                    with rasterio.open(download_path) as src:
-                        subdatasets = src.subdatasets
-                        if not subdatasets:
-                            st.error("No hay subdatasets (rasterio).")
-                            return None, None
-                        nir_sub = None
-                        swir_sub = None
-                        for sd in subdatasets:
-                            if 'sur_refl_b02' in sd:
-                                nir_sub = sd
-                            elif 'sur_refl_b06' in sd:
-                                swir_sub = sd
-                        if not nir_sub or not swir_sub:
-                            st.error("No se encontraron bandas NIR o SWIR (rasterio).")
-                            return None, None
-                        geom = [mapping(gdf_dividido.unary_union)]
-                        with rasterio.open(nir_sub) as src_nir:
-                            nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
-                            nir = nir_array[0] * 0.0001
-                        with rasterio.open(swir_sub) as src_swir:
-                            swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
-                            swir = swir_array[0] * 0.0001
-                except Exception as e_rasterio:
-                    st.warning(f"rasterio falló: {e_rasterio}. Intentando con pyhdf (sin recorte).")
-                    RASTERIO_OK = False  # forzar fallback
-
-            # Si rasterio no está disponible o falló, intentar con pyhdf (sin recorte)
-            if nir is None and PYHDF_OK:
+            if PYHDF_OK:
                 try:
                     hdf = SD(download_path, SDC.READ)
+                    # Buscar datasets de reflectancia
                     nir_data = None
                     swir_data = None
                     for name in hdf.datasets().keys():
@@ -895,9 +907,70 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                         return None, None
                     nir = nir_data * 0.0001
                     swir = swir_data * 0.0001
-                    st.warning("NDWI calculado con pyhdf (sin recorte al polígono). El valor puede ser menos preciso.")
                 except Exception as e_pyhdf:
-                    st.error(f"pyhdf falló: {e_pyhdf}")
+                    st.warning(f"pyhdf falló: {e_pyhdf}. Intentando con rasterio...")
+                    # Fallback a rasterio
+                    if RASTERIO_OK:
+                        try:
+                            with rasterio.open(download_path) as src:
+                                subdatasets = src.subdatasets
+                                if not subdatasets:
+                                    st.error("No hay subdatasets (rasterio).")
+                                    return None, None
+                                nir_sub = None
+                                swir_sub = None
+                                for sd in subdatasets:
+                                    if 'sur_refl_b02' in sd:
+                                        nir_sub = sd
+                                    elif 'sur_refl_b06' in sd:
+                                        swir_sub = sd
+                                if not nir_sub or not swir_sub:
+                                    st.error("No se encontraron bandas NIR o SWIR (rasterio).")
+                                    return None, None
+                                geom = [mapping(gdf_dividido.unary_union)]
+                                with rasterio.open(nir_sub) as src_nir:
+                                    nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
+                                    nir = nir_array[0] * 0.0001
+                                with rasterio.open(swir_sub) as src_swir:
+                                    swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+                                    swir = swir_array[0] * 0.0001
+                        except Exception as e_rasterio:
+                            st.error(f"rasterio falló: {e_rasterio}")
+                            return None, None
+                    else:
+                        st.error("rasterio no está instalado.")
+                        return None, None
+            else:
+                st.warning("pyhdf no está instalado. Intentando con rasterio...")
+                if RASTERIO_OK:
+                    try:
+                        with rasterio.open(download_path) as src:
+                            subdatasets = src.subdatasets
+                            if not subdatasets:
+                                st.error("No hay subdatasets (rasterio).")
+                                return None, None
+                            nir_sub = None
+                            swir_sub = None
+                            for sd in subdatasets:
+                                if 'sur_refl_b02' in sd:
+                                    nir_sub = sd
+                                elif 'sur_refl_b06' in sd:
+                                    swir_sub = sd
+                            if not nir_sub or not swir_sub:
+                                st.error("No se encontraron bandas NIR o SWIR (rasterio).")
+                                return None, None
+                            geom = [mapping(gdf_dividido.unary_union)]
+                            with rasterio.open(nir_sub) as src_nir:
+                                nir_array, _ = mask(src_nir, geom, crop=True, nodata=src_nir.nodata)
+                                nir = nir_array[0] * 0.0001
+                            with rasterio.open(swir_sub) as src_swir:
+                                swir_array, _ = mask(src_swir, geom, crop=True, nodata=src_swir.nodata)
+                                swir = swir_array[0] * 0.0001
+                    except Exception as e_rasterio:
+                        st.error(f"rasterio falló: {e_rasterio}")
+                        return None, None
+                else:
+                    st.error("Ni pyhdf ni rasterio están instalados.")
                     return None, None
 
             if nir is None or swir is None:
@@ -923,7 +996,7 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         st.error(f"Error en obtención de NDWI con earthaccess: {str(e)}")
         return None, None
 
-# ===== FUNCIONES CLIMÁTICAS (sin cambios) =====
+# ===== FUNCIONES CLIMÁTICAS =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
     try:
         centroide = gdf.geometry.unary_union.centroid
@@ -1091,7 +1164,7 @@ def analizar_edad_plantacion(gdf_dividido):
             edades.append(10.0)
     return edades
 
-# ===== DETECCIÓN DE PALMAS (sin cambios) =====
+# ===== DETECCIÓN DE PALMAS =====
 def verificar_puntos_en_poligono(puntos, gdf):
     puntos_dentro = []
     plantacion_union = gdf.unary_union
@@ -1286,7 +1359,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     plt.tight_layout()
     return fig
 
-# ===== ANÁLISIS DE TEXTURA DE SUELO MEJORADO (sin cambios) =====
+# ===== ANÁLISIS DE TEXTURA DE SUELO MEJORADO =====
 def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
     resultados = []
     try:
@@ -1385,7 +1458,7 @@ def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
         st.error(f"Error en análisis de textura: {e}")
         return []
 
-# ===== FERTILIDAD NPK (sin cambios) =====
+# ===== FERTILIDAD NPK =====
 def generar_mapa_fertilidad(gdf):
     try:
         fertilidad_data = []
@@ -1439,7 +1512,7 @@ def generar_mapa_fertilidad(gdf):
     except Exception:
         return []
 
-# ===== FUNCIONES DE VISUALIZACIÓN (sin cambios, excepto eliminación de referencias a GitHub) =====
+# ===== FUNCIONES DE VISUALIZACIÓN =====
 def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_fields=None, tooltip_aliases=None):
     if gdf is None or len(gdf) == 0:
         return None
@@ -1820,7 +1893,7 @@ def crear_grafico_textural(arena, limo, arcilla, tipo_suelo):
     )
     return fig
 
-# ===== FUNCIONES YOLO (sin cambios) =====
+# ===== FUNCIONES YOLO =====
 def cargar_modelo_yolo(ruta_modelo):
     try:
         from ultralytics import YOLO
@@ -1906,7 +1979,7 @@ def crear_leyenda_html(detecciones_info):
     html += "</table></div>"
     return html
 
-# ===== CURVAS DE NIVEL (sin cambios) =====
+# ===== CURVAS DE NIVEL =====
 def obtener_dem_opentopography(gdf, api_key=None):
     try:
         import rasterio
@@ -2145,45 +2218,32 @@ if not EARTHDATA_OK:
 if not RASTERIO_OK and not PYHDF_OK:
     st.warning("⚠️ rasterio y pyhdf no están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
-# ===== ESTILOS Y CABECERA (OCULTAMIENTO TOTAL DE LA INTERFAZ DE STREAMLIT Y GITHUB) =====
+# ===== ESTILOS Y CABECERA =====
 st.markdown("""
 <style>
-/* ===== OCULTAR COMPLETAMENTE TOOLBAR, GITHUB Y CUALQUIER ELEMENTO DE STREAMLIT ===== */
-#MainMenu {visibility: hidden !important; display: none !important;}
-footer {visibility: hidden !important; display: none !important;}
-header {visibility: hidden !important; display: none !important;}
+/* Ocultar menú principal (tres puntos) */
+#MainMenu {visibility: hidden !important;}
+
+/* Ocultar footer de Streamlit */
+footer {visibility: hidden !important;}
+
+/* Ocultar header completo */
+header {visibility: hidden !important;}
 .stApp header {display: none !important;}
 
-/* Toolbar completo */
-[data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
 .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-.stApp [data-testid="stToolbar"] * {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
 
-/* Elementos específicos del toolbar */
+/* Ocultar elementos específicos del toolbar */
 [data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
 [data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
 [data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
-[data-testid="stToolbar"] button {display: none !important;}
-[data-testid="stToolbar"] a {display: none !important;}
 
-/* Enlaces de GitHub específicos */
-.stApp a[href*="github"] {display: none !important;}
-.stApp a[target="_blank"][rel="noopener noreferrer"] {display: none !important;}
-
-/* Otros elementos UI */
+/* Ocultar otros elementos de UI de Streamlit */
 .st-emotion-cache-1avcm0n {display: none !important;}
 .st-emotion-cache-16txtl3 {display: none !important;}
 .st-emotion-cache-12fmjuu {display: none !important;}
-.st-emotion-cache-1w71dyz {display: none !important;}
-.st-emotion-cache-ecx28m {display: none !important;}
-
-/* Botón de deploy */
-.stAppDeployButton {display: none !important;}
-[data-testid="stAppDeployButton"] {display: none !important;}
-
-/* Cualquier elemento que contenga texto "GitHub" o enlace */
-a:contains("GitHub"), a[href*="github"] {display: none !important;}
-span:contains("GitHub"), div:contains("GitHub") {display: none !important;}
 
 /* Estilos personalizados de la app */
 .hero-banner { 
@@ -2235,31 +2295,6 @@ div[data-testid="metric-container"] {
     border: 1px solid rgba(76, 175, 80, 0.25) !important; 
 }
 </style>
-
-<script>
-// JavaScript para eliminar cualquier elemento que contenga "github" en su texto o atributos
-document.addEventListener('DOMContentLoaded', function() {
-    // Función para eliminar elementos que contengan texto "github"
-    function removeGithubElements() {
-        const elements = document.querySelectorAll('*');
-        elements.forEach(el => {
-            if (el.children.length === 0) { // Solo elementos hoja para evitar eliminar contenedores grandes
-                if (el.textContent && el.textContent.toLowerCase().includes('github')) {
-                    el.remove();
-                }
-            }
-            // Eliminar por atributos href
-            if (el.href && el.href.toLowerCase().includes('github')) {
-                el.remove();
-            }
-        });
-    }
-    removeGithubElements();
-    // También ejecutar después de un pequeño retraso para capturar elementos cargados dinámicamente
-    setTimeout(removeGithubElements, 1000);
-    setTimeout(removeGithubElements, 3000);
-});
-</script>
 """, unsafe_allow_html=True)
 
 st.markdown("""
@@ -2310,8 +2345,7 @@ with st.sidebar:
                                      help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)")
 
 # ===== ÁREA PRINCIPAL =====
-# Si se sube un archivo, SIEMPRE cargarlo (reemplaza el anterior)
-if uploaded_file is not None:
+if uploaded_file and not st.session_state.archivo_cargado:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
         if gdf is not None:
@@ -2374,9 +2408,8 @@ else:
     3. Configura los parámetros de análisis.
     4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
     """)
-    # Mensaje específico para modo DEMO
     if st.session_state.demo_mode:
-        st.info("🎮 Estás en modo DEMO. **Sube tu propio archivo** (KML, KMZ o ZIP con shapefile) para ejecutar el análisis con datos simulados.")
+        st.info("🎮 Estás en modo DEMO. Ya se ha cargado una plantación de ejemplo automáticamente. Puedes ejecutar el análisis o subir tu propio archivo.")
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
