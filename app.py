@@ -2320,98 +2320,63 @@ if not RASTERIO_OK and not PYHDF_OK:
 # ===== ESTILOS Y CABECERA (OCULTAMIENTO TOTAL DE GITHUB) =====
 st.markdown("""
 <style>
-/* ===== OCULTAR ELEMENTOS DE STREAMLIT ===== */
+/* ===== OCULTAR TODO ELEMENTO RELACIONADO CON GITHUB ===== */
 
-/* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important; display: none !important;}
+/* 1. OCULTAR POR ATRIBUTOS COMUNES */
+[href*="github"] { display: none !important; }
+[src*="github"] { display: none !important; }
+[class*="github"] { display: none !important; }
+[id*="github"] { display: none !important; }
+[title*="github" i] { display: none !important; }
+[aria-label*="github" i] { display: none !important; }
+[data-testid*="github" i] { display: none !important; }
+[data-source*="github"] { display: none !important; }
 
-/* Ocultar footer completo de Streamlit */
-footer {visibility: hidden !important; display: none !important;}
-.stApp > footer {visibility: hidden !important; display: none !important;}
+/* 2. OCULTAR ÍCONOS DE GITHUB (SVG) */
+svg[data-icon="github"] { display: none !important; }
+svg[class*="github"] { display: none !important; }
+i[class*="github"] { display: none !important; }
+.fa-github { display: none !important; }
+.github-icon { display: none !important; }
 
-/* Ocultar header completo */
-header {visibility: hidden !important; display: none !important;}
-.stApp header {visibility: hidden !important; display: none !important;}
+/* 3. OCULTAR LA BARRA DE HERRAMIENTAS DE STREAMLIT (TOOLBAR) Y SUS ELEMENTOS */
+.stApp [data-testid="stToolbar"] { display: none !important; }
+[data-testid="stToolbar"] { display: none !important; }
+.stApp [data-testid="stToolbar"] * { display: none !important; }
+[data-testid="stToolbar"] * { display: none !important; }
 
-/* ===== BARRA DE HERRAMIENTAS (TOOLBAR) ===== */
+/* 4. OCULTAR EL BOTÓN "FORK THIS APP" SI APARECE */
+a[href*="fork"] { display: none !important; }
+button[title*="Fork"] { display: none !important; }
 
-/* Ocultar toolbar completo */
-.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-[data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+/* 5. OCULTAR EL FOOTER DE STREAMLIT */
+footer { display: none !important; }
+.stApp footer { display: none !important; }
 
-/* Ocultar todos los botones dentro del toolbar */
-.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-[data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+/* 6. OCULTAR EL MENÚ PRINCIPAL (TRES PUNTOS) */
+#MainMenu { display: none !important; }
 
-/* Ocultar elementos específicos por aria-label */
-[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label*="github" i] {display: none !important;}
-[data-testid="stToolbar"] [aria-label*="Github" i] {display: none !important;}
-[data-testid="stToolbar"] [aria-label*="GITHUB" i] {display: none !important;}
+/* 7. OCULTAR EL HEADER COMPLETO */
+header { display: none !important; }
+.stApp header { display: none !important; }
 
-/* ===== OCULTAR POR CLASES Y SELECTORES ADICIONALES ===== */
+/* 8. OCULTAR ELEMENTOS DE DEPLOY */
+[data-testid="stSidebar"] a[href*="streamlit"] { display: none !important; }
+[data-testid="stSidebar"] a[href*="deploy"] { display: none !important; }
+.stAppDeployButton { display: none !important; }
+[data-testid="stAppDeployButton"] { display: none !important; }
 
-/* Elementos con clase github */
-[class*="github"] {display: none !important;}
-[class*="GitHub"] {display: none !important;}
-[class*="Github"] {display: none !important;}
+/* 9. OCULTAR ELEMENTOS DE CONTEXTO Y EMOTION CACHE */
+.stAppContextMenu { display: none !important; }
+[data-testid="stContextMenu"] { display: none !important; }
+.st-emotion-cache-1avcm0n { display: none !important; }
+.st-emotion-cache-16txtl3 { display: none !important; }
+.st-emotion-cache-12fmjuu { display: none !important; }
+.st-emotion-cache-1h5b2f { display: none !important; }
+.st-emotion-cache-1y4p8pa { display: none !important; }
+.st-emotion-cache-163kchx { display: none !important; }
 
-/* Elementos con icono de GitHub */
-svg[data-icon="github"] {display: none !important;}
-.fa-github {display: none !important;}
-.github-icon {display: none !important;}
-
-/* Links que contengan github en el href */
-a[href*="github"] {display: none !important;}
-a[href*="GitHub"] {display: none !important;}
-a[href*="Github"] {display: none !important;}
-
-/* ===== OCULTAR ELEMENTOS EMOTION-CACHE DE STREAMLIT ===== */
-
-.st-emotion-cache-1avcm0n {display: none !important;}
-.st-emotion-cache-16txtl3 {display: none !important;}
-.st-emotion-cache-12fmjuu {display: none !important;}
-.st-emotion-cache-1h5b2f {display: none !important;}
-.st-emotion-cache-1y4p8pa {display: none !important;}
-.st-emotion-cache-163kchx {display: none !important;}
-
-/* ===== OCULTAR DEPLOYMENT LINKS ===== */
-
-/* Botón de "Deploy" o "View app source" */
-[data-testid="stSidebar"] a[href*="streamlit"] {display: none !important;}
-[data-testid="stSidebar"] a[href*="deploy"] {display: none !important;}
-
-/* ===== OCULTAR MENÚ CONTEXTO ===== */
-
-/* Menú contextual que puede aparecer con clic derecho */
-.stAppContextMenu {display: none !important;}
-[data-testid="stContextMenu"] {display: none !important;}
-
-/* ===== OCULTAR EN SIDEBAR ===== */
-
-/* Links en sidebar que puedan llevar a GitHub */
-.stSidebar a[href*="github"] {display: none !important;}
-.stSidebar [class*="github"] {display: none !important;}
-
-/* ===== OCULTAR EN PÁGINA PRINCIPAL ===== */
-
-/* Cualquier elemento en el main que tenga github */
-.main [href*="github"] {display: none !important;}
-.main [class*="github"] {display: none !important;}
-
-/* ===== REGLAS GLOBALES ADICIONALES ===== */
-
-/* Ocultar por atributo data-* relacionado con github */
-[data-github] {display: none !important;}
-[data-source*="github"] {display: none !important;}
-
-/* Ocultar elementos con role que puedan ser links a github */
-[role="link"][href*="github"] {display: none !important;}
-
-/* ===== ESTILOS PERSONALIZADOS DE LA APP ===== */
-
+/* 10. ESTILOS PERSONALIZADOS DE LA APP (se mantienen igual) */
 .hero-banner {
     background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
     padding: 1.5em;
