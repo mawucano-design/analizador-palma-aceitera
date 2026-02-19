@@ -2332,7 +2332,8 @@ with st.sidebar:
                                      help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)")
 
 # ===== ÁREA PRINCIPAL =====
-# Si se sube un archivo, siempre cargarlo (reemplaza el anterior)
+# ===== ÁREA PRINCIPAL =====
+# Si se sube un archivo, SIEMPRE cargarlo (reemplaza el anterior)
 if uploaded_file is not None:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
@@ -2345,7 +2346,6 @@ if uploaded_file is not None:
             st.rerun()
         else:
             st.error("❌ Error al cargar la plantación")
-
 if st.session_state.archivo_cargado and st.session_state.gdf_original is not None:
     gdf = st.session_state.gdf_original
     try:
