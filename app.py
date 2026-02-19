@@ -224,6 +224,18 @@ def check_payment_status(payment_id):
 
 # ===== FUNCIONES DE AUTENTICACIÓN EN STREAMLIT =====
 def show_login_signup():
+    # Inyectar CSS solo para ocultar toolbar en pantalla de login
+    st.markdown("""
+    <style>
+    /* Ocultar toolbar SOLO en login */
+    .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+    .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+    [data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
+    [data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
+    [data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
+    </style>
+    """, unsafe_allow_html=True)
+    
     with st.sidebar:
         st.markdown("## 🔐 Acceso")
         menu = st.radio("", ["Iniciar sesión", "Registrarse"], key="auth_menu")
@@ -2217,17 +2229,26 @@ if not EARTHDATA_OK:
 if not RASTERIO_OK and not PYHDF_OK:
     st.warning("⚠️ rasterio y pyhdf no están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
-# ===== ESTILOS Y CABECERA (OCULTAR TODO) =====
+# ===== ESTILOS Y CABECERA (Ocultar solo menú y footer, la toolbar se oculta condicionalmente en login) =====
 st.markdown("""
 <style>
-/* Forzar ocultamiento total de la interfaz de Streamlit */
-header[data-testid="stHeader"] {display: none !important;}
-[data-testid="stToolbar"] {display: none !important;}
-#MainMenu {display: none !important;}
-footer {display: none !important;}
-.stAppDeployButton {display: none !important;}
+/* Ocultar menú principal (tres puntos) */
+#MainMenu {visibility: hidden !important;}
 
-/* Ocultar cualquier otro elemento residual */
+/* Ocultar footer de Streamlit */
+footer {visibility: hidden !important;}
+
+/* Ocultar header completo (la barra superior roja) */
+header {visibility: hidden !important;}
+.stApp header {display: none !important;}
+
+/* NO ocultamos la toolbar de forma global; se oculta solo en login mediante CSS inyectado en show_login_signup() */
+/* Por lo tanto, las siguientes líneas están comentadas:
+   .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+   .stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+*/
+
+/* Ocultar otros elementos residuales de la interfaz de Streamlit */
 .st-emotion-cache-1avcm0n {display: none !important;}
 .st-emotion-cache-16txtl3 {display: none !important;}
 .st-emotion-cache-12fmjuu {display: none !important;}
@@ -2332,8 +2353,7 @@ with st.sidebar:
                                      help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)")
 
 # ===== ÁREA PRINCIPAL =====
-# ===== ÁREA PRINCIPAL =====
-# Si se sube un archivo, SIEMPRE cargarlo (reemplaza el anterior)
+# Si se sube un archivo, siempre cargarlo (reemplaza el anterior)
 if uploaded_file is not None:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
@@ -2346,6 +2366,7 @@ if uploaded_file is not None:
             st.rerun()
         else:
             st.error("❌ Error al cargar la plantación")
+
 if st.session_state.archivo_cargado and st.session_state.gdf_original is not None:
     gdf = st.session_state.gdf_original
     try:
