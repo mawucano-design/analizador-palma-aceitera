@@ -265,17 +265,26 @@ def check_subscription():
         show_login_signup()
         st.stop()
     
-    # --- MODO DEMO: permitir acceso sin suscripción, SIN cargar ningún ejemplo ---
-    if st.session_state.get('demo_mode', False):
-        with st.sidebar:
-            st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
-            # Botón para volver a la pantalla de pago
-            if st.button("💳 Actualizar a Premium", key="upgrade_from_demo"):
-                st.session_state.demo_mode = False
-                st.session_state.payment_intent = True
+   # --- MODO DEMO: permitir acceso sin suscripción, SIN cargar ejemplo automático ---
+if st.session_state.get('demo_mode', False):
+    with st.sidebar:
+        st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
+        # Botón para volver a la pantalla de pago
+        if st.button("💳 Actualizar a Premium", key="upgrade_from_demo"):
+            st.session_state.demo_mode = False
+            st.session_state.payment_intent = True
+            st.rerun()
+        # Botón OPCIONAL para cargar ejemplo si el usuario lo desea
+        if st.button("🌱 Cargar ejemplo predefinido", key="load_example_demo"):
+            with st.spinner("Cargando plantación de ejemplo..."):
+                gdf_ejemplo = cargar_ejemplo_demo()
+                st.session_state.gdf_original = gdf_ejemplo
+                st.session_state.archivo_cargado = True
+                st.session_state.analisis_completado = False
+                st.session_state.deteccion_ejecutada = False
                 st.rerun()
-            logout()
-        return  # Salimos sin cargar nada automáticamente
+        logout()
+    return  # Salimos sin cargar nada automáticamente
     
     with st.sidebar:
         st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
