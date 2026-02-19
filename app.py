@@ -2320,112 +2320,152 @@ if not RASTERIO_OK and not PYHDF_OK:
 # ===== ESTILOS Y CABECERA (OCULTAMIENTO TOTAL DE GITHUB) =====
 st.markdown("""
 <style>
-/* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important;}
+/* ===== OCULTAR ELEMENTOS DE STREAMLIT ===== */
 
-/* Ocultar footer de Streamlit */
-footer {visibility: hidden !important;}
+/* Ocultar menú principal (tres puntos) */
+#MainMenu {visibility: hidden !important; display: none !important;}
+
+/* Ocultar footer completo de Streamlit */
+footer {visibility: hidden !important; display: none !important;}
+.stApp > footer {visibility: hidden !important; display: none !important;}
 
 /* Ocultar header completo */
-header {visibility: hidden !important;}
-.stApp header {display: none !important;}
+header {visibility: hidden !important; display: none !important;}
+.stApp header {visibility: hidden !important; display: none !important;}
 
-/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
+/* ===== BARRA DE HERRAMIENTAS (TOOLBAR) ===== */
+
+/* Ocultar toolbar completo */
 .stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+[data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
 
-/* Ocultar elementos específicos del toolbar */
+/* Ocultar todos los botones dentro del toolbar */
+.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+[data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
+
+/* Ocultar elementos específicos por aria-label */
 [data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
 [data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
 [data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label*="github" i] {display: none !important;}
+[data-testid="stToolbar"] [aria-label*="Github" i] {display: none !important;}
+[data-testid="stToolbar"] [aria-label*="GITHUB" i] {display: none !important;}
 
-/* Ocultar otros elementos de UI de Streamlit */
+/* ===== OCULTAR POR CLASES Y SELECTORES ADICIONALES ===== */
+
+/* Elementos con clase github */
+[class*="github"] {display: none !important;}
+[class*="GitHub"] {display: none !important;}
+[class*="Github"] {display: none !important;}
+
+/* Elementos con icono de GitHub */
+svg[data-icon="github"] {display: none !important;}
+.fa-github {display: none !important;}
+.github-icon {display: none !important;}
+
+/* Links que contengan github en el href */
+a[href*="github"] {display: none !important;}
+a[href*="GitHub"] {display: none !important;}
+a[href*="Github"] {display: none !important;}
+
+/* ===== OCULTAR ELEMENTOS EMOTION-CACHE DE STREAMLIT ===== */
+
 .st-emotion-cache-1avcm0n {display: none !important;}
 .st-emotion-cache-16txtl3 {display: none !important;}
 .st-emotion-cache-12fmjuu {display: none !important;}
-.st-emotion-cache-1w71dyz {display: none !important;}
-.st-emotion-cache-ecx28m {display: none !important;}
+.st-emotion-cache-1h5b2f {display: none !important;}
+.st-emotion-cache-1y4p8pa {display: none !important;}
+.st-emotion-cache-163kchx {display: none !important;}
 
-/* Botón de deploy */
-.stAppDeployButton {display: none !important;}
-[data-testid="stAppDeployButton"] {display: none !important;}
+/* ===== OCULTAR DEPLOYMENT LINKS ===== */
 
-/* Cualquier elemento que contenga texto "GitHub" o enlace */
-a:contains("GitHub"), a[href*="github"] {display: none !important;}
-span:contains("GitHub"), div:contains("GitHub") {display: none !important;}
+/* Botón de "Deploy" o "View app source" */
+[data-testid="stSidebar"] a[href*="streamlit"] {display: none !important;}
+[data-testid="stSidebar"] a[href*="deploy"] {display: none !important;}
 
-/* Estilos personalizados de la app */
-.hero-banner { 
-    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
-    padding: 1.5em; 
-    border-radius: 15px; 
-    margin-bottom: 1em; 
-    border: 1px solid rgba(76, 175, 80, 0.3); 
-    text-align: center; 
+/* ===== OCULTAR MENÚ CONTEXTO ===== */
+
+/* Menú contextual que puede aparecer con clic derecho */
+.stAppContextMenu {display: none !important;}
+[data-testid="stContextMenu"] {display: none !important;}
+
+/* ===== OCULTAR EN SIDEBAR ===== */
+
+/* Links en sidebar que puedan llevar a GitHub */
+.stSidebar a[href*="github"] {display: none !important;}
+.stSidebar [class*="github"] {display: none !important;}
+
+/* ===== OCULTAR EN PÁGINA PRINCIPAL ===== */
+
+/* Cualquier elemento en el main que tenga github */
+.main [href*="github"] {display: none !important;}
+.main [class*="github"] {display: none !important;}
+
+/* ===== REGLAS GLOBALES ADICIONALES ===== */
+
+/* Ocultar por atributo data-* relacionado con github */
+[data-github] {display: none !important;}
+[data-source*="github"] {display: none !important;}
+
+/* Ocultar elementos con role que puedan ser links a github */
+[role="link"][href*="github"] {display: none !important;}
+
+/* ===== ESTILOS PERSONALIZADOS DE LA APP ===== */
+
+.hero-banner {
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
+    padding: 1.5em;
+    border-radius: 15px;
+    margin-bottom: 1em;
+    border: 1px solid rgba(76, 175, 80, 0.3);
+    text-align: center;
 }
-.hero-title { 
-    color: #ffffff; 
-    font-size: 2em; 
-    font-weight: 800; 
-    margin-bottom: 0.5em; 
-    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); 
-    -webkit-background-clip: text; 
-    -webkit-text-fill-color: transparent; 
+
+.hero-title {
+    color: #ffffff;
+    font-size: 2em;
+    font-weight: 800;
+    margin-bottom: 0.5em;
+    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
-.stButton > button { 
-    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; 
-    color: white !important; 
-    border: none !important; 
-    padding: 0.8em 1.5em !important; 
-    border-radius: 12px !important; 
-    font-weight: 700 !important; 
-    font-size: 1em !important; 
-    margin: 5px 0 !important; 
-    transition: all 0.3s ease !important; 
+
+.stButton > button {
+    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important;
+    color: white !important;
+    border: none !important;
+    padding: 0.8em 1.5em !important;
+    border-radius: 12px !important;
+    font-weight: 700 !important;
+    font-size: 1em !important;
+    margin: 5px 0 !important;
+    transition: all 0.3s ease !important;
 }
-.stButton > button:hover { 
-    transform: translateY(-2px) !important; 
-    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; 
+
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important;
 }
-.stTabs [data-baseweb="tab-list"] { 
-    background: rgba(30, 41, 59, 0.7) !important; 
-    backdrop-filter: blur(10px) !important; 
-    padding: 8px 16px !important; 
-    border-radius: 16px !important; 
-    border: 1px solid rgba(76, 175, 80, 0.3) !important; 
-    margin-top: 1.5em !important; 
+
+.stTabs [data-baseweb="tab-list"] {
+    background: rgba(30, 41, 59, 0.7) !important;
+    backdrop-filter: blur(10px) !important;
+    padding: 8px 16px !important;
+    border-radius: 16px !important;
+    border: 1px solid rgba(76, 175, 80, 0.3) !important;
+    margin-top: 1.5em !important;
 }
-div[data-testid="metric-container"] { 
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; 
-    backdrop-filter: blur(10px) !important; 
-    border-radius: 18px !important; 
-    padding: 22px !important; 
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; 
-    border: 1px solid rgba(76, 175, 80, 0.25) !important; 
+
+div[data-testid="metric-container"] {
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important;
+    backdrop-filter: blur(10px) !important;
+    border-radius: 18px !important;
+    padding: 22px !important;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important;
+    border: 1px solid rgba(76, 175, 80, 0.25) !important;
 }
 </style>
-
-<script>
-// JavaScript para eliminar cualquier elemento que contenga "github" en su texto o atributos
-document.addEventListener('DOMContentLoaded', function() {
-    function removeGithubElements() {
-        const elements = document.querySelectorAll('*');
-        elements.forEach(el => {
-            if (el.children.length === 0) {
-                if (el.textContent && el.textContent.toLowerCase().includes('github')) {
-                    el.remove();
-                }
-            }
-            if (el.href && el.href.toLowerCase().includes('github')) {
-                el.remove();
-            }
-        });
-    }
-    removeGithubElements();
-    setTimeout(removeGithubElements, 1000);
-    setTimeout(removeGithubElements, 3000);
-});
-</script>
 """, unsafe_allow_html=True)
 
 st.markdown("""
@@ -3069,6 +3109,6 @@ st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
     <p>Datos satelitales: NASA Earthdata · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM</p>
-    <p>Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com | +5493525 532313</p>
+    <p>Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com |</p>
 </div>
 """, unsafe_allow_html=True)
