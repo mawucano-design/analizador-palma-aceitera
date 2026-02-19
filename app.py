@@ -251,13 +251,21 @@ def logout():
         del st.session_state.user
         st.rerun()
 
+def cargar_ejemplo_demo():
+    """Genera un polígono de ejemplo para el modo DEMO (ya no se usa automáticamente)."""
+    minx, miny, maxx, maxy = -67.5, 8.5, -67.3, 8.7
+    polygon = box(minx, miny, maxx, maxy)
+    gdf = gpd.GeoDataFrame([{'geometry': polygon}], crs='EPSG:4326')
+    gdf['id_bloque'] = 1
+    return gdf
+
 def check_subscription():
     # Si el usuario no está logueado, mostrar login
     if 'user' not in st.session_state:
         show_login_signup()
         st.stop()
     
-    # --- MODO DEMO: permitir acceso sin suscripción, sin cargar ningún ejemplo ---
+    # --- MODO DEMO: permitir acceso sin suscripción, SIN cargar ningún ejemplo ---
     if st.session_state.get('demo_mode', False):
         with st.sidebar:
             st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
@@ -267,7 +275,7 @@ def check_subscription():
                 st.session_state.payment_intent = True
                 st.rerun()
             logout()
-        return  # Salimos de la función sin bloquear
+        return  # Salimos sin cargar nada automáticamente
     
     with st.sidebar:
         st.markdown(f"👤 Usuario: {st.session_state.user['email']}")
@@ -2335,7 +2343,7 @@ with st.sidebar:
                                      help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)")
 
 # ===== ÁREA PRINCIPAL =====
-# Si se sube un archivo, siempre cargarlo (reemplaza el anterior)
+# Si se sube un archivo, SIEMPRE cargarlo (reemplaza el anterior)
 if uploaded_file is not None:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
@@ -2399,7 +2407,9 @@ else:
     3. Configura los parámetros de análisis.
     4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
     """)
-    # En modo DEMO, no se carga ningún ejemplo automático; solo se muestra el mensaje.
+    # Mensaje específico para modo DEMO
+    if st.session_state.demo_mode:
+        st.info("🎮 Estás en modo DEMO. **Sube tu propio archivo** (KML, KMZ o ZIP con shapefile) para ejecutar el análisis con datos simulados.")
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
