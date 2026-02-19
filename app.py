@@ -2,7 +2,7 @@
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
-# - Modo DEMO con datos simulados.
+# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono.
 # - Modo PREMIUM con datos reales de NDVI y NDWI desde Earthdata (MOD13Q1 y MOD09GA).
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
@@ -266,7 +266,7 @@ def check_subscription():
         show_login_signup()
         st.stop()
     
-    # --- NUEVA CONDICIÓN: si el modo DEMO está activo, permitir el acceso y mostrar botón de pago ---
+    # --- MODO DEMO: permitir acceso sin suscripción, sin cargar ejemplo automático ---
     if st.session_state.get('demo_mode', False):
         with st.sidebar:
             st.markdown(f"👤 Usuario: {st.session_state.user['email']} (Modo DEMO)")
@@ -275,16 +275,16 @@ def check_subscription():
                 st.session_state.demo_mode = False
                 st.session_state.payment_intent = True
                 st.rerun()
+            # Botón opcional para cargar un ejemplo si el usuario lo desea
+            if st.button("🌱 Cargar ejemplo predefinido", key="load_example_demo"):
+                with st.spinner("Cargando plantación de ejemplo..."):
+                    gdf_ejemplo = cargar_ejemplo_demo()
+                    st.session_state.gdf_original = gdf_ejemplo
+                    st.session_state.archivo_cargado = True
+                    st.session_state.analisis_completado = False
+                    st.session_state.deteccion_ejecutada = False
+                    st.rerun()
             logout()
-        # Si no hay archivo cargado en DEMO, cargar uno de ejemplo automáticamente
-        if st.session_state.gdf_original is None:
-            with st.spinner("Cargando plantación de ejemplo..."):
-                gdf_ejemplo = cargar_ejemplo_demo()
-                st.session_state.gdf_original = gdf_ejemplo
-                st.session_state.archivo_cargado = True
-                st.session_state.analisis_completado = False
-                st.session_state.deteccion_ejecutada = False
-                st.rerun()
         return  # Salimos de la función sin bloquear
     
     with st.sidebar:
@@ -317,7 +317,6 @@ def check_subscription():
     with col2:
         st.markdown("#### 🆓 Modo DEMO")
         st.write("Continúa con datos simulados y funcionalidad limitada. (Sin guardar resultados)")
-        # Cambiamos la key del botón para evitar conflicto con la variable de estado demo_mode
         if st.button("🎮 Continuar con DEMO", key="demo_button"):
             st.session_state.demo_mode = True
             st.rerun()
@@ -2218,29 +2217,17 @@ if not EARTHDATA_OK:
 if not RASTERIO_OK and not PYHDF_OK:
     st.warning("⚠️ rasterio y pyhdf no están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
-# ===== ESTILOS Y CABECERA =====
+# ===== ESTILOS Y CABECERA (OCULTAR TODO) =====
 st.markdown("""
 <style>
-/* Ocultar menú principal (tres puntos) */
-#MainMenu {visibility: hidden !important;}
+/* Forzar ocultamiento total de la interfaz de Streamlit */
+header[data-testid="stHeader"] {display: none !important;}
+[data-testid="stToolbar"] {display: none !important;}
+#MainMenu {display: none !important;}
+footer {display: none !important;}
+.stAppDeployButton {display: none !important;}
 
-/* Ocultar footer de Streamlit */
-footer {visibility: hidden !important;}
-
-/* Ocultar header completo */
-header {visibility: hidden !important;}
-.stApp header {display: none !important;}
-
-/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
-.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
-
-/* Ocultar elementos específicos del toolbar */
-[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
-[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
-
-/* Ocultar otros elementos de UI de Streamlit */
+/* Ocultar cualquier otro elemento residual */
 .st-emotion-cache-1avcm0n {display: none !important;}
 .st-emotion-cache-16txtl3 {display: none !important;}
 .st-emotion-cache-12fmjuu {display: none !important;}
@@ -2345,7 +2332,8 @@ with st.sidebar:
                                      help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)")
 
 # ===== ÁREA PRINCIPAL =====
-if uploaded_file and not st.session_state.archivo_cargado:
+# Si se sube un archivo, siempre cargarlo (reemplaza el anterior)
+if uploaded_file is not None:
     with st.spinner("Cargando plantación..."):
         gdf = cargar_archivo_plantacion(uploaded_file)
         if gdf is not None:
@@ -2409,7 +2397,7 @@ else:
     4. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
     """)
     if st.session_state.demo_mode:
-        st.info("🎮 Estás en modo DEMO. Ya se ha cargado una plantación de ejemplo automáticamente. Puedes ejecutar el análisis o subir tu propio archivo.")
+        st.info("🎮 Estás en modo DEMO. Puedes subir tu propio archivo o usar el botón 'Cargar ejemplo predefinido' en la barra lateral.")
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
