@@ -2431,6 +2431,63 @@ div[data-testid="metric-container"] {
     border: 1px solid rgba(76, 175, 80, 0.25) !important;
 }
 </style>
+
+<script>
+// === ELIMINACIÓN TOTAL DE ELEMENTOS RELACIONADOS CON GITHUB ===
+(function() {
+    'use strict';
+
+    // Función para eliminar elementos que coincidan con el selector
+    function removeElements(selector) {
+        document.querySelectorAll(selector).forEach(el => el.remove());
+    }
+
+    // Función para eliminar por texto (insensible a mayúsculas)
+    function removeByTextContent(pattern) {
+        const regex = new RegExp(pattern, 'i');
+        document.querySelectorAll('*').forEach(el => {
+            if (el.children.length === 0 && regex.test(el.textContent)) {
+                el.remove();
+            }
+        });
+    }
+
+    // Función principal de limpieza
+    function cleanGithub() {
+        // Eliminar por selectores conocidos
+        removeElements('[href*="github" i], [src*="github" i], [class*="github" i], [id*="github" i], [title*="github" i], [aria-label*="github" i], [data-testid*="github" i]');
+        removeElements('a[href*="fork"], button[title*="Fork"]');
+        removeElements('[data-testid="stToolbar"], .stApp [data-testid="stToolbar"]');
+        removeElements('footer, #MainMenu, header');
+        removeElements('[data-testid="stSidebar"] a[href*="streamlit"], [data-testid="stSidebar"] a[href*="deploy"], .stAppDeployButton, [data-testid="stAppDeployButton"]');
+        removeElements('.stAppContextMenu, [data-testid="stContextMenu"]');
+        
+        // Eliminar por texto
+        removeByTextContent('github');
+        removeByTextContent('fork this app');
+        
+        // Eliminar iconos específicos
+        document.querySelectorAll('svg[data-icon="github"], .fa-github, .github-icon').forEach(el => el.remove());
+    }
+
+    // Ejecutar limpieza inicial
+    cleanGithub();
+
+    // Observar cambios en el DOM para eliminar elementos que aparezcan después
+    const observer = new MutationObserver(function(mutations) {
+        cleanGithub();
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'href', 'src'] });
+
+    // También ejecutar cada 500 ms durante los primeros 10 segundos para capturar inyecciones tardías
+    let attempts = 0;
+    const interval = setInterval(function() {
+        cleanGithub();
+        attempts++;
+        if (attempts > 20) clearInterval(interval); // 10 segundos (20 * 500ms)
+    }, 500);
+})();
+</script>
 """, unsafe_allow_html=True)
 
 st.markdown("""
