@@ -2320,173 +2320,111 @@ if not RASTERIO_OK and not PYHDF_OK:
 # ===== ESTILOS Y CABECERA (OCULTAMIENTO TOTAL DE GITHUB) =====
 st.markdown("""
 <style>
-/* ===== OCULTAR TODO ELEMENTO RELACIONADO CON GITHUB ===== */
+/* Ocultar menú principal (tres puntos) */
+#MainMenu {visibility: hidden !important;}
 
-/* 1. OCULTAR POR ATRIBUTOS COMUNES */
-[href*="github"] { display: none !important; }
-[src*="github"] { display: none !important; }
-[class*="github"] { display: none !important; }
-[id*="github"] { display: none !important; }
-[title*="github" i] { display: none !important; }
-[aria-label*="github" i] { display: none !important; }
-[data-testid*="github" i] { display: none !important; }
-[data-source*="github"] { display: none !important; }
+/* Ocultar footer de Streamlit */
+footer {visibility: hidden !important;}
 
-/* 2. OCULTAR ÍCONOS DE GITHUB (SVG) */
-svg[data-icon="github"] { display: none !important; }
-svg[class*="github"] { display: none !important; }
-i[class*="github"] { display: none !important; }
-.fa-github { display: none !important; }
-.github-icon { display: none !important; }
+/* Ocultar header completo */
+header {visibility: hidden !important;}
+.stApp header {display: none !important;}
 
-/* 3. OCULTAR LA BARRA DE HERRAMIENTAS DE STREAMLIT (TOOLBAR) Y SUS ELEMENTOS */
-.stApp [data-testid="stToolbar"] { display: none !important; }
-[data-testid="stToolbar"] { display: none !important; }
-.stApp [data-testid="stToolbar"] * { display: none !important; }
-[data-testid="stToolbar"] * { display: none !important; }
+/* OCULTAR BARRA DE HERRAMIENTAS (Share, Edit, GitHub) */
+.stApp [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+.stApp [data-testid="stToolbar"] button {visibility: hidden !important; display: none !important;}
 
-/* 4. OCULTAR EL BOTÓN "FORK THIS APP" SI APARECE */
-a[href*="fork"] { display: none !important; }
-button[title*="Fork"] { display: none !important; }
+/* Ocultar elementos específicos del toolbar */
+[data-testid="stToolbar"] [aria-label="Share"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="Edit"] {display: none !important;}
+[data-testid="stToolbar"] [aria-label="GitHub"] {display: none !important;}
 
-/* 5. OCULTAR EL FOOTER DE STREAMLIT */
-footer { display: none !important; }
-.stApp footer { display: none !important; }
+/* Ocultar otros elementos de UI de Streamlit */
+.st-emotion-cache-1avcm0n {display: none !important;}
+.st-emotion-cache-16txtl3 {display: none !important;}
+.st-emotion-cache-12fmjuu {display: none !important;}
+.st-emotion-cache-1w71dyz {display: none !important;}
+.st-emotion-cache-ecx28m {display: none !important;}
 
-/* 6. OCULTAR EL MENÚ PRINCIPAL (TRES PUNTOS) */
-#MainMenu { display: none !important; }
+/* Botón de deploy */
+.stAppDeployButton {display: none !important;}
+[data-testid="stAppDeployButton"] {display: none !important;}
 
-/* 7. OCULTAR EL HEADER COMPLETO */
-header { display: none !important; }
-.stApp header { display: none !important; }
+/* Cualquier elemento que contenga texto "GitHub" o enlace */
+a:contains("GitHub"), a[href*="github"] {display: none !important;}
+span:contains("GitHub"), div:contains("GitHub") {display: none !important;}
 
-/* 8. OCULTAR ELEMENTOS DE DEPLOY */
-[data-testid="stSidebar"] a[href*="streamlit"] { display: none !important; }
-[data-testid="stSidebar"] a[href*="deploy"] { display: none !important; }
-.stAppDeployButton { display: none !important; }
-[data-testid="stAppDeployButton"] { display: none !important; }
-
-/* 9. OCULTAR ELEMENTOS DE CONTEXTO Y EMOTION CACHE */
-.stAppContextMenu { display: none !important; }
-[data-testid="stContextMenu"] { display: none !important; }
-.st-emotion-cache-1avcm0n { display: none !important; }
-.st-emotion-cache-16txtl3 { display: none !important; }
-.st-emotion-cache-12fmjuu { display: none !important; }
-.st-emotion-cache-1h5b2f { display: none !important; }
-.st-emotion-cache-1y4p8pa { display: none !important; }
-.st-emotion-cache-163kchx { display: none !important; }
-
-/* 10. ESTILOS PERSONALIZADOS DE LA APP (se mantienen igual) */
-.hero-banner {
-    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98));
-    padding: 1.5em;
-    border-radius: 15px;
-    margin-bottom: 1em;
-    border: 1px solid rgba(76, 175, 80, 0.3);
-    text-align: center;
+/* Estilos personalizados de la app */
+.hero-banner { 
+    background: linear-gradient(145deg, rgba(15, 23, 42, 0.95), rgba(30, 41, 59, 0.98)); 
+    padding: 1.5em; 
+    border-radius: 15px; 
+    margin-bottom: 1em; 
+    border: 1px solid rgba(76, 175, 80, 0.3); 
+    text-align: center; 
 }
-
-.hero-title {
-    color: #ffffff;
-    font-size: 2em;
-    font-weight: 800;
-    margin-bottom: 0.5em;
-    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+.hero-title { 
+    color: #ffffff; 
+    font-size: 2em; 
+    font-weight: 800; 
+    margin-bottom: 0.5em; 
+    background: linear-gradient(135deg, #ffffff 0%, #81c784 100%); 
+    -webkit-background-clip: text; 
+    -webkit-text-fill-color: transparent; 
 }
-
-.stButton > button {
-    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important;
-    color: white !important;
-    border: none !important;
-    padding: 0.8em 1.5em !important;
-    border-radius: 12px !important;
-    font-weight: 700 !important;
-    font-size: 1em !important;
-    margin: 5px 0 !important;
-    transition: all 0.3s ease !important;
+.stButton > button { 
+    background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%) !important; 
+    color: white !important; 
+    border: none !important; 
+    padding: 0.8em 1.5em !important; 
+    border-radius: 12px !important; 
+    font-weight: 700 !important; 
+    font-size: 1em !important; 
+    margin: 5px 0 !important; 
+    transition: all 0.3s ease !important; 
 }
-
-.stButton > button:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important;
+.stButton > button:hover { 
+    transform: translateY(-2px) !important; 
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; 
 }
-
-.stTabs [data-baseweb="tab-list"] {
-    background: rgba(30, 41, 59, 0.7) !important;
-    backdrop-filter: blur(10px) !important;
-    padding: 8px 16px !important;
-    border-radius: 16px !important;
-    border: 1px solid rgba(76, 175, 80, 0.3) !important;
-    margin-top: 1.5em !important;
+.stTabs [data-baseweb="tab-list"] { 
+    background: rgba(30, 41, 59, 0.7) !important; 
+    backdrop-filter: blur(10px) !important; 
+    padding: 8px 16px !important; 
+    border-radius: 16px !important; 
+    border: 1px solid rgba(76, 175, 80, 0.3) !important; 
+    margin-top: 1.5em !important; 
 }
-
-div[data-testid="metric-container"] {
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important;
-    backdrop-filter: blur(10px) !important;
-    border-radius: 18px !important;
-    padding: 22px !important;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important;
-    border: 1px solid rgba(76, 175, 80, 0.25) !important;
+div[data-testid="metric-container"] { 
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; 
+    backdrop-filter: blur(10px) !important; 
+    border-radius: 18px !important; 
+    padding: 22px !important; 
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; 
+    border: 1px solid rgba(76, 175, 80, 0.25) !important; 
 }
 </style>
 
 <script>
-// === ELIMINACIÓN TOTAL DE ELEMENTOS RELACIONADOS CON GITHUB ===
-(function() {
-    'use strict';
-
-    // Función para eliminar elementos que coincidan con el selector
-    function removeElements(selector) {
-        document.querySelectorAll(selector).forEach(el => el.remove());
-    }
-
-    // Función para eliminar por texto (insensible a mayúsculas)
-    function removeByTextContent(pattern) {
-        const regex = new RegExp(pattern, 'i');
-        document.querySelectorAll('*').forEach(el => {
-            if (el.children.length === 0 && regex.test(el.textContent)) {
+// JavaScript para eliminar cualquier elemento que contenga "github" en su texto o atributos
+document.addEventListener('DOMContentLoaded', function() {
+    function removeGithubElements() {
+        const elements = document.querySelectorAll('*');
+        elements.forEach(el => {
+            if (el.children.length === 0) {
+                if (el.textContent && el.textContent.toLowerCase().includes('github')) {
+                    el.remove();
+                }
+            }
+            if (el.href && el.href.toLowerCase().includes('github')) {
                 el.remove();
             }
         });
     }
-
-    // Función principal de limpieza
-    function cleanGithub() {
-        // Eliminar por selectores conocidos
-        removeElements('[href*="github" i], [src*="github" i], [class*="github" i], [id*="github" i], [title*="github" i], [aria-label*="github" i], [data-testid*="github" i]');
-        removeElements('a[href*="fork"], button[title*="Fork"]');
-        removeElements('[data-testid="stToolbar"], .stApp [data-testid="stToolbar"]');
-        removeElements('footer, #MainMenu, header');
-        removeElements('[data-testid="stSidebar"] a[href*="streamlit"], [data-testid="stSidebar"] a[href*="deploy"], .stAppDeployButton, [data-testid="stAppDeployButton"]');
-        removeElements('.stAppContextMenu, [data-testid="stContextMenu"]');
-        
-        // Eliminar por texto
-        removeByTextContent('github');
-        removeByTextContent('fork this app');
-        
-        // Eliminar iconos específicos
-        document.querySelectorAll('svg[data-icon="github"], .fa-github, .github-icon').forEach(el => el.remove());
-    }
-
-    // Ejecutar limpieza inicial
-    cleanGithub();
-
-    // Observar cambios en el DOM para eliminar elementos que aparezcan después
-    const observer = new MutationObserver(function(mutations) {
-        cleanGithub();
-    });
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'href', 'src'] });
-
-    // También ejecutar cada 500 ms durante los primeros 10 segundos para capturar inyecciones tardías
-    let attempts = 0;
-    const interval = setInterval(function() {
-        cleanGithub();
-        attempts++;
-        if (attempts > 20) clearInterval(interval); // 10 segundos (20 * 500ms)
-    }, 500);
-})();
+    removeGithubElements();
+    setTimeout(removeGithubElements, 1000);
+    setTimeout(removeGithubElements, 3000);
+});
 </script>
 """, unsafe_allow_html=True)
 
@@ -3131,6 +3069,6 @@ st.markdown("""
 <div style="text-align: center; color: #94a3b8; padding: 20px;">
     <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
     <p>Datos satelitales: NASA Earthdata · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM</p>
-    <p>Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com |</p>
+    <p>Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com | +5493525 532313</p>
 </div>
 """, unsafe_allow_html=True)
