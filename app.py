@@ -75,7 +75,31 @@ except ImportError:
     PYHDF_OK = False
     if not RASTERIO_OK:
         st.warning("⚠️ pyhdf tampoco está instalado. No se podrán leer archivos HDF4.")
+st.markdown("""
+<style>
+/* Ocultar toolbar superior */
+div[data-testid="stToolbar"] {
+    visibility: hidden;
+    height: 0px;
+    position: fixed;
+}
 
+/* Ocultar menú hamburguesa */
+#MainMenu {
+    visibility: hidden;
+}
+
+/* Ocultar footer */
+footer {
+    visibility: hidden;
+}
+
+/* Ocultar header Streamlit */
+header {
+    visibility: hidden;
+}
+</style>
+""", unsafe_allow_html=True)
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
 if not MERCADOPAGO_ACCESS_TOKEN:
