@@ -126,6 +126,21 @@ body { user-select:none; }
 document.addEventListener('contextmenu', event => event.preventDefault());
 </script>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+#overlay {
+ position: fixed;
+ bottom:0;
+ right:0;
+ width:300px;
+ height:120px;
+ background:white;
+ z-index:9999999;
+}
+</style>
+<div id="overlay"></div>
+""", unsafe_allow_html=True)
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
 if not MERCADOPAGO_ACCESS_TOKEN:
