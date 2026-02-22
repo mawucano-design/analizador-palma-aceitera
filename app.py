@@ -100,6 +100,32 @@ header {
 }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+
+/* Ocultar todo lo de Streamlit */
+div[data-testid="stToolbar"] {visibility:hidden; height:0;}
+#MainMenu {visibility:hidden;}
+footer {visibility:hidden;}
+header {visibility:hidden;}
+a[href*="streamlit.io"] {display:none !important;}
+a[href*="streamlitapp"] {display:none !important;}
+
+/* Ocultar mensaje deploy */
+div[data-testid="stDeployButton"] {display:none;}
+div[data-testid="stDecoration"] {display:none;}
+div[data-testid="stAppViewContainer"] > div:first-child {display:none;}
+
+/* Bloquear right-click */
+body { user-select:none; }
+
+</style>
+
+<script>
+document.addEventListener('contextmenu', event => event.preventDefault());
+</script>
+""", unsafe_allow_html=True)
 # ===== CONFIGURACIÓN DE MERCADO PAGO =====
 MERCADOPAGO_ACCESS_TOKEN = os.environ.get("MERCADOPAGO_ACCESS_TOKEN")
 if not MERCADOPAGO_ACCESS_TOKEN:
