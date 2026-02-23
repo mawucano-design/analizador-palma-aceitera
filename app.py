@@ -176,7 +176,7 @@ def init_db():
     if existing:
         c.execute("UPDATE users SET subscription_expires = ? WHERE email = ?", (far_future, admin_email))
     else:
-        default_password = "admin123"
+        default_password = "jocauru"
         password_hash = hash_password(default_password)
         c.execute("INSERT INTO users (email, password_hash, subscription_expires) VALUES (?, ?, ?)",
                   (admin_email, password_hash, far_future))
