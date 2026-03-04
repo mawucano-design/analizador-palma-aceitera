@@ -957,10 +957,10 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
 
                             progress_bar.empty()
 
-                    gdf_dividido['ndvi_modis'] = ndvi_values
-                    st.success("✅ NDVI calculado por bloque correctamente con rasterio.")
-                    rasterio_success = True
-                    return gdf_dividido
+                            gdf_dividido['ndvi_modis'] = ndvi_values
+                            st.success("✅ NDVI calculado por bloque correctamente con rasterio.")
+                            rasterio_success = True
+                            return gdf_dividido
 
             except Exception:
                 # Fallo silencioso de rasterio, pasamos a pyhdf
@@ -1868,198 +1868,6 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
     MiniMap(toggle_display=True).add_to(m)
     return m
 
-def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list):
-    try:
-        plantacion_union = gdf.unary_union
-        bounds = plantacion_union.bounds
-        dx = bounds[2] - bounds[0]
-        dy = bounds[3] - bounds[1]
-        minx = bounds[0] - 0.1 * dx
-        maxx = bounds[2] + 0.1 * dx
-        miny = bounds[1] - 0.1 * dy
-        maxy = bounds[3] + 0.1 * dy
-        
-        puntos = []
-        valores = []
-        for idx, row in gdf.iterrows():
-            centroide = row.geometry.centroid
-            puntos.append([centroide.x, centroide.y])
-            val = row[columna]
-            if pd.notna(val):
-                valores.append(val)
-            else:
-                # Si es NaN, no lo incluimos para la interpolación
-                pass
-        puntos = np.array(puntos)
-        valores = np.array(valores)
-        
-        if len(puntos) < 4 or len(valores) < 4:
-            # No hay suficientes puntos, usar mapa de coropletas simple
-            return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
-                                               tooltip_fields=['id_bloque', columna],
-                                               tooltip_aliases=['Bloque', titulo])
-        
-        n = 300
-        xi = np.linspace(minx, maxx, n)
-        yi = np.linspace(miny, maxy, n)
-        XI, YI = np.meshgrid(xi, yi)
-        
-        try:
-            rbf = Rbf(puntos[:, 0], puntos[:, 1], valores, function='multiquadric', smooth=0.1)
-            ZI = rbf(XI, YI)
-        except Exception:
-            # Si RBF falla, usar IDW
-            return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
-        
-        cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
-        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
-        rgba = cmap(norm(ZI))
-        img = (rgba * 255).astype(np.uint8)
-        
-        img_bytes = io.BytesIO()
-        Image.fromarray(img).save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-        img_data = f"data:image/png;base64,{img_base64}"
-        
-        centroide = plantacion_union.centroid
-        m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri, Maxar, Earthstar Geographics',
-            name='Satélite Esri',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        bounds_img = [[miny, minx], [maxy, maxx]]
-        folium.raster_layers.ImageOverlay(
-            image=img_data,
-            bounds=bounds_img,
-            opacity=0.7,
-            name=f'Calor {titulo}',
-            interactive=True,
-            zindex=1
-        ).add_to(m)
-        
-        folium.GeoJson(
-            gpd.GeoSeries(plantacion_union).to_json(),
-            name='Límite plantación',
-            style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
-            tooltip='Límite de la plantación'
-        ).add_to(m)
-        
-        colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
-        colormap.add_to(m)
-        
-        folium.LayerControl(collapsed=False).add_to(m)
-        Fullscreen().add_to(m)
-        MeasureControl().add_to(m)
-        MiniMap(toggle_display=True).add_to(m)
-        
-        return m
-    except Exception as e:
-        st.warning(f"No se pudo generar el mapa de calor: {e}. Mostrando mapa de coropletas simple.")
-        return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
-                                           tooltip_fields=['id_bloque', columna],
-                                           tooltip_aliases=['Bloque', titulo])
-
-def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list):
-    try:
-        plantacion_union = gdf.unary_union
-        bounds = plantacion_union.bounds
-        dx = bounds[2] - bounds[0]
-        dy = bounds[3] - bounds[1]
-        minx = bounds[0] - 0.1 * dx
-        maxx = bounds[2] + 0.1 * dx
-        miny = bounds[1] - 0.1 * dy
-        maxy = bounds[3] + 0.1 * dy
-        
-        puntos = []
-        valores = []
-        for idx, row in gdf.iterrows():
-            centroide = row.geometry.centroid
-            puntos.append([centroide.x, centroide.y])
-            val = row[columna]
-            if pd.notna(val):
-                valores.append(val)
-        puntos = np.array(puntos)
-        valores = np.array(valores)
-        
-        if len(puntos) < 2:
-            return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
-                                               tooltip_fields=['id_bloque', columna],
-                                               tooltip_aliases=['Bloque', titulo])
-        
-        n = 200
-        xi = np.linspace(minx, maxx, n)
-        yi = np.linspace(miny, maxy, n)
-        XI, YI = np.meshgrid(xi, yi)
-        
-        tree = KDTree(puntos)
-        k = min(8, len(puntos))
-        distancias, indices = tree.query(np.column_stack((XI.ravel(), YI.ravel())), k=k)
-        
-        epsilon = 1e-6
-        pesos = 1.0 / (distancias + epsilon)
-        suma_pesos = np.sum(pesos, axis=1)
-        valores_vecinos = valores[indices]
-        valores_interp = np.sum(pesos * valores_vecinos, axis=1) / suma_pesos
-        ZI = valores_interp.reshape(XI.shape)
-        
-        cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
-        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=vmax)
-        rgba = cmap(norm(ZI))
-        img = (rgba * 255).astype(np.uint8)
-        
-        img_bytes = io.BytesIO()
-        Image.fromarray(img).save(img_bytes, format='PNG')
-        img_bytes.seek(0)
-        img_base64 = base64.b64encode(img_bytes.getvalue()).decode('utf-8')
-        img_data = f"data:image/png;base64,{img_base64}"
-        
-        centroide = plantacion_union.centroid
-        m = folium.Map(location=[centroide.y, centroide.x], zoom_start=16, tiles=None, control_scale=True)
-        folium.TileLayer(
-            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-            attr='Esri, Maxar, Earthstar Geographics',
-            name='Satélite Esri',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        bounds_img = [[miny, minx], [maxy, maxx]]
-        folium.raster_layers.ImageOverlay(
-            image=img_data,
-            bounds=bounds_img,
-            opacity=0.7,
-            name=f'Calor {titulo}',
-            interactive=True,
-            zindex=1
-        ).add_to(m)
-        
-        folium.GeoJson(
-            gpd.GeoSeries(plantacion_union).to_json(),
-            name='Límite plantación',
-            style_function=lambda x: {'color': 'white', 'weight': 2, 'fillOpacity': 0},
-            tooltip='Límite de la plantación'
-        ).add_to(m)
-        
-        colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
-        colormap.add_to(m)
-        
-        folium.LayerControl(collapsed=False).add_to(m)
-        Fullscreen().add_to(m)
-        MeasureControl().add_to(m)
-        MiniMap(toggle_display=True).add_to(m)
-        
-        return m
-    except Exception as e:
-        st.warning(f"No se pudo generar el mapa IDW: {e}. Mostrando mapa de coropletas simple.")
-        return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
-                                           tooltip_fields=['id_bloque', columna],
-                                           tooltip_aliases=['Bloque', titulo])
-
 def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
     # Verificar si la columna existe y tiene datos
     if columna not in gdf.columns:
@@ -2071,15 +1879,24 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
         st.warning(f"No hay datos válidos para {titulo}.")
         return
     
-    mapa_calor = None
-    try:
-        mapa_calor = crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
-    except Exception as e:
-        st.warning(f"No se pudo generar el mapa de calor: {e}. Mostrando gráfico de barras.")
+    # Crear colormap de branca
+    colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
     
-    if mapa_calor:
-        folium_static(mapa_calor, width=1000, height=600)
+    # Crear mapa interactivo con los bloques coloreados
+    mapa = crear_mapa_interactivo_base(
+        gdf,
+        columna_color=columna,
+        colormap=colormap,
+        tooltip_fields=['id_bloque', columna],
+        tooltip_aliases=['Bloque', titulo]
+    )
+    
+    if mapa:
+        # Añadir el colormap al mapa
+        colormap.add_to(mapa)
+        folium_static(mapa, width=1000, height=600)
     else:
+        st.warning("No se pudo generar el mapa. Mostrando gráfico de barras.")
         fig, ax = plt.subplots(figsize=(10,4))
         ax.bar(range(len(gdf)), gdf[columna].values, color='steelblue')
         ax.set_xlabel('Bloque')
@@ -2088,6 +1905,7 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
         st.pyplot(fig)
         plt.close(fig)
     
+    # Mostrar estadísticas
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Media", f"{valores.mean():.3f}")
