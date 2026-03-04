@@ -1,9 +1,9 @@
-# app.py - Versión definitiva con Earthaccess (MODIS desde NASA Earthdata) y fallback a pyhdf
-# MEJORA: Cálculo de NDVI y NDWI por bloque individual (no un único promedio global)
+# app.py - Versión definitiva con Earthaccess y reproyección para extracción por bloque
+# CORRECCIÓN: Reproyecta los polígonos al CRS del raster (sinusoidal) antes de extraer
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
-# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono (sin ejemplos precargados).
+# - Modo DEMO con datos simulados y posibilidad de subir tu propio polígono.
 # - Modo PREMIUM con datos reales de NDVI y NDWI desde Earthdata (MOD13Q1 y MOD09GA) calculados por bloque.
 # - Usuario administrador mawucano@gmail.com con suscripción permanente.
 #
@@ -616,7 +616,7 @@ def extraer_media_por_bloque(raster_src, gdf_bloques, banda=1, escala=1.0, nodat
     """
     Extrae la media de los píxeles de un raster para cada geometría en gdf_bloques.
     - raster_src: objeto rasterio abierto (DatasetReader)
-    - gdf_bloques: GeoDataFrame con geometrías (en CRS compatible)
+    - gdf_bloques: GeoDataFrame con geometrías (deben estar en el mismo CRS que el raster)
     - banda: número de banda (1-indexed)
     - escala: factor de escala a aplicar a los valores
     - nodata: valor de nodata del raster (si se conoce)
@@ -646,15 +646,17 @@ def extraer_media_por_bloque(raster_src, gdf_bloques, banda=1, escala=1.0, nodat
                 valores.append(np.nan)
             else:
                 valores.append(float(media))
-        except Exception:
+        except Exception as e:
+            # Si falla, asignar NaN
             valores.append(np.nan)
     return valores
 
 def extraer_ndwi_por_bloque(src_nir, src_swir, gdf_bloques, escala=0.0001, nodata=None):
     """
     Calcula NDWI ((NIR - SWIR)/(NIR+SWIR)) promedio por bloque.
-    - src_nir: rasterio Dataset de la banda NIR
-    - src_swir: rasterio Dataset de la banda SWIR
+    - src_nir: rasterio Dataset de la banda NIR (en el CRS correcto)
+    - src_swir: rasterio Dataset de la banda SWIR (en el CRS correcto)
+    - gdf_bloques: GeoDataFrame con geometrías en el mismo CRS que los rasters
     """
     valores = []
     for idx, row in gdf_bloques.iterrows():
@@ -1008,9 +1010,22 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             return gdf_dividido, None
                         
                         with rasterio.open(ndvi_sub) as src_ndvi:
+                            # Obtener CRS del raster y reproyectar los bloques temporalmente
+                            raster_crs = src_ndvi.crs
+                            # Verificar que el CRS sea válido
+                            if raster_crs is None:
+                                st.warning("El raster NDVI no tiene CRS definido. Se asumirá que coincide con los polígonos.")
+                                gdf_proj = gdf_dividido
+                            else:
+                                try:
+                                    gdf_proj = gdf_dividido.to_crs(raster_crs)
+                                except Exception as e:
+                                    st.warning(f"No se pudo reproyectar al CRS del raster: {e}. Usando geometrías originales.")
+                                    gdf_proj = gdf_dividido
+
                             # Extraer media por bloque
                             valores_ndvi = extraer_media_por_bloque(
-                                src_ndvi, gdf_dividido,
+                                src_ndvi, gdf_proj,
                                 banda=1, escala=0.0001,
                                 nodata=src_ndvi.nodata,
                                 val_min=-1, val_max=1
@@ -1132,8 +1147,20 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             return gdf_dividido, None
                         
                         with rasterio.open(nir_sub) as src_nir, rasterio.open(swir_sub) as src_swir:
+                            # Obtener CRS del raster (ambas bandas deben tener el mismo CRS)
+                            raster_crs = src_nir.crs
+                            if raster_crs is None:
+                                st.warning("El raster NIR no tiene CRS definido. Se asumirá que coincide con los polígonos.")
+                                gdf_proj = gdf_dividido
+                            else:
+                                try:
+                                    gdf_proj = gdf_dividido.to_crs(raster_crs)
+                                except Exception as e:
+                                    st.warning(f"No se pudo reproyectar al CRS del raster: {e}. Usando geometrías originales.")
+                                    gdf_proj = gdf_dividido
+
                             valores_ndwi = extraer_ndwi_por_bloque(
-                                src_nir, src_swir, gdf_dividido,
+                                src_nir, src_swir, gdf_proj,
                                 escala=0.0001, nodata=src_nir.nodata
                             )
                             gdf_dividido['ndwi_modis'] = np.round(valores_ndwi, 3)
