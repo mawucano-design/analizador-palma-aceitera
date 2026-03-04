@@ -1,5 +1,5 @@
-# app.py - Versión definitiva con Earthaccess y reproyección para extracción por bloque
-# CORRECCIÓN: Reproyecta los polígonos al CRS del raster (sinusoidal) antes de extraer
+# app.py - Versión definitiva con Earthaccess y extracción por bloque
+# Incluye diagnóstico completo y fallback simulado con variabilidad espacial
 # 
 # - Registro e inicio de sesión de usuarios.
 # - Suscripción mensual (150 USD) con Mercado Pago.
@@ -646,8 +646,7 @@ def extraer_media_por_bloque(raster_src, gdf_bloques, banda=1, escala=1.0, nodat
                 valores.append(np.nan)
             else:
                 valores.append(float(media))
-        except Exception as e:
-            # Si falla, asignar NaN
+        except Exception:
             valores.append(np.nan)
     return valores
 
@@ -920,7 +919,7 @@ def cargar_archivo_plantacion(uploaded_file):
         st.code(traceback.format_exc())
         return None
 
-# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS POR BLOQUE) =====
+# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS CON DIAGNÓSTICO Y FALLBACK SIMULADO) =====
 def es_archivo_hdf(ruta):
     try:
         with open(ruta, 'rb') as f:
@@ -929,24 +928,52 @@ def es_archivo_hdf(ruta):
     except:
         return False
 
+def generar_ndvi_simulado_por_bloque(gdf_dividido):
+    """
+    Genera valores NDVI simulados pero con variabilidad espacial,
+    basados en las coordenadas de los centroides.
+    """
+    np.random.seed(42)  # Para reproducibilidad
+    centroides = gdf_dividido.geometry.centroid
+    lons = centroides.x.values
+    lats = centroides.y.values
+    # Patrón espacial simple
+    ndvi_vals = 0.5 + 0.2 * np.sin(lons * 10) * np.cos(lats * 10) + 0.1 * np.random.randn(len(lons))
+    ndvi_vals = np.clip(ndvi_vals, 0.2, 0.9)
+    gdf_dividido['ndvi_modis'] = np.round(ndvi_vals, 3)
+    return gdf_dividido
+
+def generar_ndwi_simulado_por_bloque(gdf_dividido):
+    """
+    Genera valores NDWI simulados con variabilidad espacial.
+    """
+    np.random.seed(42)
+    centroides = gdf_dividido.geometry.centroid
+    lons = centroides.x.values
+    lats = centroides.y.values
+    ndwi_vals = 0.3 + 0.15 * np.cos(lons * 5) * np.sin(lats * 5) + 0.1 * np.random.randn(len(lons))
+    ndwi_vals = np.clip(ndwi_vals, 0.1, 0.7)
+    gdf_dividido['ndwi_modis'] = np.round(ndwi_vals, 3)
+    return gdf_dividido
+
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real por bloque usando earthaccess (producto MOD13Q1).
-    Retorna el mismo GeoDataFrame con columna 'ndvi_modis' actualizada.
+    Si falla, genera valores simulados por bloque (con variabilidad espacial).
     """
     if not EARTHDATA_OK:
-        st.warning("Librerías earthaccess/xarray/rioxarray no instaladas.")
-        return gdf_dividido, None
+        st.warning("Librerías earthaccess/xarray/rioxarray no instaladas. Usando simulación NDVI.")
+        return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
-        st.warning("Credenciales de Earthdata no configuradas.")
-        return gdf_dividido, None
+        st.warning("Credenciales de Earthdata no configuradas. Usando simulación NDVI.")
+        return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
     try:
         auth = earthaccess.login()
         if not auth.authenticated:
-            st.error("No se pudo autenticar con Earthdata. Verifica las credenciales en variables de entorno.")
-            return gdf_dividido, None
+            st.error("No se pudo autenticar con Earthdata. Usando simulación NDVI.")
+            return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
         bounds = gdf_dividido.total_bounds
         bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
@@ -960,8 +987,8 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         )
 
         if not results:
-            st.warning("No se encontraron escenas MOD13Q1 en el período.")
-            return gdf_dividido, None
+            st.warning("No se encontraron escenas MOD13Q1 en el período. Usando simulación NDVI.")
+            return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
         granule = results[0]
         st.info(f"Procesando escena NDVI: {granule['umm']['GranuleUR']}")
@@ -970,13 +997,13 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         try:
             downloaded_files = earthaccess.download(granule, local_path=temp_dir)
             if not downloaded_files:
-                st.error("No se pudo descargar el archivo.")
-                return gdf_dividido, None
+                st.error("No se pudo descargar el archivo. Usando simulación NDVI.")
+                return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
             hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
             if not hdf_files:
-                st.error("No se encontró archivo HDF en la descarga.")
-                return gdf_dividido, None
+                st.error("No se encontró archivo HDF en la descarga. Usando simulación NDVI.")
+                return generar_ndvi_simulado_por_bloque(gdf_dividido), None
             download_path = hdf_files[0]
 
             # Verificar que no sea HTML de error
@@ -985,12 +1012,12 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 with open(download_path, 'r', errors='ignore') as f:
                     head = f.read(500).lower()
                     if '<html' in head:
-                        st.error("El archivo descargado parece ser una página HTML de error.")
-                        return gdf_dividido, None
+                        st.error("El archivo descargado es una página HTML de error (problema de autenticación o disponibilidad). Usando simulación NDVI.")
+                        return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
             if not es_archivo_hdf(download_path):
-                st.error("El archivo descargado no es un HDF válido.")
-                return gdf_dividido, None
+                st.error("El archivo descargado no es un HDF válido. Usando simulación NDVI.")
+                return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
             # Intentar con rasterio primero (más fácil para extracción por bloque)
             if RASTERIO_OK:
@@ -998,21 +1025,20 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     with rasterio.open(download_path) as src:
                         subdatasets = src.subdatasets
                         if not subdatasets:
-                            st.error("El archivo HDF no contiene subdatasets (rasterio).")
-                            return gdf_dividido, None
+                            st.error("El archivo HDF no contiene subdatasets (rasterio). Usando simulación NDVI.")
+                            return generar_ndvi_simulado_por_bloque(gdf_dividido), None
                         ndvi_sub = None
                         for sd in subdatasets:
                             if 'NDVI' in sd or 'ndvi' in sd.lower():
                                 ndvi_sub = sd
                                 break
                         if not ndvi_sub:
-                            st.error("No se encontró subdataset NDVI (rasterio).")
-                            return gdf_dividido, None
+                            st.error("No se encontró subdataset NDVI (rasterio). Usando simulación NDVI.")
+                            return generar_ndvi_simulado_por_bloque(gdf_dividido), None
                         
                         with rasterio.open(ndvi_sub) as src_ndvi:
                             # Obtener CRS del raster y reproyectar los bloques temporalmente
                             raster_crs = src_ndvi.crs
-                            # Verificar que el CRS sea válido
                             if raster_crs is None:
                                 st.warning("El raster NDVI no tiene CRS definido. Se asumirá que coincide con los polígonos.")
                                 gdf_proj = gdf_dividido
@@ -1023,6 +1049,14 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                                     st.warning(f"No se pudo reproyectar al CRS del raster: {e}. Usando geometrías originales.")
                                     gdf_proj = gdf_dividido
 
+                            # Verificar intersección
+                            raster_bounds = src_ndvi.bounds
+                            gdf_bounds = gdf_proj.total_bounds
+                            if (gdf_bounds[2] < raster_bounds[0] or gdf_bounds[0] > raster_bounds[2] or
+                                gdf_bounds[3] < raster_bounds[1] or gdf_bounds[1] > raster_bounds[3]):
+                                st.warning("Los polígonos no intersectan la extensión del raster. Usando simulación NDVI.")
+                                return generar_ndvi_simulado_por_bloque(gdf_dividido), None
+
                             # Extraer media por bloque
                             valores_ndvi = extraer_media_por_bloque(
                                 src_ndvi, gdf_proj,
@@ -1030,59 +1064,47 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                                 nodata=src_ndvi.nodata,
                                 val_min=-1, val_max=1
                             )
+                            # Si todos son NaN, simular
+                            if all(np.isnan(v) for v in valores_ndvi):
+                                st.warning("Los valores extraídos son todos NaN. Usando simulación NDVI.")
+                                return generar_ndvi_simulado_por_bloque(gdf_dividido), None
                             gdf_dividido['ndvi_modis'] = np.round(valores_ndvi, 3)
                             ndvi_prom = gdf_dividido['ndvi_modis'].mean()
                             return gdf_dividido, ndvi_prom
                 except Exception as e:
-                    st.warning(f"rasterio falló: {e}. Intentando con pyhdf...")
-            
-            # Fallback a pyhdf (solo lectura, no por bloque)
-            if PYHDF_OK:
-                try:
-                    hdf = SD(download_path, SDC.READ)
-                    ndvi_dataset = None
-                    for name in hdf.datasets().keys():
-                        if 'NDVI' in name:
-                            ndvi_dataset = name
-                            break
-                    if ndvi_dataset is None:
-                        st.error("No se encontró dataset NDVI con pyhdf.")
-                        return gdf_dividido, None
-                    ndvi_data = hdf.select(ndvi_dataset).get()
-                    ndvi_scaled = ndvi_data * 0.0001
-                    ndvi_scaled = np.ma.masked_where(ndvi_scaled < -1, ndvi_scaled)
-                    # Con pyhdf no podemos hacer extracción por bloque fácilmente, así que asignamos el mismo valor a todos
-                    ndvi_mean = np.nanmean(ndvi_scaled)
-                    gdf_dividido['ndvi_modis'] = round(ndvi_mean, 3)
-                    return gdf_dividido, ndvi_mean
-                except Exception as e_pyhdf:
-                    st.error(f"pyhdf también falló: {e_pyhdf}")
-                    return gdf_dividido, None
+                    import traceback
+                    st.error(f"rasterio falló. Se usará simulación NDVI. Error:\n{traceback.format_exc()}")
+                    return generar_ndvi_simulado_por_bloque(gdf_dividido), None
             else:
-                st.error("Ni rasterio ni pyhdf están disponibles.")
-                return gdf_dividido, None
+                st.warning("rasterio no está instalado. Usando simulación NDVI.")
+                return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
-        st.error(f"Error en obtención de NDVI con earthaccess: {str(e)}")
-        return gdf_dividido, None
+        import traceback
+        st.error(f"Error en obtención de NDVI con earthaccess. Usando simulación NDVI. Error:\n{traceback.format_exc()}")
+        return generar_ndvi_simulado_por_bloque(gdf_dividido), None
 
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real por bloque usando earthaccess (producto MOD09GA).
+    Si falla, genera valores simulados por bloque.
     """
     if not EARTHDATA_OK:
-        return gdf_dividido, None
+        st.warning("Librerías earthaccess no instaladas. Usando simulación NDWI.")
+        return generar_ndwi_simulado_por_bloque(gdf_dividido), None
+
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
-        return gdf_dividido, None
+        st.warning("Credenciales de Earthdata no configuradas. Usando simulación NDWI.")
+        return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
     try:
         auth = earthaccess.login()
         if not auth.authenticated:
-            st.error("No se pudo autenticar con Earthdata.")
-            return gdf_dividido, None
+            st.error("No se pudo autenticar con Earthdata. Usando simulación NDWI.")
+            return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
         bounds = gdf_dividido.total_bounds
         bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
@@ -1096,8 +1118,8 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         )
 
         if not results:
-            st.warning("No se encontraron escenas MOD09GA en el período.")
-            return gdf_dividido, None
+            st.warning("No se encontraron escenas MOD09GA en el período. Usando simulación NDWI.")
+            return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
         granule = results[0]
         st.info(f"Procesando escena SR: {granule['umm']['GranuleUR']}")
@@ -1106,13 +1128,13 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         try:
             downloaded_files = earthaccess.download(granule, local_path=temp_dir)
             if not downloaded_files:
-                st.error("No se pudo descargar el archivo.")
-                return gdf_dividido, None
+                st.error("No se pudo descargar el archivo. Usando simulación NDWI.")
+                return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
             hdf_files = [f for f in downloaded_files if f.endswith('.hdf')]
             if not hdf_files:
-                st.error("No se encontró archivo HDF.")
-                return gdf_dividido, None
+                st.error("No se encontró archivo HDF. Usando simulación NDWI.")
+                return generar_ndwi_simulado_por_bloque(gdf_dividido), None
             download_path = hdf_files[0]
 
             file_size = os.path.getsize(download_path)
@@ -1120,12 +1142,12 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 with open(download_path, 'r', errors='ignore') as f:
                     head = f.read(500).lower()
                     if '<html' in head:
-                        st.error("El archivo descargado es una página HTML de error.")
-                        return gdf_dividido, None
+                        st.error("El archivo descargado es una página HTML de error. Usando simulación NDWI.")
+                        return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
             if not es_archivo_hdf(download_path):
-                st.error("El archivo descargado no es un HDF válido.")
-                return gdf_dividido, None
+                st.error("El archivo descargado no es un HDF válido. Usando simulación NDWI.")
+                return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
             # Intentar con rasterio primero
             if RASTERIO_OK:
@@ -1133,8 +1155,8 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     with rasterio.open(download_path) as src:
                         subdatasets = src.subdatasets
                         if not subdatasets:
-                            st.error("El archivo HDF no contiene subdatasets (rasterio).")
-                            return gdf_dividido, None
+                            st.error("El archivo HDF no contiene subdatasets (rasterio). Usando simulación NDWI.")
+                            return generar_ndwi_simulado_por_bloque(gdf_dividido), None
                         nir_sub = None
                         swir_sub = None
                         for sd in subdatasets:
@@ -1143,8 +1165,8 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             elif 'sur_refl_b06' in sd:
                                 swir_sub = sd
                         if not nir_sub or not swir_sub:
-                            st.error("No se encontraron bandas NIR o SWIR (rasterio).")
-                            return gdf_dividido, None
+                            st.error("No se encontraron bandas NIR o SWIR (rasterio). Usando simulación NDWI.")
+                            return generar_ndwi_simulado_por_bloque(gdf_dividido), None
                         
                         with rasterio.open(nir_sub) as src_nir, rasterio.open(swir_sub) as src_swir:
                             # Obtener CRS del raster (ambas bandas deben tener el mismo CRS)
@@ -1159,51 +1181,39 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                                     st.warning(f"No se pudo reproyectar al CRS del raster: {e}. Usando geometrías originales.")
                                     gdf_proj = gdf_dividido
 
+                            # Verificar intersección
+                            raster_bounds = src_nir.bounds
+                            gdf_bounds = gdf_proj.total_bounds
+                            if (gdf_bounds[2] < raster_bounds[0] or gdf_bounds[0] > raster_bounds[2] or
+                                gdf_bounds[3] < raster_bounds[1] or gdf_bounds[1] > raster_bounds[3]):
+                                st.warning("Los polígonos no intersectan la extensión del raster. Usando simulación NDWI.")
+                                return generar_ndwi_simulado_por_bloque(gdf_dividido), None
+
                             valores_ndwi = extraer_ndwi_por_bloque(
                                 src_nir, src_swir, gdf_proj,
                                 escala=0.0001, nodata=src_nir.nodata
                             )
+                            if all(np.isnan(v) for v in valores_ndwi):
+                                st.warning("Los valores extraídos son todos NaN. Usando simulación NDWI.")
+                                return generar_ndwi_simulado_por_bloque(gdf_dividido), None
                             gdf_dividido['ndwi_modis'] = np.round(valores_ndwi, 3)
                             ndwi_prom = gdf_dividido['ndwi_modis'].mean()
                             return gdf_dividido, ndwi_prom
                 except Exception as e:
-                    st.warning(f"rasterio falló: {e}. Intentando con pyhdf...")
-
-            # Fallback a pyhdf (solo valor global)
-            if PYHDF_OK:
-                try:
-                    hdf = SD(download_path, SDC.READ)
-                    nir_data = None
-                    swir_data = None
-                    for name in hdf.datasets().keys():
-                        if 'sur_refl_b02' in name:
-                            nir_data = hdf.select(name).get()
-                        elif 'sur_refl_b06' in name:
-                            swir_data = hdf.select(name).get()
-                    if nir_data is None or swir_data is None:
-                        st.error("No se encontraron bandas NIR o SWIR con pyhdf.")
-                        return gdf_dividido, None
-                    nir = nir_data * 0.0001
-                    swir = swir_data * 0.0001
-                    with np.errstate(divide='ignore', invalid='ignore'):
-                        ndwi = (nir - swir) / (nir + swir)
-                        ndwi = np.ma.masked_invalid(ndwi)
-                    ndwi_mean = np.nanmean(ndwi)
-                    gdf_dividido['ndwi_modis'] = round(ndwi_mean, 3)
-                    return gdf_dividido, ndwi_mean
-                except Exception as e_pyhdf:
-                    st.error(f"pyhdf también falló: {e_pyhdf}")
-                    return gdf_dividido, None
+                    import traceback
+                    st.error(f"rasterio falló. Se usará simulación NDWI. Error:\n{traceback.format_exc()}")
+                    return generar_ndwi_simulado_por_bloque(gdf_dividido), None
             else:
-                st.error("Ni rasterio ni pyhdf están disponibles.")
-                return gdf_dividido, None
+                st.warning("rasterio no está instalado. Usando simulación NDWI.")
+                return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
     except Exception as e:
-        st.error(f"Error en obtención de NDWI con earthaccess: {str(e)}")
-        return gdf_dividido, None
+        import traceback
+        st.error(f"Error en obtención de NDWI con earthaccess. Usando simulación NDWI. Error:\n{traceback.format_exc()}")
+        return generar_ndwi_simulado_por_bloque(gdf_dividido), None
 
 # ===== FUNCIONES CLIMÁTICAS =====
 def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
@@ -2354,8 +2364,9 @@ def ejecutar_analisis_completo():
                 fuente_ndvi = "Earthdata MOD13Q1"
             else:
                 st.warning("No se pudo obtener NDVI real. Usando simulación.")
-                np.random.seed(42)
-                gdf_dividido['ndvi_modis'] = np.round(0.65 + 0.1 * np.random.randn(len(gdf_dividido)), 3)
+                # La función ya debería haber asignado valores simulados, pero por si acaso:
+                if 'ndvi_modis' not in gdf_dividido.columns:
+                    gdf_dividido = generar_ndvi_simulado_por_bloque(gdf_dividido)
                 fuente_ndvi = "Simulado (fallback)"
 
             # 2. Obtener NDWI real por bloque
@@ -2366,8 +2377,8 @@ def ejecutar_analisis_completo():
                 fuente_ndwi = "Earthdata MOD09GA"
             else:
                 st.warning("No se pudo obtener NDWI real. Usando simulación.")
-                np.random.seed(42)
-                gdf_dividido['ndwi_modis'] = np.round(0.3 + 0.1 * np.random.randn(len(gdf_dividido)), 3)
+                if 'ndwi_modis' not in gdf_dividido.columns:
+                    gdf_dividido = generar_ndwi_simulado_por_bloque(gdf_dividido)
                 fuente_ndwi = "Simulado (fallback)"
 
             # 3. Datos climáticos (con protección contra None)
