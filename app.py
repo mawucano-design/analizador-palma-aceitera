@@ -998,13 +998,19 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     # END_GROUP=GridStructure
                     # Extraemos los campos necesarios
                     import re
-                    xdim_match = re.search(r'XDim=(\d+)', metadata)
-                    ydim_match = re.search(r'YDim=(\d+)', metadata)
-                    ul_match = re.search(r'UpperLeftPointMtrs=\(([^,]+),([^)]+)\)', metadata)
-                    lr_match = re.search(r'LowerRightMtrs=\(([^,]+),([^)]+)\)', metadata)
+                    # Buscar XDim e YDim (pueden estar en cualquier orden)
+                    xdim_match = re.search(r'XDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
+                    ydim_match = re.search(r'YDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
+                    # Buscar UpperLeftPointMtrs y LowerRightMtrs
+                    ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(([^,]+),([^)]+)\)', metadata, re.IGNORECASE)
+                    lr_match = re.search(r'LowerRightMtrs\s*=\s*\(([^,]+),([^)]+)\)', metadata, re.IGNORECASE)
 
                     if not (xdim_match and ydim_match and ul_match and lr_match):
-                        raise ValueError("No se pudo extraer la geolocalización completa de StructMetadata.0")
+                        # Intentar con otro patrón (a veces los números tienen signo y espacios)
+                        ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
+                        lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
+                        if not (ul_match and lr_match):
+                            raise ValueError("No se pudo extraer la geolocalización completa de StructMetadata.0")
 
                     xdim = int(xdim_match.group(1))
                     ydim = int(ydim_match.group(1))
@@ -1246,10 +1252,10 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     # Para MOD09GA, el grid puede ser "MOD_Grid_500m_Surface_Reflectance"
                     # Parsear similar a NDVI
                     import re
-                    xdim_match = re.search(r'XDim=(\d+)', metadata)
-                    ydim_match = re.search(r'YDim=(\d+)', metadata)
-                    ul_match = re.search(r'UpperLeftPointMtrs=\(([^,]+),([^)]+)\)', metadata)
-                    lr_match = re.search(r'LowerRightMtrs=\(([^,]+),([^)]+)\)', metadata)
+                    xdim_match = re.search(r'XDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
+                    ydim_match = re.search(r'YDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
+                    ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
+                    lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
 
                     if not (xdim_match and ydim_match and ul_match and lr_match):
                         raise ValueError("No se pudo extraer la geolocalización completa de StructMetadata.0")
@@ -1890,7 +1896,11 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
     if columna_color and colormap:
         def style_function(feature):
             valor = feature['properties'].get(columna_color, 0)
-            if np.isnan(valor):
+            # Verificar si valor es numérico y NaN
+            if isinstance(valor, (int, float)) and np.isnan(valor):
+                valor = 0
+            elif not isinstance(valor, (int, float)):
+                # Si no es numérico (ej. string), asignar 0 para el color
                 valor = 0
             color = colormap(valor) if hasattr(colormap, '__call__') else '#3388ff'
             return {
