@@ -3,4 +3,4 @@ libsm6
 libxrender1
 libfontconfig1
 libice6
-libglib2.0-0
+libglib2.0-0=2.82.4-2
