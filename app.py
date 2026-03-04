@@ -45,6 +45,10 @@ import base64
 import time
 import shutil
 
+# Suprimir advertencias de rasterio y otras librerías
+warnings.filterwarnings('ignore', category=UserWarning, module='rasterio')
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
 # ===== AUTENTICACIÓN Y PAGOS =====
 import sqlite3
 import hashlib
@@ -67,15 +71,16 @@ try:
     RASTERIO_OK = True
 except ImportError:
     RASTERIO_OK = False
-    st.warning("⚠️ rasterio no está instalado. Se usará pyhdf como fallback.")
 
 try:
     from pyhdf.SD import SD, SDC
     PYHDF_OK = True
 except ImportError:
     PYHDF_OK = False
-    if not RASTERIO_OK:
-        st.warning("⚠️ pyhdf tampoco está instalado. No se podrán leer archivos HDF4.")
+
+# Mostrar advertencias solo si ninguna está disponible
+if not RASTERIO_OK and not PYHDF_OK:
+    st.warning("⚠️ Ni rasterio ni pyhdf están instalados. No se podrán leer archivos HDF4. Instala al menos uno: pip install rasterio o pip install pyhdf")
 
 # ===== ESTILOS Y OCULTAMIENTO DE ELEMENTOS DE STREAMLIT =====
 st.markdown("""
@@ -848,11 +853,11 @@ def cargar_archivo_plantacion(uploaded_file):
         st.code(traceback.format_exc())
         return None
 
-# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (MEJORADAS) =====
+# ===== FUNCIONES PARA DATOS SATELITALES CON EARTHDATA (SILENCIOSAS) =====
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDVI real para cada bloque usando MOD13Q1.
-    Primero intenta con rasterio (extracción por bloque).
+    Primero intenta con rasterio (extracción por bloque) sin mostrar advertencias.
     Si falla, usa pyhdf para leer datos y metadata, y realiza extracción por bloque con rasterio en memoria.
     """
     if not EARTHDATA_OK:
@@ -910,9 +915,11 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     return None
 
-        # --- Intento con rasterio (extracción por bloque) ---
+        # --- Intento con rasterio (extracción por bloque) sin mostrar errores ---
+        rasterio_success = False
         if RASTERIO_OK:
             try:
+                # Intentar abrir con rasterio (puede fallar si no reconoce el formato)
                 with rasterio.open(download_path) as src:
                     subdatasets = src.subdatasets
                     ndvi_sub = None
@@ -920,50 +927,47 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                         if 'NDVI' in sd or 'ndvi' in sd.lower():
                             ndvi_sub = sd
                             break
-                    if not ndvi_sub:
-                        st.error("No se encontró subdataset NDVI en el archivo HDF.")
-                        raise Exception("No NDVI subdataset")
+                    if ndvi_sub:
+                        with rasterio.open(ndvi_sub) as src_ndvi:
+                            raster_crs = src_ndvi.crs
+                            nodata = src_ndvi.nodata
+                            gdf_proj = gdf_dividido.to_crs(raster_crs)
 
-                    with rasterio.open(ndvi_sub) as src_ndvi:
-                        raster_crs = src_ndvi.crs
-                        nodata = src_ndvi.nodata
-                        gdf_proj = gdf_dividido.to_crs(raster_crs)
+                            ndvi_values = []
+                            progress_bar = st.progress(0, text="Procesando bloques para NDVI...")
 
-                        ndvi_values = []
-                        progress_bar = st.progress(0, text="Procesando bloques para NDVI con rasterio...")
-
-                        for idx, row in gdf_proj.iterrows():
-                            geom = [mapping(row.geometry)]
-                            try:
-                                out_image, _ = mask(src_ndvi, geom, crop=True, nodata=nodata)
-                                data = out_image[0]
-                                data_scaled = data.astype(np.float32) * 0.0001
-                                mask_invalid = (data == nodata) | (data_scaled < -1) | (data_scaled > 1)
-                                data_clean = np.ma.masked_where(mask_invalid, data_scaled)
-                                mean_val = data_clean.mean()
-                                if np.ma.is_masked(mean_val) or np.isnan(mean_val):
+                            for idx, row in gdf_proj.iterrows():
+                                geom = [mapping(row.geometry)]
+                                try:
+                                    out_image, _ = mask(src_ndvi, geom, crop=True, nodata=nodata)
+                                    data = out_image[0]
+                                    data_scaled = data.astype(np.float32) * 0.0001
+                                    mask_invalid = (data == nodata) | (data_scaled < -1) | (data_scaled > 1)
+                                    data_clean = np.ma.masked_where(mask_invalid, data_scaled)
+                                    mean_val = data_clean.mean()
+                                    if np.ma.is_masked(mean_val) or np.isnan(mean_val):
+                                        ndvi_values.append(np.nan)
+                                    else:
+                                        ndvi_values.append(round(float(mean_val), 3))
+                                except Exception:
                                     ndvi_values.append(np.nan)
-                                else:
-                                    ndvi_values.append(round(float(mean_val), 3))
-                            except Exception as e:
-                                st.warning(f"Error procesando bloque {idx+1}: {str(e)[:50]}. Se asignará NaN.")
-                                ndvi_values.append(np.nan)
 
-                            progress_bar.progress((idx + 1) / len(gdf_proj),
-                                                  text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
+                                progress_bar.progress((idx + 1) / len(gdf_proj),
+                                                      text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
 
-                        progress_bar.empty()
+                            progress_bar.empty()
 
-                gdf_dividido['ndvi_modis'] = ndvi_values
-                st.success("✅ NDVI calculado por bloque correctamente con rasterio.")
-                return gdf_dividido
+                    gdf_dividido['ndvi_modis'] = ndvi_values
+                    st.success("✅ NDVI calculado por bloque correctamente con rasterio.")
+                    rasterio_success = True
+                    return gdf_dividido
 
-            except Exception as e_rasterio:
-                st.warning(f"rasterio falló al abrir el archivo: {str(e_rasterio)[:200]}. Intentando con pyhdf (extracción por bloque)...")
-                # Continuamos con pyhdf
+            except Exception:
+                # Fallo silencioso de rasterio, pasamos a pyhdf
+                pass
 
-        # --- Fallback con pyhdf: extracción por bloque usando metadata y rasterio en memoria ---
-        if PYHDF_OK:
+        # --- Fallback con pyhdf (sin mostrar advertencias) ---
+        if not rasterio_success and PYHDF_OK:
             try:
                 hdf = SD(download_path, SDC.READ)
                 # Buscar dataset NDVI
@@ -973,44 +977,23 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                         ndvi_dataset = name
                         break
                 if ndvi_dataset is None:
-                    st.error("No se encontró dataset NDVI con pyhdf.")
+                    st.error("No se encontró dataset NDVI en el archivo HDF.")
                     return None
 
-                ndvi_data = hdf.select(ndvi_dataset).get()  # shape (rows, cols)
-                # Escalar
+                ndvi_data = hdf.select(ndvi_dataset).get()
                 ndvi_scaled = ndvi_data.astype(np.float32) * 0.0001
 
-                # Obtener metadata de geolocalización (StructMetadata.0)
+                # Obtener metadata de geolocalización
                 try:
                     metadata = hdf.attributes()['StructMetadata.0']
-                    # Parsear para obtener parámetros de proyección y transformación
-                    # Ejemplo típico de MODIS:
-                    # GROUP=GridStructure
-                    #   GridName="MOD_Grid_16DAY_250m_VI"
-                    #   XDim=4800
-                    #   YDim=4800
-                    #   UpperLeftPointMtrs=(-20015109.355798,10007554.677899)
-                    #   LowerRightMtrs=(20015109.355798,-10007554.677899)
-                    #   Projection=GCTP_SNSOID
-                    #   ProjParams=(0,0,0,0,0,0,0,0,0,0,0,0,0)
-                    #   SphereCode=0
-                    #   GridOrigin=HDFE_GD_UL
-                    # END_GROUP=GridStructure
-                    # Extraemos los campos necesarios
                     import re
-                    # Buscar XDim e YDim (pueden estar en cualquier orden)
                     xdim_match = re.search(r'XDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
                     ydim_match = re.search(r'YDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
-                    # Buscar UpperLeftPointMtrs y LowerRightMtrs
-                    ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(([^,]+),([^)]+)\)', metadata, re.IGNORECASE)
-                    lr_match = re.search(r'LowerRightMtrs\s*=\s*\(([^,]+),([^)]+)\)', metadata, re.IGNORECASE)
+                    ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
+                    lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
 
                     if not (xdim_match and ydim_match and ul_match and lr_match):
-                        # Intentar con otro patrón (a veces los números tienen signo y espacios)
-                        ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
-                        lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
-                        if not (ul_match and lr_match):
-                            raise ValueError("No se pudo extraer la geolocalización completa de StructMetadata.0")
+                        raise ValueError("No se pudo extraer la geolocalización completa")
 
                     xdim = int(xdim_match.group(1))
                     ydim = int(ydim_match.group(1))
@@ -1019,23 +1002,14 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     lrx = float(lr_match.group(1))
                     lry = float(lr_match.group(2))
 
-                    # Verificar que las dimensiones coincidan con el array
                     if ndvi_scaled.shape != (ydim, xdim):
-                        st.warning(f"Dimensiones del array ({ndvi_scaled.shape}) no coinciden con metadata ({ydim}, {xdim}). Usando valores del array.")
-                        # Ajustar
                         ydim, xdim = ndvi_scaled.shape
 
-                    # Calcular resolución
                     res_x = (lrx - ulx) / xdim
-                    res_y = (uly - lry) / ydim  # positivo porque uly > lry
-
-                    # Crear transformada afín (rasterio espera: (res_x, 0, ulx, 0, -res_y, uly))
+                    res_y = (uly - lry) / ydim
                     transform = rasterio.Affine(res_x, 0, ulx, 0, -res_y, uly)
-
-                    # Definir CRS: MODIS sinusoidal (EPSG no oficial, pero se puede usar proj4)
                     crs = rasterio.crs.CRS.from_proj4("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
 
-                    # Crear un dataset en memoria con rasterio
                     with rasterio.io.MemoryFile() as memfile:
                         with memfile.open(
                             driver='GTiff',
@@ -1045,24 +1019,21 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             dtype=ndvi_scaled.dtype,
                             crs=crs,
                             transform=transform,
-                            nodata=-32768  # valor típico de MODIS, ajustar si es necesario
+                            nodata=-32768
                         ) as dst:
                             dst.write(ndvi_scaled, 1)
 
-                        # Ahora abrir el dataset desde la memoria y realizar el recorte por bloque
                         with memfile.open() as src_ndvi:
-                            # Reproyectar bloques al CRS sinusoidal
                             gdf_proj = gdf_dividido.to_crs(crs)
 
                             ndvi_values = []
-                            progress_bar = st.progress(0, text="Procesando bloques para NDVI con pyhdf + rasterio...")
+                            progress_bar = st.progress(0, text="Procesando bloques para NDVI con pyhdf...")
 
                             for idx, row in gdf_proj.iterrows():
                                 geom = [mapping(row.geometry)]
                                 try:
                                     out_image, _ = mask(src_ndvi, geom, crop=True, nodata=-32768)
                                     data = out_image[0]
-                                    # Escalar ya está aplicado, solo enmascarar valores nodata o fuera de rango
                                     mask_invalid = (data == -32768) | (data < -1) | (data > 1)
                                     data_clean = np.ma.masked_where(mask_invalid, data)
                                     mean_val = data_clean.mean()
@@ -1070,8 +1041,7 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                                         ndvi_values.append(np.nan)
                                     else:
                                         ndvi_values.append(round(float(mean_val), 3))
-                                except Exception as e:
-                                    st.warning(f"Error procesando bloque {idx+1} con pyhdf: {str(e)[:50]}")
+                                except Exception:
                                     ndvi_values.append(np.nan)
 
                                 progress_bar.progress((idx + 1) / len(gdf_proj),
@@ -1080,17 +1050,17 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             progress_bar.empty()
 
                             gdf_dividido['ndvi_modis'] = ndvi_values
-                            st.success("✅ NDVI calculado por bloque correctamente con pyhdf (extracción en memoria).")
+                            st.success("✅ NDVI calculado por bloque correctamente con pyhdf.")
                             return gdf_dividido
 
                 except Exception as e_meta:
-                    st.error(f"No se pudo extraer la geolocalización del archivo HDF: {str(e_meta)}. No es posible obtener valores por bloque con pyhdf.")
+                    st.error(f"No se pudo extraer la geolocalización del archivo HDF: {str(e_meta)}")
                     return None
 
             except Exception as e_pyhdf:
-                st.error(f"pyhdf falló: {str(e_pyhdf)}")
+                st.error(f"Error al procesar con pyhdf: {str(e_pyhdf)}")
                 return None
-        else:
+        elif not rasterio_success:
             st.error("No se pudo leer el archivo HDF: ni rasterio ni pyhdf están disponibles o funcionaron.")
             return None
 
@@ -1103,7 +1073,7 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     """
     Obtiene NDWI real para cada bloque usando MOD09GA (bandas NIR y SWIR).
-    Primero intenta con rasterio (extracción por bloque).
+    Primero intenta con rasterio (extracción por bloque) sin mostrar advertencias.
     Si falla, usa pyhdf para leer datos y metadata, y realiza extracción por bloque con rasterio en memoria.
     """
     if not EARTHDATA_OK:
@@ -1160,7 +1130,8 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     return None
 
-        # --- Intento con rasterio (extracción por bloque) ---
+        # --- Intento con rasterio (extracción por bloque) sin mostrar errores ---
+        rasterio_success = False
         if RASTERIO_OK:
             try:
                 with rasterio.open(download_path) as src:
@@ -1168,67 +1139,60 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     nir_sub = None
                     swir_sub = None
                     for sd in subdatasets:
-                        if 'sur_refl_b02' in sd:   # NIR (banda 2)
+                        if 'sur_refl_b02' in sd:
                             nir_sub = sd
-                        elif 'sur_refl_b06' in sd:  # SWIR (banda 6)
+                        elif 'sur_refl_b06' in sd:
                             swir_sub = sd
-                    if not nir_sub or not swir_sub:
-                        st.error("No se encontraron las bandas NIR o SWIR con rasterio.")
-                        raise Exception("No NIR/SWIR subdatasets")
+                    if nir_sub and swir_sub:
+                        with rasterio.open(nir_sub) as src_nir, rasterio.open(swir_sub) as src_swir:
+                            raster_crs = src_nir.crs
+                            nodata_nir = src_nir.nodata
+                            nodata_swir = src_swir.nodata
 
-                    # Abrir ambas bandas y obtener CRS (debería ser el mismo)
-                    with rasterio.open(nir_sub) as src_nir, rasterio.open(swir_sub) as src_swir:
-                        raster_crs = src_nir.crs
-                        nodata_nir = src_nir.nodata
-                        nodata_swir = src_swir.nodata
+                            gdf_proj = gdf_dividido.to_crs(raster_crs)
 
-                        gdf_proj = gdf_dividido.to_crs(raster_crs)
+                            ndwi_values = []
+                            progress_bar = st.progress(0, text="Procesando bloques para NDWI...")
 
-                        ndwi_values = []
-                        progress_bar = st.progress(0, text="Procesando bloques para NDWI con rasterio...")
+                            for idx, row in gdf_proj.iterrows():
+                                geom = [mapping(row.geometry)]
+                                try:
+                                    out_nir, _ = mask(src_nir, geom, crop=True, nodata=nodata_nir)
+                                    nir_band = out_nir[0].astype(np.float32) * 0.0001
 
-                        for idx, row in gdf_proj.iterrows():
-                            geom = [mapping(row.geometry)]
-                            try:
-                                # Recortar banda NIR
-                                out_nir, _ = mask(src_nir, geom, crop=True, nodata=nodata_nir)
-                                nir_band = out_nir[0].astype(np.float32) * 0.0001
+                                    out_swir, _ = mask(src_swir, geom, crop=True, nodata=nodata_swir)
+                                    swir_band = out_swir[0].astype(np.float32) * 0.0001
 
-                                # Recortar banda SWIR
-                                out_swir, _ = mask(src_swir, geom, crop=True, nodata=nodata_swir)
-                                swir_band = out_swir[0].astype(np.float32) * 0.0001
+                                    valid = (nir_band != nodata_nir * 0.0001) & (swir_band != nodata_swir * 0.0001) & (nir_band + swir_band != 0)
+                                    nir_valid = np.ma.masked_where(~valid, nir_band)
+                                    swir_valid = np.ma.masked_where(~valid, swir_band)
 
-                                # Máscara combinada de píxeles válidos
-                                valid = (nir_band != nodata_nir * 0.0001) & (swir_band != nodata_swir * 0.0001) & (nir_band + swir_band != 0)
-                                nir_valid = np.ma.masked_where(~valid, nir_band)
-                                swir_valid = np.ma.masked_where(~valid, swir_band)
-
-                                with np.errstate(divide='ignore', invalid='ignore'):
-                                    ndwi = (nir_valid - swir_valid) / (nir_valid + swir_valid)
-                                mean_val = ndwi.mean()
-                                if np.ma.is_masked(mean_val) or np.isnan(mean_val):
+                                    with np.errstate(divide='ignore', invalid='ignore'):
+                                        ndwi = (nir_valid - swir_valid) / (nir_valid + swir_valid)
+                                    mean_val = ndwi.mean()
+                                    if np.ma.is_masked(mean_val) or np.isnan(mean_val):
+                                        ndwi_values.append(np.nan)
+                                    else:
+                                        ndwi_values.append(round(float(mean_val), 3))
+                                except Exception:
                                     ndwi_values.append(np.nan)
-                                else:
-                                    ndwi_values.append(round(float(mean_val), 3))
-                            except Exception as e:
-                                st.warning(f"Error procesando bloque {idx+1}: {str(e)[:50]}")
-                                ndwi_values.append(np.nan)
 
-                            progress_bar.progress((idx + 1) / len(gdf_proj),
-                                                  text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
+                                progress_bar.progress((idx + 1) / len(gdf_proj),
+                                                      text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
 
-                        progress_bar.empty()
+                            progress_bar.empty()
 
-                gdf_dividido['ndwi_modis'] = ndwi_values
-                st.success("✅ NDWI calculado por bloque correctamente con rasterio.")
-                return gdf_dividido
+                            gdf_dividido['ndwi_modis'] = ndwi_values
+                            st.success("✅ NDWI calculado por bloque correctamente con rasterio.")
+                            rasterio_success = True
+                            return gdf_dividido
 
-            except Exception as e_rasterio:
-                st.warning(f"rasterio falló: {str(e_rasterio)[:200]}. Intentando con pyhdf (extracción por bloque)...")
-                # Continuamos con pyhdf
+            except Exception:
+                # Fallo silencioso de rasterio
+                pass
 
-        # --- Fallback con pyhdf: extracción por bloque usando metadata y rasterio en memoria ---
-        if PYHDF_OK:
+        # --- Fallback con pyhdf (sin mostrar advertencias) ---
+        if not rasterio_success and PYHDF_OK:
             try:
                 hdf = SD(download_path, SDC.READ)
                 nir_data = None
@@ -1242,15 +1206,11 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     st.error("No se encontraron las bandas NIR o SWIR con pyhdf.")
                     return None
 
-                # Escalar
                 nir = nir_data.astype(np.float32) * 0.0001
                 swir = swir_data.astype(np.float32) * 0.0001
 
-                # Obtener metadata de geolocalización (StructMetadata.0) para una de las bandas (asumimos que todas tienen la misma geolocalización)
                 try:
                     metadata = hdf.attributes()['StructMetadata.0']
-                    # Para MOD09GA, el grid puede ser "MOD_Grid_500m_Surface_Reflectance"
-                    # Parsear similar a NDVI
                     import re
                     xdim_match = re.search(r'XDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
                     ydim_match = re.search(r'YDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
@@ -1258,7 +1218,7 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
 
                     if not (xdim_match and ydim_match and ul_match and lr_match):
-                        raise ValueError("No se pudo extraer la geolocalización completa de StructMetadata.0")
+                        raise ValueError("No se pudo extraer la geolocalización completa")
 
                     xdim = int(xdim_match.group(1))
                     ydim = int(ydim_match.group(1))
@@ -1267,9 +1227,7 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     lrx = float(lr_match.group(1))
                     lry = float(lr_match.group(2))
 
-                    # Verificar dimensiones
                     if nir.shape != (ydim, xdim):
-                        st.warning(f"Dimensiones de NIR ({nir.shape}) no coinciden con metadata ({ydim}, {xdim}). Usando valores del array.")
                         ydim, xdim = nir.shape
 
                     res_x = (lrx - ulx) / xdim
@@ -1277,53 +1235,29 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     transform = rasterio.Affine(res_x, 0, ulx, 0, -res_y, uly)
                     crs = rasterio.crs.CRS.from_proj4("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
 
-                    # Crear datasets en memoria para NIR y SWIR
                     with rasterio.io.MemoryFile() as memfile_nir, rasterio.io.MemoryFile() as memfile_swir:
-                        # Escribir NIR
-                        with memfile_nir.open(
-                            driver='GTiff',
-                            height=ydim,
-                            width=xdim,
-                            count=1,
-                            dtype=nir.dtype,
-                            crs=crs,
-                            transform=transform,
-                            nodata=-32768
-                        ) as dst_nir:
+                        with memfile_nir.open(driver='GTiff', height=ydim, width=xdim, count=1,
+                                              dtype=nir.dtype, crs=crs, transform=transform, nodata=-32768) as dst_nir:
                             dst_nir.write(nir, 1)
-
-                        # Escribir SWIR
-                        with memfile_swir.open(
-                            driver='GTiff',
-                            height=ydim,
-                            width=xdim,
-                            count=1,
-                            dtype=swir.dtype,
-                            crs=crs,
-                            transform=transform,
-                            nodata=-32768
-                        ) as dst_swir:
+                        with memfile_swir.open(driver='GTiff', height=ydim, width=xdim, count=1,
+                                              dtype=swir.dtype, crs=crs, transform=transform, nodata=-32768) as dst_swir:
                             dst_swir.write(swir, 1)
 
-                        # Abrir ambos para lectura
                         with memfile_nir.open() as src_nir, memfile_swir.open() as src_swir:
                             gdf_proj = gdf_dividido.to_crs(crs)
 
                             ndwi_values = []
-                            progress_bar = st.progress(0, text="Procesando bloques para NDWI con pyhdf + rasterio...")
+                            progress_bar = st.progress(0, text="Procesando bloques para NDWI con pyhdf...")
 
                             for idx, row in gdf_proj.iterrows():
                                 geom = [mapping(row.geometry)]
                                 try:
-                                    # Recortar NIR
                                     out_nir, _ = mask(src_nir, geom, crop=True, nodata=-32768)
                                     nir_band = out_nir[0]
 
-                                    # Recortar SWIR
                                     out_swir, _ = mask(src_swir, geom, crop=True, nodata=-32768)
                                     swir_band = out_swir[0]
 
-                                    # Máscara combinada
                                     valid = (nir_band != -32768) & (swir_band != -32768) & (nir_band + swir_band != 0)
                                     nir_valid = np.ma.masked_where(~valid, nir_band)
                                     swir_valid = np.ma.masked_where(~valid, swir_band)
@@ -1335,8 +1269,7 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                                         ndwi_values.append(np.nan)
                                     else:
                                         ndwi_values.append(round(float(mean_val), 3))
-                                except Exception as e:
-                                    st.warning(f"Error procesando bloque {idx+1}: {str(e)[:50]}")
+                                except Exception:
                                     ndwi_values.append(np.nan)
 
                                 progress_bar.progress((idx + 1) / len(gdf_proj),
@@ -1345,17 +1278,17 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             progress_bar.empty()
 
                             gdf_dividido['ndwi_modis'] = ndwi_values
-                            st.success("✅ NDWI calculado por bloque correctamente con pyhdf (extracción en memoria).")
+                            st.success("✅ NDWI calculado por bloque correctamente con pyhdf.")
                             return gdf_dividido
 
                 except Exception as e_meta:
-                    st.error(f"No se pudo extraer la geolocalización del archivo HDF: {str(e_meta)}. No es posible obtener valores por bloque con pyhdf.")
+                    st.error(f"No se pudo extraer la geolocalización del archivo HDF: {str(e_meta)}")
                     return None
 
             except Exception as e_pyhdf:
-                st.error(f"pyhdf falló: {str(e_pyhdf)}")
+                st.error(f"Error al procesar con pyhdf: {str(e_pyhdf)}")
                 return None
-        else:
+        elif not rasterio_success:
             st.error("No se pudo leer el archivo HDF: ni rasterio ni pyhdf están disponibles o funcionaron.")
             return None
 
@@ -1897,11 +1830,15 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
         def style_function(feature):
             valor = feature['properties'].get(columna_color, 0)
             # Verificar si valor es numérico y NaN
-            if isinstance(valor, (int, float)) and np.isnan(valor):
-                valor = 0
-            elif not isinstance(valor, (int, float)):
-                # Si no es numérico (ej. string), asignar 0 para el color
-                valor = 0
+            if isinstance(valor, (int, float)):
+                if np.isnan(valor):
+                    valor = 0
+            else:
+                # Si no es numérico, convertir a 0
+                try:
+                    valor = float(valor) if valor is not None else 0
+                except:
+                    valor = 0
             color = colormap(valor) if hasattr(colormap, '__call__') else '#3388ff'
             return {
                 'fillColor': color,
@@ -1947,12 +1884,20 @@ def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
         for idx, row in gdf.iterrows():
             centroide = row.geometry.centroid
             puntos.append([centroide.x, centroide.y])
-            valores.append(row[columna])
+            val = row[columna]
+            if pd.notna(val):
+                valores.append(val)
+            else:
+                # Si es NaN, no lo incluimos para la interpolación
+                pass
         puntos = np.array(puntos)
         valores = np.array(valores)
         
-        if len(puntos) < 4:
-            return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
+        if len(puntos) < 4 or len(valores) < 4:
+            # No hay suficientes puntos, usar mapa de coropletas simple
+            return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
+                                               tooltip_fields=['id_bloque', columna],
+                                               tooltip_aliases=['Bloque', titulo])
         
         n = 300
         xi = np.linspace(minx, maxx, n)
@@ -1962,7 +1907,8 @@ def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
         try:
             rbf = Rbf(puntos[:, 0], puntos[:, 1], valores, function='multiquadric', smooth=0.1)
             ZI = rbf(XI, YI)
-        except Exception as e:
+        except Exception:
+            # Si RBF falla, usar IDW
             return crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
         
         cmap = matplotlib.colors.LinearSegmentedColormap.from_list('custom', colormap_list)
@@ -2013,7 +1959,10 @@ def crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
         
         return m
     except Exception as e:
-        return None
+        st.warning(f"No se pudo generar el mapa de calor: {e}. Mostrando mapa de coropletas simple.")
+        return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
+                                           tooltip_fields=['id_bloque', columna],
+                                           tooltip_aliases=['Bloque', titulo])
 
 def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list):
     try:
@@ -2031,9 +1980,16 @@ def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
         for idx, row in gdf.iterrows():
             centroide = row.geometry.centroid
             puntos.append([centroide.x, centroide.y])
-            valores.append(row[columna])
+            val = row[columna]
+            if pd.notna(val):
+                valores.append(val)
         puntos = np.array(puntos)
         valores = np.array(valores)
+        
+        if len(puntos) < 2:
+            return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
+                                               tooltip_fields=['id_bloque', columna],
+                                               tooltip_aliases=['Bloque', titulo])
         
         n = 200
         xi = np.linspace(minx, maxx, n)
@@ -2099,19 +2055,31 @@ def crear_mapa_calor_indice_idw(gdf, columna, titulo, vmin, vmax, colormap_list)
         
         return m
     except Exception as e:
-        return None
+        st.warning(f"No se pudo generar el mapa IDW: {e}. Mostrando mapa de coropletas simple.")
+        return crear_mapa_interactivo_base(gdf, columna, LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax),
+                                           tooltip_fields=['id_bloque', columna],
+                                           tooltip_aliases=['Bloque', titulo])
 
 def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list):
+    # Verificar si la columna existe y tiene datos
+    if columna not in gdf.columns:
+        st.error(f"La columna {columna} no está disponible.")
+        return
+    
+    valores = gdf[columna].dropna()
+    if len(valores) == 0:
+        st.warning(f"No hay datos válidos para {titulo}.")
+        return
+    
     mapa_calor = None
     try:
         mapa_calor = crear_mapa_calor_indice_rbf(gdf, columna, titulo, vmin, vmax, colormap_list)
-    except:
-        mapa_calor = None
+    except Exception as e:
+        st.warning(f"No se pudo generar el mapa de calor: {e}. Mostrando gráfico de barras.")
     
     if mapa_calor:
         folium_static(mapa_calor, width=1000, height=600)
     else:
-        st.warning("No se pudo generar el mapa de calor. Mostrando gráfico de barras.")
         fig, ax = plt.subplots(figsize=(10,4))
         ax.bar(range(len(gdf)), gdf[columna].values, color='steelblue')
         ax.set_xlabel('Bloque')
@@ -2119,11 +2087,6 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
         ax.set_title(f'Valores de {titulo} por bloque')
         st.pyplot(fig)
         plt.close(fig)
-    
-    valores = gdf[columna].dropna()
-    if len(valores) == 0:
-        st.warning("No hay datos para este índice.")
-        return
     
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
