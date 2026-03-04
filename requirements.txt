@@ -24,3 +24,5 @@ earthaccess
 xarray 
 rioxarray
 pyhdf
+torch
+torchvision
