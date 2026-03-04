@@ -1,7 +1,7 @@
 streamlit>=1.35.0
 geopandas
 pandas
-numpy
+numpy<2.0.0
 matplotlib
 shapely
 folium
