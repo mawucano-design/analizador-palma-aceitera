@@ -489,7 +489,7 @@ def generar_clima_simulado():
     }
 
 # ===== CONFIGURACIÓN DE PÁGINA =====
-st.set_page_config(page_title="Analizador de Palma Aceitera", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Analizador de Vid y Olivo", page_icon="🍇", layout="wide", initial_sidebar_state="expanded")
 
 # ===== INICIALIZACIÓN DE SESIÓN =====
 def init_session_state():
