@@ -6,10 +6,9 @@
 # - Detección de palmas (simulada)
 # - Curvas de nivel (SRTM vía OpenTopography o simuladas)
 # - Detección YOLO (enfermedades/plagas)
-#
 # IMPORTANTE: Configurar variables de entorno:
-#   EARTHDATA_USERNAME, EARTHDATA_PASSWORD (para datos MODIS)
-#   OPENTOPOGRAPHY_API_KEY (opcional, para curvas de nivel reales)
+# EARTHDATA_USERNAME, EARTHDATA_PASSWORD (para datos MODIS)
+# OPENTOPOGRAPHY_API_KEY (opcional, para curvas de nivel reales)
 # Instalar dependencias: ver requirements.txt
 
 import streamlit as st
@@ -77,7 +76,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ===== ESTILOS BÁSICOS (sin ocultar GitHub) =====
+# ===== ESTILOS BÁSICOS =====
 st.markdown("""
 <style>
 .hero-banner { 
@@ -112,31 +111,13 @@ st.markdown("""
     transform: translateY(-2px) !important; 
     box-shadow: 0 5px 15px rgba(0,0,0,0.3) !important; 
 }
-.stTabs [data-baseweb="tab-list"] { 
-    background: rgba(30, 41, 59, 0.7) !important; 
-    backdrop-filter: blur(10px) !important; 
-    padding: 8px 16px !important; 
-    border-radius: 16px !important; 
-    border: 1px solid rgba(76, 175, 80, 0.3) !important; 
-    margin-top: 1.5em !important; 
-}
-div[data-testid="metric-container"] { 
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.9), rgba(15, 23, 42, 0.95)) !important; 
-    backdrop-filter: blur(10px) !important; 
-    border-radius: 18px !important; 
-    padding: 22px !important; 
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35) !important; 
-    border: 1px solid rgba(76, 175, 80, 0.25) !important; 
-}
 </style>
 """, unsafe_allow_html=True)
 
 st.markdown("""
 <div class="hero-banner">
     <h1 class="hero-title">🌴 ANALIZADOR DE PALMA ACEITERA SATELITAL</h1>
-    <p style="color: #cbd5e1; font-size: 1.2em;">
-        Monitoreo biológico con datos reales NASA Earthdata · Open-Meteo · NASA POWER
-    </p>
+    <p>Monitoreo biológico con datos reales NASA Earthdata · Open-Meteo · NASA POWER</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -175,7 +156,7 @@ VARIEDADES_PALMA_ACEITERA = [
     'Dami', 'Socfindo', 'SP540'
 ]
 
-# ===== CREDENCIALES EARTHDATA (desde secrets) =====
+# ===== CREDENCIALES EARTHDATA =====
 EARTHDATA_USERNAME = os.environ.get("EARTHDATA_USERNAME")
 EARTHDATA_PASSWORD = os.environ.get("EARTHDATA_PASSWORD")
 
@@ -191,7 +172,7 @@ def validar_y_corregir_crs(gdf):
                 gdf = gdf.set_crs('EPSG:4326')
             else:
                 gdf = gdf.set_crs('EPSG:3857')
-                gdf = gdf.to_crs('EPSG:4326')
+            gdf = gdf.to_crs('EPSG:4326')
         elif str(gdf.crs).upper() != 'EPSG:4326':
             gdf = gdf.to_crs('EPSG:4326')
         return gdf
@@ -223,13 +204,12 @@ def dividir_plantacion_en_bloques(gdf, n_bloques):
     plantacion_principal = gdf.iloc[0].geometry
     bounds = plantacion_principal.bounds
     minx, miny, maxx, maxy = bounds
-    
     sub_poligonos = []
     n_cols = math.ceil(math.sqrt(n_bloques))
     n_rows = math.ceil(n_bloques / n_cols)
     width = (maxx - minx) / n_cols
     height = (maxy - miny) / n_rows
-    
+
     for i in range(n_rows):
         for j in range(n_cols):
             if len(sub_poligonos) >= n_bloques:
@@ -245,7 +225,7 @@ def dividir_plantacion_en_bloques(gdf, n_bloques):
             intersection = plantacion_principal.intersection(cell_poly)
             if not intersection.is_empty and intersection.area > 0:
                 sub_poligonos.append(intersection)
-    
+
     if sub_poligonos:
         nuevo_gdf = gpd.GeoDataFrame(
             {'id_bloque': range(1, len(sub_poligonos) + 1), 'geometry': sub_poligonos},
@@ -259,10 +239,9 @@ def procesar_kml_robusto(file_content):
     try:
         content = file_content.decode('utf-8', errors='ignore')
         polygons = []
-        # Buscar secciones de coordenadas
         coord_sections = re.findall(
-            r'<coordinates[^>]*>([\s\S]*?)</coordinates>', 
-            content, 
+            r'<coordinates[^>]*>([\s\S]*?)</coordinates>',
+            content,
             re.IGNORECASE | re.DOTALL
         )
         for coord_text in coord_sections:
@@ -293,46 +272,6 @@ def procesar_kml_robusto(file_content):
                         polygons.append(polygon)
                 except Exception:
                     continue
-        if polygons:
-            return gpd.GeoDataFrame(geometry=polygons, crs='EPSG:4326')
-        # Fallback: buscar dentro de Placemark
-        placemarks = re.findall(
-            r'<Placemark[^>]*>([\s\S]*?)</Placemark>', 
-            content, 
-            re.IGNORECASE | re.DOTALL
-        )
-        for placemark in placemarks:
-            coord_match = re.search(
-                r'<coordinates[^>]*>([\s\S]*?)</coordinates>', 
-                placemark, 
-                re.IGNORECASE
-            )
-            if coord_match:
-                coord_text = coord_match.group(1).strip()
-                if coord_text:
-                    coord_list = []
-                    coords = re.split(r'[\s\n\t]+', coord_text)
-                    for coord in coords:
-                        coord = coord.strip()
-                        if coord and ',' in coord:
-                            try:
-                                parts = [p.strip() for p in coord.split(',')]
-                                if len(parts) >= 2:
-                                    lon = float(parts[0])
-                                    lat = float(parts[1])
-                                    if -180 <= lon <= 180 and -90 <= lat <= 90:
-                                        coord_list.append((lon, lat))
-                            except ValueError:
-                                continue
-                    if len(coord_list) >= 3:
-                        if coord_list[0] != coord_list[-1]:
-                            coord_list.append(coord_list[0])
-                        try:
-                            polygon = Polygon(coord_list)
-                            if polygon.is_valid and polygon.area > 0:
-                                polygons.append(polygon)
-                        except Exception:
-                            continue
         if polygons:
             return gpd.GeoDataFrame(geometry=polygons, crs='EPSG:4326')
         return None
@@ -437,7 +376,7 @@ def cargar_archivo_plantacion(uploaded_file):
         st.code(traceback.format_exc())
         return None
 
-# ===== FUNCIONES PARA DATOS SATELITALES =====
+# ===== FUNCIONES PARA DATOS SATELITALES (CORREGIDAS) =====
 def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     if not EARTHDATA_OK:
         st.error("Librerías earthaccess/xarray/rioxarray no instaladas.")
@@ -445,7 +384,6 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
         st.error("Credenciales de Earthdata no configuradas.")
         return None
-
     try:
         auth = earthaccess.login()
         if not auth.authenticated:
@@ -514,7 +452,12 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                             for idx, row in gdf_proj.iterrows():
                                 geom = [mapping(row.geometry)]
                                 try:
-                                    out_image, _ = mask(src_ndvi, geom, crop=True, nodata=nodata)
+                                    # CORRECCIÓN: Manejar posible error de unpack
+                                    mask_result = mask(src_ndvi, geom, crop=True, nodata=nodata)
+                                    if len(mask_result) >= 2:
+                                        out_image, _ = mask_result
+                                    else:
+                                        out_image = mask_result[0]
                                     data = out_image[0]
                                     data_scaled = data.astype(np.float32) * 0.0001
                                     mask_invalid = (data == nodata) | (data_scaled < -1) | (data_scaled > 1)
@@ -551,27 +494,35 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     return None
                 ndvi_data = hdf.select(ndvi_dataset).get()
                 ndvi_scaled = ndvi_data.astype(np.float32) * 0.0001
-                # Extraer geolocalización desde metadata
+                
                 metadata = hdf.attributes().get('StructMetadata.0', '')
-                import re
                 xdim_match = re.search(r'XDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
                 ydim_match = re.search(r'YDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
                 ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
                 lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
+                
                 if not (xdim_match and ydim_match and ul_match and lr_match):
-                    raise ValueError("No se pudo extraer la geolocalización completa")
-                xdim = int(xdim_match.group(1))
-                ydim = int(ydim_match.group(1))
-                ulx = float(ul_match.group(1))
-                uly = float(ul_match.group(2))
-                lrx = float(lr_match.group(1))
-                lry = float(lr_match.group(2))
+                    ydim, xdim = ndvi_scaled.shape
+                    ulx, uly = -180, 90
+                    lrx, lry = 180, -90
+                    st.warning("No se pudo extraer geolocalización completa. Usando estimación.")
+                else:
+                    xdim = int(xdim_match.group(1))
+                    ydim = int(ydim_match.group(1))
+                    ulx = float(ul_match.group(1))
+                    uly = float(ul_match.group(2))
+                    lrx = float(lr_match.group(1))
+                    lry = float(lr_match.group(2))
+                
                 if ndvi_scaled.shape != (ydim, xdim):
                     ydim, xdim = ndvi_scaled.shape
-                res_x = (lrx - ulx) / xdim
-                res_y = (uly - lry) / ydim
+                    
+                res_x = (lrx - ulx) / xdim if xdim > 0 else 0.01
+                res_y = (uly - lry) / ydim if ydim > 0 else 0.01
+                
                 transform = rasterio.Affine(res_x, 0, ulx, 0, -res_y, uly)
                 crs = rasterio.crs.CRS.from_proj4("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
+                
                 with rasterio.io.MemoryFile() as memfile:
                     with memfile.open(
                         driver='GTiff',
@@ -591,7 +542,11 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                         for idx, row in gdf_proj.iterrows():
                             geom = [mapping(row.geometry)]
                             try:
-                                out_image, _ = mask(src_ndvi, geom, crop=True, nodata=-32768)
+                                mask_result = mask(src_ndvi, geom, crop=True, nodata=-32768)
+                                if len(mask_result) >= 2:
+                                    out_image, _ = mask_result
+                                else:
+                                    out_image = mask_result[0]
                                 data = out_image[0]
                                 mask_invalid = (data == -32768) | (data < -1) | (data > 1)
                                 data_clean = np.ma.masked_where(mask_invalid, data)
@@ -614,21 +569,24 @@ def obtener_ndvi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return None
         else:
-            st.error("No se pudo leer el archivo HDF: ni rasterio ni pyhdf están disponibles o funcionaron.")
+            st.error("No se pudo leer el archivo HDF: ni rasterio ni pyhdf están disponibles.")
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
     except Exception as e:
         st.error(f"Error en obtención de NDVI: {str(e)}")
         return None
 
+
 def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
+    """
+    CORREGIDO: Manejo robusto del error 'not enough values to unpack'
+    """
     if not EARTHDATA_OK:
         st.error("Librerías earthaccess/xarray/rioxarray no instaladas.")
         return None
     if not EARTHDATA_USERNAME or not EARTHDATA_PASSWORD:
         st.error("Credenciales de Earthdata no configuradas.")
         return None
-
     try:
         auth = earthaccess.login()
         if not auth.authenticated:
@@ -638,6 +596,7 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         bounds = gdf_dividido.total_bounds
         bbox = (bounds[0], bounds[1], bounds[2], bounds[3])
 
+        # MOD09GA tiene resolución de 500m
         results = earthaccess.search_data(
             short_name='MOD09GA',
             version='061',
@@ -647,7 +606,18 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
         )
 
         if not results:
-            st.error("No se encontraron escenas MOD09GA en el período.")
+            # Fallback a MOD09Q1 si MOD09GA no está disponible
+            st.info("MOD09GA no disponible, intentando con MOD09Q1...")
+            results = earthaccess.search_data(
+                short_name='MOD09Q1',
+                version='061',
+                bounding_box=bbox,
+                temporal=(fecha_inicio.strftime('%Y-%m-%d'), fecha_fin.strftime('%Y-%m-%d')),
+                count=5
+            )
+        
+        if not results:
+            st.error("No se encontraron escenas MOD09GA/MOD09Q1 en el período.")
             return None
 
         granule = results[0]
@@ -676,96 +646,150 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     return None
 
-        # Intento con rasterio
+        # Intento con rasterio (CORREGIDO)
         if RASTERIO_OK:
             try:
                 with rasterio.open(download_path) as src:
                     subdatasets = src.subdatasets
+                    
+                    # MOD09GA: bandas 2 (NIR) y 6 (SWIR)
                     nir_sub = None
                     swir_sub = None
+                    
                     for sd in subdatasets:
-                        if 'sur_refl_b02' in sd:
+                        if 'sur_refl_b02' in sd.lower() or 'B02' in sd:
                             nir_sub = sd
-                        elif 'sur_refl_b06' in sd:
+                        elif 'sur_refl_b06' in sd.lower() or 'B06' in sd:
                             swir_sub = sd
-                    if nir_sub and swir_sub:
-                        with rasterio.open(nir_sub) as src_nir, rasterio.open(swir_sub) as src_swir:
-                            raster_crs = src_nir.crs
-                            nodata_nir = src_nir.nodata
-                            nodata_swir = src_swir.nodata
-                            gdf_proj = gdf_dividido.to_crs(raster_crs)
+                    
+                    # Fallback por índice
+                    if not nir_sub and len(subdatasets) >= 2:
+                        nir_sub = subdatasets[1]
+                    if not swir_sub and len(subdatasets) >= 6:
+                        swir_sub = subdatasets[5]
+                    
+                    if not nir_sub or not swir_sub:
+                        st.error(f"No se encontraron bandas NIR/SWIR. Subdatasets: {len(subdatasets)}")
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        return None
+                    
+                    with rasterio.open(nir_sub) as src_nir, rasterio.open(swir_sub) as src_swir:
+                        raster_crs = src_nir.crs
+                        nodata_nir = src_nir.nodata
+                        nodata_swir = src_swir.nodata
+                        gdf_proj = gdf_dividido.to_crs(raster_crs)
 
-                            ndwi_values = []
-                            progress_bar = st.progress(0, text="Procesando bloques para NDWI...")
-                            for idx, row in gdf_proj.iterrows():
-                                geom = [mapping(row.geometry)]
+                        ndwi_values = []
+                        progress_bar = st.progress(0, text="Procesando bloques para NDWI...")
+                        
+                        for idx, row in gdf_proj.iterrows():
+                            geom = [mapping(row.geometry)]
+                            try:
+                                # CORRECCIÓN PRINCIPAL: Manejar unpack de mask()
                                 try:
-                                    out_nir, _ = mask(src_nir, geom, crop=True, nodata=nodata_nir)
-                                    nir_band = out_nir[0].astype(np.float32) * 0.0001
-                                    out_swir, _ = mask(src_swir, geom, crop=True, nodata=nodata_swir)
-                                    swir_band = out_swir[0].astype(np.float32) * 0.0001
-
-                                    valid = (nir_band != nodata_nir * 0.0001) & (swir_band != nodata_swir * 0.0001) & (nir_band + swir_band != 0)
-                                    nir_valid = np.ma.masked_where(~valid, nir_band)
-                                    swir_valid = np.ma.masked_where(~valid, swir_band)
-
-                                    with np.errstate(divide='ignore', invalid='ignore'):
-                                        ndwi = (nir_valid - swir_valid) / (nir_valid + swir_valid)
-                                    mean_val = ndwi.mean()
-                                    if np.ma.is_masked(mean_val) or np.isnan(mean_val):
-                                        ndwi_values.append(np.nan)
+                                    mask_nir = mask(src_nir, geom, crop=True, nodata=nodata_nir)
+                                    mask_swir = mask(src_swir, geom, crop=True, nodata=nodata_swir)
+                                    
+                                    if len(mask_nir) >= 2:
+                                        out_nir, _ = mask_nir
                                     else:
-                                        ndwi_values.append(round(float(mean_val), 3))
-                                except Exception:
-                                    ndwi_values.append(np.nan)
-                                progress_bar.progress((idx + 1) / len(gdf_proj),
-                                                      text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
-                            progress_bar.empty()
-                            gdf_dividido['ndwi_modis'] = ndwi_values
-                            st.success("✅ NDWI calculado por bloque correctamente.")
-                            shutil.rmtree(temp_dir, ignore_errors=True)
-                            return gdf_dividido
-            except Exception:
-                pass
+                                        out_nir = mask_nir[0]
+                                    
+                                    if len(mask_swir) >= 2:
+                                        out_swir, _ = mask_swir
+                                    else:
+                                        out_swir = mask_swir[0]
+                                        
+                                except ValueError as e:
+                                    if "not enough values to unpack" in str(e):
+                                        # Intentar sin crop
+                                        out_nir = mask(src_nir, geom, nodata=nodata_nir)[0]
+                                        out_swir = mask(src_swir, geom, nodata=nodata_swir)[0]
+                                    else:
+                                        raise e
+                                
+                                nir_band = out_nir[0].astype(np.float32) * 0.0001
+                                swir_band = out_swir[0].astype(np.float32) * 0.0001
 
-        # Fallback con pyhdf
+                                valid = (nir_band != nodata_nir * 0.0001) & \
+                                       (swir_band != nodata_swir * 0.0001) & \
+                                       (nir_band + swir_band != 0)
+                                nir_valid = np.ma.masked_where(~valid, nir_band)
+                                swir_valid = np.ma.masked_where(~valid, swir_band)
+
+                                with np.errstate(divide='ignore', invalid='ignore'):
+                                    ndwi = (nir_valid - swir_valid) / (nir_valid + swir_valid)
+                                mean_val = ndwi.mean()
+                                
+                                if np.ma.is_masked(mean_val) or np.isnan(mean_val):
+                                    ndwi_values.append(np.nan)
+                                else:
+                                    ndwi_values.append(round(float(mean_val), 3))
+                            except Exception as e_block:
+                                ndwi_values.append(np.nan)
+                                print(f"Error procesando bloque {idx}: {e_block}")
+                            
+                            progress_bar.progress((idx + 1) / len(gdf_proj),
+                                                  text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
+                        progress_bar.empty()
+                        gdf_dividido['ndwi_modis'] = ndwi_values
+                        st.success("✅ NDWI calculado por bloque correctamente.")
+                        shutil.rmtree(temp_dir, ignore_errors=True)
+                        return gdf_dividido
+            except Exception as e_rasterio:
+                st.warning(f"Error con rasterio: {str(e_rasterio)[:100]}. Intentando pyhdf...")
+
+        # Fallback con pyhdf (CORREGIDO)
         if PYHDF_OK:
             try:
                 hdf = SD(download_path, SDC.READ)
                 nir_data = None
                 swir_data = None
+                
                 for name in hdf.datasets().keys():
-                    if 'sur_refl_b02' in name:
+                    if 'sur_refl_b02' in name.lower() or 'B02' in name:
                         nir_data = hdf.select(name).get()
-                    elif 'sur_refl_b06' in name:
+                    elif 'sur_refl_b06' in name.lower() or 'B06' in name:
                         swir_data = hdf.select(name).get()
+                
                 if nir_data is None or swir_data is None:
                     st.error("No se encontraron las bandas NIR o SWIR con pyhdf.")
                     shutil.rmtree(temp_dir, ignore_errors=True)
                     return None
+                
                 nir = nir_data.astype(np.float32) * 0.0001
                 swir = swir_data.astype(np.float32) * 0.0001
 
                 metadata = hdf.attributes().get('StructMetadata.0', '')
-                import re
+                
+                # CORRECCIÓN: Manejar regex que puede no encontrar matches
                 xdim_match = re.search(r'XDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
                 ydim_match = re.search(r'YDim\s*=\s*(\d+)', metadata, re.IGNORECASE)
                 ul_match = re.search(r'UpperLeftPointMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
                 lr_match = re.search(r'LowerRightMtrs\s*=\s*\(\s*([+-]?\d+\.?\d*)\s*,\s*([+-]?\d+\.?\d*)\s*\)', metadata, re.IGNORECASE)
+                
                 if not (xdim_match and ydim_match and ul_match and lr_match):
-                    raise ValueError("No se pudo extraer la geolocalización completa")
-                xdim = int(xdim_match.group(1))
-                ydim = int(ydim_match.group(1))
-                ulx = float(ul_match.group(1))
-                uly = float(ul_match.group(2))
-                lrx = float(lr_match.group(1))
-                lry = float(lr_match.group(2))
+                    ydim, xdim = nir.shape
+                    ulx, uly = -180, 90
+                    lrx, lry = 180, -90
+                    st.warning("No se pudo extraer geolocalización completa. Usando estimación.")
+                else:
+                    xdim = int(xdim_match.group(1))
+                    ydim = int(ydim_match.group(1))
+                    ulx = float(ul_match.group(1))
+                    uly = float(ul_match.group(2))
+                    lrx = float(lr_match.group(1))
+                    lry = float(lr_match.group(2))
+                
                 if nir.shape != (ydim, xdim):
                     ydim, xdim = nir.shape
-                res_x = (lrx - ulx) / xdim
-                res_y = (uly - lry) / ydim
+                    
+                res_x = (lrx - ulx) / xdim if xdim > 0 else 0.01
+                res_y = (uly - lry) / ydim if ydim > 0 else 0.01
+                
                 transform = rasterio.Affine(res_x, 0, ulx, 0, -res_y, uly)
                 crs = rasterio.crs.CRS.from_proj4("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
+                
                 with rasterio.io.MemoryFile() as memfile_nir, rasterio.io.MemoryFile() as memfile_swir:
                     with memfile_nir.open(driver='GTiff', height=ydim, width=xdim, count=1,
                                           dtype=nir.dtype, crs=crs, transform=transform, nodata=-32768) as dst_nir:
@@ -773,29 +797,47 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                     with memfile_swir.open(driver='GTiff', height=ydim, width=xdim, count=1,
                                           dtype=swir.dtype, crs=crs, transform=transform, nodata=-32768) as dst_swir:
                         dst_swir.write(swir, 1)
+                    
                     with memfile_nir.open() as src_nir, memfile_swir.open() as src_swir:
                         gdf_proj = gdf_dividido.to_crs(crs)
                         ndwi_values = []
                         progress_bar = st.progress(0, text="Procesando bloques para NDWI con pyhdf...")
+                        
                         for idx, row in gdf_proj.iterrows():
                             geom = [mapping(row.geometry)]
                             try:
-                                out_nir, _ = mask(src_nir, geom, crop=True, nodata=-32768)
+                                # CORRECCIÓN: Manejar unpack
+                                mask_nir = mask(src_nir, geom, crop=True, nodata=-32768)
+                                mask_swir = mask(src_swir, geom, crop=True, nodata=-32768)
+                                
+                                if len(mask_nir) >= 2:
+                                    out_nir, _ = mask_nir
+                                else:
+                                    out_nir = mask_nir[0]
+                                
+                                if len(mask_swir) >= 2:
+                                    out_swir, _ = mask_swir
+                                else:
+                                    out_swir = mask_swir[0]
+                                
                                 nir_band = out_nir[0]
-                                out_swir, _ = mask(src_swir, geom, crop=True, nodata=-32768)
                                 swir_band = out_swir[0]
+                                
                                 valid = (nir_band != -32768) & (swir_band != -32768) & (nir_band + swir_band != 0)
                                 nir_valid = np.ma.masked_where(~valid, nir_band)
                                 swir_valid = np.ma.masked_where(~valid, swir_band)
+                                
                                 with np.errstate(divide='ignore', invalid='ignore'):
                                     ndwi = (nir_valid - swir_valid) / (nir_valid + swir_valid)
                                 mean_val = ndwi.mean()
+                                
                                 if np.ma.is_masked(mean_val) or np.isnan(mean_val):
                                     ndwi_values.append(np.nan)
                                 else:
                                     ndwi_values.append(round(float(mean_val), 3))
                             except Exception:
                                 ndwi_values.append(np.nan)
+                            
                             progress_bar.progress((idx + 1) / len(gdf_proj),
                                                   text=f"Procesando bloque {idx+1}/{len(gdf_proj)}")
                         progress_bar.empty()
@@ -808,7 +850,7 @@ def obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin):
                 shutil.rmtree(temp_dir, ignore_errors=True)
                 return None
         else:
-            st.error("No se pudo leer el archivo HDF: ni rasterio ni pyhdf están disponibles o funcionaron.")
+            st.error("No se pudo leer el archivo HDF: ni rasterio ni pyhdf están disponibles.")
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
     except Exception as e:
@@ -827,8 +869,8 @@ def obtener_clima_openmeteo(gdf, fecha_inicio, fecha_fin):
             "longitude": lon,
             "start_date": fecha_inicio.strftime("%Y-%m-%d"),
             "end_date": fecha_fin.strftime("%Y-%m-%d"),
-            "daily": ["temperature_2m_max", "temperature_2m_min", 
-                      "temperature_2m_mean", "precipitation_sum"],
+            "daily": ["temperature_2m_max", "temperature_2m_min",
+                     "temperature_2m_mean", "precipitation_sum"],
             "timezone": "auto"
         }
         response = requests.get(url, params=params, timeout=30)
@@ -895,7 +937,7 @@ def obtener_radiacion_viento_power(gdf, fecha_inicio, fecha_fin):
                 'minima': round(np.nanmin(rad_diaria), 1),
                 'diaria': [round(r, 1) if not np.isnan(r) else np.nan for r in rad_diaria]
             },
-            'viento': {
+            'viento': { 
                 'promedio': round(np.nanmean(wind_diaria), 1),
                 'maxima': round(np.nanmax(wind_diaria), 1),
                 'diaria': [round(w, 1) if not np.isnan(w) else np.nan for w in wind_diaria]
@@ -1069,16 +1111,15 @@ def crear_graficos_climaticos_completos(datos_climaticos):
         longitudes.append(len(datos_climaticos['radiacion']['diaria']))
     if 'viento' in datos_climaticos and 'diaria' in datos_climaticos['viento']:
         longitudes.append(len(datos_climaticos['viento']['diaria']))
-    
     if not longitudes:
         st.warning("No hay datos climáticos suficientes para graficar.")
         return None
-    
+
     n_dias = min(longitudes)
     dias = list(range(1, n_dias + 1))
-    
+
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    
+
     if 'radiacion' in datos_climaticos and datos_climaticos['radiacion'].get('diaria'):
         rad = np.array(datos_climaticos['radiacion']['diaria'][:n_dias], dtype=np.float64)
         mask_nan = np.isnan(rad)
@@ -1102,7 +1143,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     else:
         axes[0, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
         axes[0, 0].set_title('Radiación', fontweight='bold')
-    
+
     if 'precipitacion' in datos_climaticos and datos_climaticos['precipitacion'].get('diaria'):
         precip = np.array(datos_climaticos['precipitacion']['diaria'][:n_dias], dtype=np.float64)
         ax2 = axes[0, 1]
@@ -1115,7 +1156,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     else:
         axes[0, 1].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
         axes[0, 1].set_title('Precipitación', fontweight='bold')
-    
+
     if 'viento' in datos_climaticos and datos_climaticos['viento'].get('diaria'):
         wind = np.array(datos_climaticos['viento']['diaria'][:n_dias], dtype=np.float64)
         mask_nan = np.isnan(wind)
@@ -1139,7 +1180,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     else:
         axes[1, 0].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
         axes[1, 0].set_title('Viento', fontweight='bold')
-    
+
     if 'temperatura' in datos_climaticos and datos_climaticos['temperatura'].get('diaria'):
         temp = np.array(datos_climaticos['temperatura']['diaria'][:n_dias], dtype=np.float64)
         mask_nan = np.isnan(temp)
@@ -1163,7 +1204,7 @@ def crear_graficos_climaticos_completos(datos_climaticos):
     else:
         axes[1, 1].text(0.5, 0.5, "Datos no disponibles", ha='center', va='center')
         axes[1, 1].set_title('Temperatura', fontweight='bold')
-    
+
     fuente = datos_climaticos.get('fuente', 'Desconocido')
     plt.suptitle(f"Datos Climáticos - {fuente}", fontsize=16, fontweight='bold', y=1.02)
     plt.tight_layout()
@@ -1200,7 +1241,7 @@ def analizar_textura_suelo_venezuela_por_bloque(gdf_dividido):
                 'textura': 'Media-ligera', 'drenaje': 'Bueno',
                 'CIC': 'Medio (10-15)', 'ret_agua': 'Moderada',
                 'recomendacion': 'Requiere riego'
-            },
+            }, 
             'Arenoso Franco': {
                 'arena': 55, 'limo': 15, 'arcilla': 20,
                 'textura': 'Ligera', 'drenaje': 'Excelente',
@@ -1364,19 +1405,19 @@ def crear_mapa_interactivo_base(gdf, columna_color=None, colormap=None, tooltip_
     else:
         def style_function(feature):
             return {'fillColor': '#3388ff', 'color': 'black', 'weight': 0.5, 'fillOpacity': 0.4}
-    
+
     if tooltip_fields and tooltip_aliases:
         tooltip = folium.GeoJsonTooltip(fields=tooltip_fields, aliases=tooltip_aliases, localize=True)
     else:
         tooltip = None
-    
+
     folium.GeoJson(
         gdf.to_json(),
         name='Polígonos',
         style_function=style_function,
         tooltip=tooltip
     ).add_to(m)
-    
+
     folium.LayerControl(collapsed=False).add_to(m)
     Fullscreen(position='topright').add_to(m)
     MeasureControl(position='topright').add_to(m)
@@ -1387,14 +1428,13 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
     if columna not in gdf.columns:
         st.error(f"La columna {columna} no está disponible.")
         return
-    
     valores = gdf[columna].dropna()
     if len(valores) == 0:
         st.warning(f"No hay datos válidos para {titulo}.")
         return
-    
+
     colormap = LinearColormap(colors=colormap_list, vmin=vmin, vmax=vmax, caption=titulo)
-    
+
     mapa = crear_mapa_interactivo_base(
         gdf,
         columna_color=columna,
@@ -1402,7 +1442,7 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
         tooltip_fields=['id_bloque', columna],
         tooltip_aliases=['Bloque', titulo]
     )
-    
+
     if mapa:
         colormap.add_to(mapa)
         folium_static(mapa, width=1000, height=600)
@@ -1415,7 +1455,7 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
         ax.set_title(f'Valores de {titulo} por bloque')
         st.pyplot(fig)
         plt.close(fig)
-    
+
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Media", f"{valores.mean():.3f}")
@@ -1427,7 +1467,7 @@ def mostrar_estadisticas_indice(gdf, columna, titulo, vmin, vmax, colormap_list)
         st.metric("Mínimo", f"{valores.min():.3f}")
     with col5:
         st.metric("Máximo", f"{valores.max():.3f}")
-    
+
     st.markdown("#### Valores por bloque")
     df_tabla = gdf[['id_bloque', columna]].copy()
     df_tabla.columns = ['Bloque', titulo]
@@ -1437,23 +1477,22 @@ def mostrar_comparacion_ndvi_ndwi(gdf):
     if gdf is None or len(gdf) == 0:
         st.warning("No hay datos para la comparación.")
         return
-    
     df = gdf[['id_bloque', 'ndvi_modis', 'ndwi_modis', 'salud', 'area_ha']].copy()
     df = df.dropna()
-    
+
     if len(df) == 0:
         st.warning("Datos insuficientes para la comparación.")
         return
-    
+
     st.markdown("### 🔍 Comparación NDVI vs NDWI")
-    
+
     try:
         import statsmodels.api as sm
         statsmodels_ok = True
     except ImportError:
         statsmodels_ok = False
         st.info("ℹ️ Para ver la línea de tendencia, instala 'statsmodels' con: pip install statsmodels")
-    
+
     fig = px.scatter(
         df, x='ndvi_modis', y='ndwi_modis', color='salud',
         size='area_ha', hover_data=['id_bloque'],
@@ -1471,7 +1510,7 @@ def mostrar_comparacion_ndvi_ndwi(gdf):
     fig.update_traces(marker=dict(line=dict(width=1, color='DarkSlateGrey')))
     fig.update_layout(height=500)
     st.plotly_chart(fig, use_container_width=True)
-    
+
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("#### Top 5 NDVI")
@@ -1483,7 +1522,7 @@ def mostrar_comparacion_ndvi_ndwi(gdf):
         bottom_ndvi = df.nsmallest(5, 'ndvi_modis')[['id_bloque', 'ndvi_modis', 'salud']]
         bottom_ndvi.columns = ['Bloque', 'NDVI', 'Salud']
         st.dataframe(bottom_ndvi.style.format({'NDVI': '{:.3f}'}), use_container_width=True)
-    
+
     with col2:
         st.markdown("#### Top 5 NDWI")
         top_ndwi = df.nlargest(5, 'ndwi_modis')[['id_bloque', 'ndwi_modis', 'salud']]
@@ -1504,7 +1543,6 @@ def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre=
         'MO_porcentaje': {'titulo': 'Materia Orgánica', 'unidad': '%', 'vmin': 1.0, 'vmax': 5.0, 'cmap': 'BrBG'}
     }
     info = info_var.get(variable, {'titulo': variable, 'unidad': '', 'vmin': None, 'vmax': None, 'cmap': 'YlOrRd'})
-    
     colormap = LinearColormap(
         colors=['#ffffb2','#fecc5c','#fd8d3c','#f03b20','#bd0026'] if info['cmap'] == 'YlOrRd' else
                 ['#c7e9c0','#74c476','#31a354','#006d2c'] if info['cmap'] == 'YlGn' else
@@ -1514,7 +1552,7 @@ def crear_mapa_fertilidad_interactivo(gdf_fertilidad, variable, colormap_nombre=
         vmax=info['vmax'] if info['vmax'] else gdf_fertilidad[variable].max(),
         caption=f"{info['titulo']} ({info['unidad']})"
     )
-    
+
     m = crear_mapa_interactivo_base(
         gdf_fertilidad,
         columna_color=variable,
@@ -1571,7 +1609,6 @@ def detectar_en_imagen(modelo, imagen_cv, conf_threshold=0.25):
 def dibujar_detecciones_con_leyenda(imagen_cv, resultados, colores_aleatorios=True):
     if resultados is None or len(resultados) == 0:
         return imagen_cv, []
-
     img_anotada = imagen_cv.copy()
     detecciones_info = []
     names = resultados[0].names
@@ -1608,8 +1645,7 @@ def dibujar_detecciones_con_leyenda(imagen_cv, resultados, colores_aleatorios=Tr
 
 def crear_leyenda_html(detecciones_info):
     if not detecciones_info:
-        return "<p>No se detectaron objetos.</p>"
-
+        return "<div style='background: rgba(30, 30, 30, 0.9); padding: 15px; border-radius: 10px; margin-top: 20px;'><h4 style='color: white;'>📋 No se detectaron objetos.</h4></div>"
     clases_vistas = {}
     for d in detecciones_info:
         if d['clase'] not in clases_vistas:
@@ -1629,7 +1665,7 @@ def crear_leyenda_html(detecciones_info):
         html += f"<td style='padding: 8px;'><span style='display: inline-block; width: 20px; height: 20px; background-color: {color_hex}; border-radius: 4px;'></span></td>"
         html += f"<td style='padding: 8px;'>{clase}</td>"
         html += f"<td style='padding: 8px; text-align: center;'>{conteo_clases[clase]}</td>"
-        html += f"</tr>"
+        html += "</tr>"
 
     html += "</table></div>"
     return html
@@ -1679,7 +1715,7 @@ def obtener_dem_opentopography(gdf, api_key=None):
                 "transform": out_transform,
                 "nodata": -32768
             })
-        return out_image.squeeze(), out_meta, out_transform
+            return out_image.squeeze(), out_meta, out_transform
     except Exception as e:
         st.error(f"Error descargando DEM: {str(e)[:200]}")
         return None, None, None
@@ -1760,7 +1796,8 @@ def mapa_curvas_coloreadas(gdf_original, curvas_con_elevacion):
                    style_function=lambda x: {'color': 'blue', 'fillOpacity': 0.1, 'weight': 2}).add_to(m)
     elevaciones = [e for _, e in curvas_con_elevacion]
     if elevaciones:
-        vmin = min(elevaciones); vmax = max(elevaciones)
+        vmin = min(elevaciones)
+        vmax = max(elevaciones)
         colormap = LinearColormap(colors=['green','yellow','orange','brown'], vmin=vmin, vmax=vmax, caption='Elevación (m.s.n.m)')
         colormap.add_to(m)
         for line, elev in curvas_con_elevacion:
@@ -1798,14 +1835,16 @@ def ejecutar_analisis_completo():
         gdf_dividido = resultado_ndvi
         fuente_ndvi = "Earthdata MOD13Q1"
 
-        # 2. Obtener NDWI real
+        # 2. Obtener NDWI real (CORREGIDO)
         st.info("💧 Obteniendo NDWI desde Earthdata (MOD09GA)...")
         resultado_ndwi = obtener_ndwi_earthdata(gdf_dividido, fecha_inicio, fecha_fin)
         if resultado_ndwi is None:
-            st.error("No se pudo obtener NDWI real. Verifique su conexión y credenciales de Earthdata.")
-            st.stop()
-        gdf_dividido = resultado_ndwi
-        fuente_ndwi = "Earthdata MOD09GA"
+            st.warning("⚠️ No se pudo obtener NDWI real. Continuando con análisis parcial.")
+            gdf_dividido['ndwi_modis'] = np.nan
+            fuente_ndwi = "No disponible"
+        else:
+            gdf_dividido = resultado_ndwi
+            fuente_ndwi = "Earthdata MOD09GA"
 
         # 3. Datos climáticos
         st.info("🌦️ Obteniendo datos climáticos de Open-Meteo ERA5...")
@@ -1820,7 +1859,7 @@ def ejecutar_analisis_completo():
 
         st.session_state.datos_modis = {
             'ndvi': gdf_dividido['ndvi_modis'].mean(),
-            'ndwi': gdf_dividido['ndwi_modis'].mean(),
+            'ndwi': gdf_dividido['ndwi_modis'].mean() if 'ndwi_modis' in gdf_dividido.columns else np.nan,
             'fecha': fecha_inicio.strftime('%Y-%m-%d'),
             'fuente': f"NDVI: {fuente_ndvi}, NDWI: {fuente_ndwi}"
         }
@@ -1854,6 +1893,7 @@ with st.sidebar:
     st.markdown("## 🌴 CONFIGURACIÓN")
     variedad = st.selectbox("Variedad de palma:", VARIEDADES_PALMA_ACEITERA, index=0)
     st.session_state.variedad_seleccionada = variedad
+    
     st.markdown("---")
     st.markdown("### 📅 Rango Temporal")
     fecha_fin_default = datetime.now()
@@ -1866,25 +1906,27 @@ with st.sidebar:
     except: pass
     st.session_state.fecha_inicio = fecha_inicio
     st.session_state.fecha_fin = fecha_fin
+    
     st.markdown("---")
     st.markdown("### 🎯 División de Plantación")
     n_divisiones = st.slider("Número de bloques:", 8, 32, 16)
     st.session_state.n_divisiones = n_divisiones
+    
     st.markdown("---")
     st.markdown("### 🌴 Detección de Palmas")
     deteccion_habilitada = st.checkbox("Activar detección de plantas", value=True)
     if deteccion_habilitada:
         densidad_personalizada = st.slider("Densidad objetivo (plantas/ha):", 50, 200, 130)
         st.session_state.densidad_personalizada = densidad_personalizada
+    
     st.markdown("---")
     st.markdown("### 🧪 Análisis de Suelo")
     analisis_suelo = st.checkbox("Activar análisis de suelo", value=True)
     if analisis_suelo:
         st.info("Incluye: Textura por bloque, fertilidad NPK, recomendaciones")
-    st.session_state.analisis_suelo = analisis_suelo
-    st.markdown("---")
+        st.session_state.analisis_suelo = analisis_suelo
     
-    # === CARGA DE POLÍGONO ===
+    st.markdown("---")
     st.markdown("### 📤 Subir Polígono")
     
     uploaded_file = st.file_uploader(
@@ -1893,7 +1935,7 @@ with st.sidebar:
         help="Formatos: Shapefile (.zip), KML (.kmz), GeoJSON (.geojson)",
         key="polygon_uploader"
     )
-    
+
     if uploaded_file is not None:
         st.info(f"📄 Archivo: {uploaded_file.name}")
         st.info(f"📊 Tamaño: {uploaded_file.size / 1024:.1f} KB")
@@ -1904,7 +1946,7 @@ with st.sidebar:
                 if gdf is not None:
                     st.success("✅ Polígono cargado correctamente")
                     st.rerun()
-    
+
     if st.session_state.get('archivo_cargado', False):
         st.success("✅ Polígono cargado en memoria")
         if st.session_state.get('gdf_original') is not None:
@@ -1925,6 +1967,7 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
         st.write(f"- **Área total:** {area_total:.1f} ha")
         st.write(f"- **Variedad:** {st.session_state.variedad_seleccionada}")
         st.write(f"- **Bloques configurados:** {st.session_state.n_divisiones}")
+        
         st.markdown("#### 🗺️ Vista previa del polígono")
         try:
             m_preview = folium.Map(location=[gdf.geometry.centroid.y.iloc[0], gdf.geometry.centroid.x.iloc[0]], zoom_start=15, tiles=None)
@@ -1935,6 +1978,7 @@ if st.session_state.archivo_cargado and st.session_state.gdf_original is not Non
             folium_static(m_preview, width=500, height=300)
         except Exception as e:
             st.warning(f"No se pudo mostrar el mapa de vista previa: {e}")
+    
     with col2:
         st.markdown("### 🎯 ACCIONES")
         col_btn1, col_btn2 = st.columns(2)
@@ -1959,14 +2003,13 @@ else:
     ### ¿Cómo empezar?
     1. Sube un archivo con el polígono de tu plantación (formatos: Shapefile .zip, KML, KMZ, GeoJSON).
     2. Configura los parámetros de análisis.
-    3. Haz clic en **EJECUTAR ANÁLISIS** para obtener resultados.
+    3. Haz clic en EJECUTAR ANÁLISIS para obtener resultados.
     """)
 
 # ===== PESTAÑAS DE RESULTADOS =====
 if st.session_state.analisis_completado:
     resultados = st.session_state.resultados_todos
     gdf_completo = resultados.get('gdf_completo')
-    
     if gdf_completo is not None:
         tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
             "📊 Resumen", "🗺️ Mapas", "🛰️ Índices", 
@@ -2007,7 +2050,7 @@ if st.session_state.analisis_completado:
                     fig_pie, ax_pie = plt.subplots(figsize=(5,3))
                     colors_pie = {'Crítica': '#d73027', 'Baja': '#fee08b', 'Moderada': '#91cf60', 'Buena': '#1a9850'}
                     pie_colors = [colors_pie.get(c, '#cccccc') for c in salud_counts.index]
-                    wedges, texts, autotexts = ax_pie.pie(
+                    wedges, texts, autotexts = ax_pie.pie( 
                         salud_counts.values, labels=salud_counts.index, autopct='%1.1f%%',
                         colors=pie_colors, startangle=90, textprops={'fontsize': 9}
                     )
@@ -2284,9 +2327,9 @@ if st.session_state.analisis_completado:
                     colores = ['#8B4513', '#D2691E', '#F4A460', '#DEB887', '#BC8F8F', '#CD853F']
                     color_dict = {tipo: colores[i % len(colores)] for i, tipo in enumerate(tipos_unicos)}
                     m_textura = folium.Map(location=[gdf_completo.geometry.centroid.y.mean(), gdf_completo.geometry.centroid.x.mean()], 
-                                           zoom_start=15, tiles=None)
+                                            zoom_start=15, tiles=None)
                     folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', 
-                                     attr='Esri', name='Satélite').add_to(m_textura)
+                                      attr='Esri', name='Satélite').add_to(m_textura)
                     def style_func(feature):
                         tipo = feature['properties']['tipo_suelo']
                         return {'fillColor': color_dict.get(tipo, '#888'), 
@@ -2429,11 +2472,11 @@ if st.session_state.analisis_completado:
                             with col_dl1:
                                 st.download_button("📸 Imagen anotada (PNG)", byte_im,
                                                    f"deteccion_yolo_{datetime.now():%Y%m%d_%H%M%S}.png",
-                                                   "image/png")
+                                                    "image/png")
                             with col_dl2:
                                 st.download_button("📊 CSV detecciones", csv_detecciones,
                                                    f"detecciones_{datetime.now():%Y%m%d_%H%M%S}.csv",
-                                                   "text/csv")
+                                                    "text/csv")
                         else:
                             st.warning("No se detectaron objetos con el umbral de confianza actual.")
                     else:
@@ -2446,9 +2489,7 @@ if st.session_state.analisis_completado:
 # ===== PIE DE PÁGINA =====
 st.markdown("---")
 st.markdown("""
-<div style="text-align: center; color: #94a3b8; padding: 20px;">
-    <p><strong>© 2026 Analizador de Palma Aceitera Satelital</strong></p>
-    <p>Datos satelitales: NASA Earthdata · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM</p>
-    <p>Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com | +5493525 532313</p>
-</div>
+© 2026 Analizador de Palma Aceitera Satelital  
+Datos satelitales: NASA Earthdata · Clima: Open-Meteo ERA5 · Radiación/Viento: NASA POWER · Curvas de nivel: OpenTopography SRTM  
+Desarrollado por: BioMap Consultora | Contacto: mawucano@gmail.com | +5493525 532313
 """, unsafe_allow_html=True)
